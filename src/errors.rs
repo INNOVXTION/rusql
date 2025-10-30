@@ -1,4 +1,4 @@
-use std::{convert::Infallible, fmt::Display, io};
+use std::{convert::Infallible, fmt::Display, io, num::TryFromIntError};
 
 #[derive(Debug)]
 pub enum Error {
@@ -19,18 +19,16 @@ impl Display for Error {
     }
 }
 
-impl std::error::Error for Error {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Error::FileError(e) => Some(e),
-            _ => None,
-        }
-    }
-}
+impl std::error::Error for Error {}
 
 impl From<io::Error> for Error {
     fn from(err: io::Error) -> Self {
         Error::FileError(err)
+    }
+}
+impl From<TryFromIntError> for Error {
+    fn from(err: TryFromIntError) -> Self {
+        Error::CastingError
     }
 }
 

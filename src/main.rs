@@ -1,5 +1,6 @@
 mod pager;
 mod errors;
+mod helper;
 
 
 use std::error::Error;
@@ -43,6 +44,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     decode()?;
     Ok(())
 }
+
 
 #[instrument]
 fn encode(data: Row, page: u64) -> io::Result<()> {
