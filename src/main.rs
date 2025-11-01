@@ -2,16 +2,13 @@ mod pager;
 mod errors;
 mod helper;
 
-
 use std::error::Error;
-use std::ffi::OsStr;
-use std::fs::{DirBuilder, File, OpenOptions, read, rename};
+use std::fs::{DirBuilder, File, OpenOptions, rename};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::{env, io, vec};
+use std::{env, io};
 use tracing_subscriber;
-use tracing::{event, info, instrument, Level};
-use tracing_subscriber::field::debug;
+use tracing::{Level, event, info, instrument};
 use std::convert::TryInto;
 
 const BLOCK_SIZE: usize = 50;
@@ -62,6 +59,7 @@ fn encode(data: Row, page: u64) -> io::Result<()> {
 fn decode() -> io::Result<()> {
     let mut file = File::open("database.rdb")?;
     let mut buf = [0u8; BLOCK_SIZE];
+    buf.as_slice();
     file.read(&mut buf)?;
     event!(target: "rusql", Level::INFO, "decoding file {:?}", buf);
     let person = Row {
