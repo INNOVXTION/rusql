@@ -1,10 +1,11 @@
-use tracing::{info, instrument, error};
-use crate::{helper::*};
+use crate::helper::*;
+use tracing_subscriber;
+use tracing::{Level, debug, error, event, info, instrument};
 
 use crate::errors::Error;
 
 pub const PAGE_SIZE: usize = 4096; // 4096 bytes
-pub const NODE_SIZE: usize = PAGE_SIZE * 2; // in memory buffer
+pub const NODE_SIZE: usize = 50;// PAGE_SIZE * 2; // in memory buffer
 const HEADER_OFFSET: usize = 4;
 const POINTER_OFFSET: usize = 8;
 const OFFSETARR_OFFSET: usize = 2;
@@ -28,7 +29,7 @@ pub struct Node(pub Box<[u8]>);
 #[derive(PartialEq, Debug)]
 pub enum NodeType {
     Node,
-    Leaf
+    Leaf,
 }
 
 #[allow(dead_code)]
@@ -39,33 +40,34 @@ impl Node {
     }
 
     /// receive the total node size
-    #[instrument]
+    #[instrument(skip(self))]
     fn nbytes(&self) -> u16 {
         from_usize(self.kv_pos(self.get_nkeys()).unwrap())
     }
 
-    #[instrument]
+    fn fits_page(&self) -> bool {
+        if self.nbytes() > PAGE_SIZE as u16 {
+            return false
+        }
+        true
+    }
+
+    #[instrument(skip(self))]
     pub fn get_type(&self) -> Result<NodeType, Error> {
-        let mut val = [0u8;2];
-        val.copy_from_slice(&self.0[..2]);
-        match u16::from_le_bytes(val) {
+        match slice_to_u16(self, 0)? {
             1 => Ok(NodeType::Node),
             2 => Ok(NodeType::Leaf),
-            _ => Err(Error::IndexError)
+            _ => { error!("corrupted node type");
+                Err(Error::IndexError)
+            },
         }
     }
 
-    #[instrument]
     pub fn get_nkeys(&self) -> u16 {
-        info!("getting keys..");
         slice_to_u16(self, 2).unwrap()
-        // let mut val = [0u8;2];
-        // val.copy_from_slice(&self.0[2..4]);
-        // u16::from_le_bytes(val)
     }
 
-    #[instrument]
-    pub fn set_HEADER_OFFSET(&mut self, nodetype: NodeType, nkeys: u16) {
+    pub fn set_header(&mut self, nodetype: NodeType, nkeys: u16) {
         let nodetype: u16 = match nodetype {
             NodeType::Node => 1,
             NodeType::Leaf => 2,
@@ -75,19 +77,20 @@ impl Node {
     }
 
     /// retrieves child pointer(page number) from pointer array: 8 bytes
-    #[instrument]
+    #[instrument(skip(self))]
     pub fn get_ptr(&self, idx: u16) -> Result<u64, Error> {
         if idx > self.get_nkeys() {
-            return Err(Error::IndexError)
+            error!("invalid index");
+            return Err(Error::IndexError);
         };
         let pos: usize = HEADER_OFFSET + 8 * idx as usize;
         slice_to_u64(self, pos)
     }
-
-    #[instrument]
+    #[instrument(skip(self))]
     pub fn set_ptr(&mut self, idx: u16, ptr: u64) -> Result<(), Error> {
         if idx > self.get_nkeys() {
-            return Err(Error::IndexError)
+            error!("invalid index");
+            return Err(Error::IndexError);
         };
         let pos: usize = HEADER_OFFSET + 8 * idx as usize;
         self.0[pos..pos + 8].copy_from_slice(&ptr.to_le_bytes());
@@ -95,65 +98,69 @@ impl Node {
     }
 
     /// reads the value from the offset array for a given index, 0 has no offset
-    /// 
+    ///
     /// the offset is the last byte of the nth KV relative to the first KV
-    #[instrument]
     fn get_offset(&self, idx: u16) -> Result<u16, Error> {
         if idx == 0 {
-            return Ok(0)
+            return Ok(0);
         }
         if idx > self.get_nkeys() {
             error!("index out of key range");
-            return Err(Error::IndexError)
+            return Err(Error::IndexError);
         }
-        let pos = HEADER_OFFSET + (8 * self.get_nkeys() as usize) + 2 * (idx as usize - 1);
+        let pos =
+            HEADER_OFFSET
+            + (8 * self.get_nkeys() as usize)
+            + 2 * (idx as usize - 1);
         slice_to_u16(self, pos)
     }
 
     /// writes a new offset into the array 2 Bytes
-    #[instrument]
     fn set_offset(&mut self, idx: u16, size: u16) {
         if idx == 0 {
             panic!("set offset idx cant be zero")
         }
-        let pos = HEADER_OFFSET + (8 * self.get_nkeys() as usize) + 2 * (idx as usize - 1);
+        let pos = 
+            HEADER_OFFSET
+            + (8 * self.get_nkeys() as usize)
+            + 2 * (idx as usize - 1);
         self.0[pos..pos + 2].copy_from_slice(&size.to_le_bytes())
     }
 
     /// kv position relative to node
-    #[instrument]
     fn kv_pos(&self, idx: u16) -> Result<usize, Error> {
         if idx > self.get_nkeys() {
             error!("index out of key range");
-            return Err(Error::IndexError)
+            return Err(Error::IndexError);
         };
-        Ok((HEADER_OFFSET as u16 + (8 * self.get_nkeys()) + 2 * self.get_nkeys() + self.get_offset(idx)?) as usize)
+        Ok((HEADER_OFFSET as u16
+            + (8 * self.get_nkeys())
+            + 2 * self.get_nkeys()
+            + self.get_offset(idx)?) as usize)
     }
 
     /// retrieves key as byte array
-    #[instrument]
     pub fn get_key(&self, idx: u16) -> Result<&[u8], Error> {
         if idx > self.get_nkeys() {
             error!("get_key error");
-            return Err(Error::IndexError)
+            return Err(Error::IndexError);
         };
         let kvpos = self.kv_pos(idx)?;
         let key_len = slice_to_u16(self, kvpos)? as usize;
-        
+
         Ok(&self.0[kvpos + 4..kvpos + 4 + key_len])
     }
 
     /// retrieves value as byte array
-    #[instrument]
     pub fn get_val(&self, idx: u16) -> Result<&[u8], Error> {
         if let NodeType::Node = self.get_type()? {
             error!("writing values to non-leaf node");
-            return Err(Error::NodeTypeError)
+            return Err(Error::NodeTypeError);
         }
         if idx > self.get_nkeys() {
             error!("index out of key range");
-            return Err(Error::IndexError)
-        };    
+            return Err(Error::IndexError);
+        };
         let kvpos = self.kv_pos(idx)?;
         let key_len = slice_to_u16(self, kvpos)? as usize;
         let val_len = slice_to_u16(self, kvpos + 2)? as usize;
@@ -162,22 +169,20 @@ impl Node {
     }
 
     /// appends key value and pointer at index
-    #[instrument]
+    ///
+    /// does not update nkeys!
     pub fn append_kvptr(&mut self, idx: u16, ptr: u64, key: &str, val: &str) -> Result<(), Error> {
-        self.set_ptr(idx, ptr)?;  
+        self.set_ptr(idx, ptr)?;
         let kvpos = self.kv_pos(idx).expect("index error append kv");
         let klen: u16 = key.len().try_into()?;
         let vlen: u16 = val.len().try_into()?;
-        
+
         //inserting klen and vlen = 4 bytes
-        self.0[kvpos..kvpos + 2]
-            .copy_from_slice(&klen.to_le_bytes());
-        self.0[kvpos + 2..kvpos + 4]
-            .copy_from_slice(&vlen.to_le_bytes());
+        self.0[kvpos..kvpos + 2].copy_from_slice(&klen.to_le_bytes());
+        self.0[kvpos + 2..kvpos + 4].copy_from_slice(&vlen.to_le_bytes());
 
         //inserting key and value
-        self.0[kvpos + 4..kvpos + 4 + key.len()]
-            .copy_from_slice(key.as_bytes());
+        self.0[kvpos + 4..kvpos + 4 + key.len()].copy_from_slice(key.as_bytes());
         self.0[kvpos + 4 + key.len()..kvpos + 4 + key.len() + val.len()]
             .copy_from_slice(val.as_bytes());
 
@@ -187,9 +192,17 @@ impl Node {
     }
 
     /// appends range to self starting at dst_idx from source Node starting at src_idx for n elements
+    /// 
+    /// does not update nkeys!
     #[instrument]
-    fn append_from_range(&mut self, src: &Node, dst_idx: u16, src_idx: u16, n: u16)
-        -> Result<(), Error> {
+    fn append_from_range(
+        &mut self,
+        src: &Node,
+        dst_idx: u16,
+        src_idx: u16,
+        n: u16,
+    ) -> Result<(), Error> {
+        info!("appending from range...");
         for i in 0..n {
             let dst_idx = dst_idx + i;
             let src_idx = src_idx + i;
@@ -197,24 +210,24 @@ impl Node {
                 dst_idx,
                 src.get_ptr(src_idx)?,
                 str::from_utf8(src.get_key(src_idx)?)?,
-                str::from_utf8(src.get_val(src_idx)?)?)?;
+                str::from_utf8(src.get_val(src_idx)?)?,
+            )?;
         }
         Ok(())
     }
 
     /// find the last index that is less than or equal to the key
-    /// 
+    ///
     /// TODO: binary search
-    #[instrument]
     fn lookupidx(&self, key: &str) -> u16 {
         let nkeys = self.get_nkeys();
         let mut idx: u16 = 0;
         for i in 0..nkeys {
             if str::from_utf8(self.get_key(idx).unwrap()).unwrap() == key {
-                return idx
+                return idx;
             }
             if str::from_utf8(self.get_key(idx).unwrap()).unwrap() > key {
-                return idx - 1
+                return idx - 1;
             }
             idx += 1;
         }
@@ -222,115 +235,145 @@ impl Node {
     }
 
     /// inserts KV into new node, copies content from old node, capable of updating existing key
-    #[instrument]
-    pub fn insert(
-        &mut self,
-        src: Node,
-        key: &str,
-        val: &str) -> Result<(), Error> {
-            let idx = src.lookupidx(key);
-            if str::from_utf8(src.get_key(idx).unwrap()).unwrap() == key { // found! updating
-                self.leaf_kvupdate(src, idx, key, val)?;
-                return Ok(())
-            }
-            self.leaf_kvinsert(src, idx, key, val)?; // not found. insert
-            Ok(())
+    pub fn insert_from(&mut self, src: Node, key: &str, val: &str) -> Result<(), Error> {
+        let idx = src.lookupidx(key);
+        if str::from_utf8(src.get_key(idx).unwrap()).unwrap() == key {
+            // found! updating
+            self.leaf_kvupdate(src, idx, key, val)?;
+            return Ok(());
+        }
+        self.leaf_kvinsert(src, idx, key, val)?; // not found. insert
+        Ok(())
     }
 
     /// helper function: inserts new KV into leaf node copies content from old node
-    #[instrument]
-    fn leaf_kvinsert(
-        &mut self,
-        src: Node,
-        idx: u16,
-        key: &str,
-        val: &str) -> Result<(), Error> {
-            self.set_HEADER_OFFSET(NodeType::Leaf, src.get_nkeys() + 1);
-            // copy kv before idx
-            self.append_from_range(&src, 0, 0, idx)?;
-            // insert new kv
-            self.append_kvptr(idx, 0, key, val)?;
-            // copy kv after idx
-            self.append_from_range(&src, idx + 1, idx, src.get_nkeys() - idx)?;
-            Ok(())
-    } 
-
-    /// helper function: updates existing KV in leaf node copies content from old node
-    #[instrument]
-    fn leaf_kvupdate(
-        &mut self, 
-        src: Node,
-        idx: u16,
-        key: &str,
-        val: &str) -> Result<(), Error> {
-            self.set_HEADER_OFFSET(NodeType::Leaf, src.get_nkeys() + 1);
-            // copy kv before idx
-            self.append_from_range(&src, 0, 0, idx)?;
-            // insert new kv
-            self.append_kvptr(idx, 0, key, val)?;
-            // copy kv after idx
-            self.append_from_range(&src, idx + 1, idx + 1, src.get_nkeys() - (idx - 1))?;
-            Ok(())      
+    /// 
+    /// does not update nkeys!
+    fn leaf_kvinsert(&mut self, src: Node, idx: u16, key: &str, val: &str) -> Result<(), Error> {
+        self.set_header(NodeType::Leaf, src.get_nkeys() + 1);
+        // copy kv before idx
+        self.append_from_range(&src, 0, 0, idx)?;
+        // insert new kv
+        self.append_kvptr(idx, 0, key, val)?;
+        // copy kv after idx
+        self.append_from_range(&src, idx + 1, idx, src.get_nkeys() - idx)?;
+        Ok(())
     }
 
-    /// consumes node and splits it
-    #[instrument]
-    fn split(self, left: Node, right: Node,) -> Result<(), Error> {
+    /// helper function: updates existing KV in leaf node copies content from old node
+    fn leaf_kvupdate(&mut self, src: Node, idx: u16, key: &str, val: &str) -> Result<(), Error> {
+        self.set_header(NodeType::Leaf, src.get_nkeys() + 1);
+        // copy kv before idx
+        self.append_from_range(&src, 0, 0, idx)?;
+        // insert new kv
+        self.append_kvptr(idx, 0, key, val)?;
+        // copy kv after idx
+        self.append_from_range(&src, idx + 1, idx + 1, src.get_nkeys() - (idx - 1))?;
+        Ok(())
+    }
+
+    /// helper function: consumes node and splits it in two
+    fn split_node(self, mut left: Node, mut right: Node) -> Result<(Node, Node), Error> {
         // splitting node in the middle as first guess
         if self.get_nkeys() < 2 {
-            return Err(Error::IndexError)
+            return Err(Error::IndexError);
         }
         // trying to fit the left half, making sure the new node is not oversized
         let mut nkeys_left = (self.get_nkeys() / 2) as usize;
         let left_bytes = |n| -> usize {
-            HEADER_OFFSET + POINTER_OFFSET * n + OFFSETARR_OFFSET * n +
-            self.get_offset(from_usize(n)).unwrap() as usize
+            HEADER_OFFSET
+            + POINTER_OFFSET * n
+            + OFFSETARR_OFFSET * n
+            + self.get_offset(from_usize(n)).unwrap() as usize
         };
         // incremently decreasing amount of keys for new node until it fits
         while left_bytes(nkeys_left) > PAGE_SIZE {
-            nkeys_left -=1;
-        };
+            nkeys_left -= 1;
+        }
         assert!(nkeys_left >= 1);
         // fitting right node
         let right_bytes = |n: usize| -> usize {
-            self.nbytes() as usize - left_bytes(n) + 4
+             self.nbytes() as usize - left_bytes(n) + 4
         };
         while right_bytes(nkeys_left) > PAGE_SIZE {
             nkeys_left += 1;
+        }
+        assert!(nkeys_left < self.get_nkeys() as usize);
+        // config new nodes        
+        let nkeys_left = from_usize(nkeys_left);
+        left.set_header(self.get_type()?, nkeys_left);
+        left.append_from_range(&self, 0, 0, nkeys_left)
+            .map_err(|_|Error::NodeSplitError("append error during split".to_string()))?;
+        let nkeys_right = self.get_nkeys() - nkeys_left;
+        right.set_header(self.get_type()?, nkeys_right);
+        right.append_from_range(&self, 0, nkeys_left, nkeys_right)
+            .map_err(|_|Error::NodeSplitError("append error during split".to_string()))?;
+        assert!(right.fits_page());
+        assert!(left.fits_page());
+        Ok((left, right))
+    }
+
+    /// consumes node and splits it potentially three ways, returns number of splits and array of split off nodes
+    #[instrument(skip(self))]
+    fn split(self) -> Result<(u16, Vec<Node>), Error> {
+        // no split
+        let mut arr = Vec::with_capacity(3);
+        if self.fits_page() {
+            debug!("no split necessary");
+            arr.push(self);
+            return Ok((1, arr)) // no split necessary
         };
-        Ok(())
+        // two way split
+        info!("splitting node...");
+        let left = Node::new();
+        let right = Node::new();
+        let (left, right) = self
+            .split_node(left, right)
+            .map_err(|_|Error::NodeSplitError("Could not split node once".to_string()))?;
+        if left.fits_page() {
+            debug!("two way split");
+            arr.push(left);
+            arr.push(right);
+            return Ok((2, arr));
+        };
+        // three way split
+        debug!("three way split");
+        let leftleft = Node::new();
+        let middle = Node::new();
+        let (leftleft, middle) = left
+            .split_node(leftleft, middle)
+            .map_err(|_|Error::NodeSplitError("Could not split node twice".to_string()))?;
+
+        assert!(leftleft.fits_page());
+        assert!(middle.fits_page());
+        assert!(right.fits_page());
+        arr.push(leftleft);
+        arr.push(middle);
+        arr.push(right);
+        Ok((3, arr))
     }
 }
 
-
-
-
-
-
-
 #[cfg(test)]
 mod test {
-    use crate::errors;
-
     use super::*;
 
     #[test]
-    fn type_nkeys_setHEADER_OFFSET() {
+    fn type_nkeys_setheader() {
         let mut page = Node(Box::new([0u8; 50]));
-        page.set_HEADER_OFFSET(NodeType::Node, 5);
+        page.set_header(NodeType::Node, 5);
 
         assert_eq!(page.get_type().unwrap(), NodeType::Node);
         assert_eq!(page.get_nkeys(), 5);
-
     }
 
     #[test]
     fn ptr() {
         let mut page = Node(Box::new([0u8; 100]));
-        page.set_HEADER_OFFSET(NodeType::Node, 5);
+        page.set_header(NodeType::Node, 5);
 
-        page.set_ptr(1, 10);
-        page.set_ptr(2, 20);
+        page.set_ptr(1, 10).unwrap();
+        page.set_ptr(2, 20).unwrap();
 
         // for byte in page.0.iter() {
         //     print!("{:08b} ", *byte);
@@ -343,9 +386,9 @@ mod test {
     }
 
     #[test]
-    fn append() -> Result<(), errors::Error> {
+    fn append() -> Result<(), Error> {
         let mut node = Node::new();
-        node.set_HEADER_OFFSET(NodeType::Leaf, 2);
+        node.set_header(NodeType::Leaf, 2);
         node.append_kvptr(0, 0, "k1", "hi")?;
         node.append_kvptr(1, 0, "k3", "hello")?;
 
@@ -355,21 +398,23 @@ mod test {
         assert_eq!(str::from_utf8(node.get_val(1)?).unwrap(), "hello");
         Ok(())
     }
-    
+
     #[test]
-    fn string_cmp() {
-        let s1 = "k1";
-        let s2 = "k2";
-        assert!(s2 > s1);
-    }
-    fn borrow() {
-        let mut val = 5;
-        let r = &val;
-        
-        println!("{}", r);
-        
-        let m = &mut val;
-        
-        println!("{}", m);
+    fn append_range() -> Result<(), Error> {
+        tracing_subscriber::fmt().init();
+        let mut n1 = Node::new();
+        let mut n2 = Node::new();
+        n2.set_header(NodeType::Leaf, 2);
+
+        n1.set_header(NodeType::Leaf, 2);
+        n1.append_kvptr(0, 0, "k1", "hi")?;
+        n1.append_kvptr(1, 0, "k3", "hello")?;
+        n2.append_from_range(&n1, 0, 0, n1.get_nkeys())?;
+
+        assert_eq!(str::from_utf8(n2.get_key(0)?).unwrap(), "k1");
+        assert_eq!(str::from_utf8(n2.get_val(0)?).unwrap(), "hi");
+        assert_eq!(str::from_utf8(n2.get_key(1)?).unwrap(), "k3");
+        assert_eq!(str::from_utf8(n2.get_val(1)?).unwrap(), "hello");
+        Ok(())
     }
 }

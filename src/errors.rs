@@ -8,7 +8,9 @@ pub enum Error {
     IntCastingError(Option<TryFromIntError>),
     NodeTypeError,
     StrCastError(Utf8Error),
+    NodeSplitError(String),
 }
+
 
 impl Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -20,6 +22,7 @@ impl Display for Error {
             Error::IntCastingError(None) => write!(f, "Type casting error"),
             Error::NodeTypeError => write!(f, "Wrong Node for operation"),
             Error::StrCastError(e) => write!(f, "Casting from String error, {}", e),
+            Error::NodeSplitError(e) => write!(f, "Error when splitting, {}", e),
         }
     }
 }
