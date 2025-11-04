@@ -12,17 +12,16 @@ const OFFSETARR_OFFSET: usize = 2;
 const BTREE_MAX_KEY_SIZE: usize = 1000;
 const BTREE_MAX_VAL_SIZE: usize = 3000;
 
-/* -------------------------------Node Layout----------------------------------
-
+/* 
+-----------------------------------Node Layout----------------------------------
 | type | nkeys | pointers | offsets |            key-values           | unused |
 |   2  |   2   | nil nil  |  8 19   | 2 2 "k1" "hi"  2 5 "k3" "hello" |        |
 |  2B  |  2B   |   2×8B   |  2×2B   | 4B + 2B + 2B + 4B + 2B + 5B     |        |
 
-
 | key_size | val_size | key | val |
 |    2B    |    2B    | ... | ... |
-
 */
+
 #[derive(Debug)]
 pub struct Node(pub Box<[u8]>);
 
@@ -40,7 +39,6 @@ impl Node {
     }
 
     /// receive the total node size
-    #[instrument(skip(self))]
     fn nbytes(&self) -> u16 {
         from_usize(self.kv_pos(self.get_nkeys()).unwrap())
     }
@@ -67,6 +65,7 @@ impl Node {
         slice_to_u16(self, 2).unwrap()
     }
 
+    #[instrument(skip(self))]
     pub fn set_header(&mut self, nodetype: NodeType, nkeys: u16) {
         let nodetype: u16 = match nodetype {
             NodeType::Node => 1,
@@ -100,6 +99,7 @@ impl Node {
     /// reads the value from the offset array for a given index, 0 has no offset
     ///
     /// the offset is the last byte of the nth KV relative to the first KV
+    #[instrument(skip(self))]
     fn get_offset(&self, idx: u16) -> Result<u16, Error> {
         if idx == 0 {
             return Ok(0);
@@ -116,6 +116,7 @@ impl Node {
     }
 
     /// writes a new offset into the array 2 Bytes
+    #[instrument(skip(self))]
     fn set_offset(&mut self, idx: u16, size: u16) {
         if idx == 0 {
             panic!("set offset idx cant be zero")
@@ -217,12 +218,12 @@ impl Node {
     }
 
     /// find the last index that is less than or equal to the key
-    ///
+    /// if the key is not found, returns the index of the last KV
     /// TODO: binary search
-    fn lookupidx(&self, key: &str) -> u16 {
-        let nkeys = self.get_nkeys();
+    pub fn lookupidx(&self, key: &str) -> u16 {
+        let nkeys = self.get_nkeys(); // 3
         let mut idx: u16 = 0;
-        for i in 0..nkeys {
+        while idx < nkeys {
             if str::from_utf8(self.get_key(idx).unwrap()).unwrap() == key {
                 return idx;
             }
@@ -234,7 +235,7 @@ impl Node {
         idx - 1
     }
 
-    /// inserts KV into new node, copies content from old node, capable of updating existing key
+    /// inserts KV into self, copies content from src, upates keys if necessary
     pub fn insert_from(&mut self, src: Node, key: &str, val: &str) -> Result<(), Error> {
         let idx = src.lookupidx(key);
         if str::from_utf8(src.get_key(idx).unwrap()).unwrap() == key {
@@ -242,14 +243,14 @@ impl Node {
             self.leaf_kvupdate(src, idx, key, val)?;
             return Ok(());
         }
-        self.leaf_kvinsert(src, idx, key, val)?; // not found. insert
+        self.leaf_kvinsert(src, idx + 1, key, val)?; // not found. insert
         Ok(())
     }
 
     /// helper function: inserts new KV into leaf node copies content from old node
     /// 
     /// does not update nkeys!
-    fn leaf_kvinsert(&mut self, src: Node, idx: u16, key: &str, val: &str) -> Result<(), Error> {
+    pub fn leaf_kvinsert(&mut self, src: Node, idx: u16, key: &str, val: &str) -> Result<(), Error> {
         self.set_header(NodeType::Leaf, src.get_nkeys() + 1);
         // copy kv before idx
         self.append_from_range(&src, 0, 0, idx)?;
@@ -261,8 +262,8 @@ impl Node {
     }
 
     /// helper function: updates existing KV in leaf node copies content from old node
-    fn leaf_kvupdate(&mut self, src: Node, idx: u16, key: &str, val: &str) -> Result<(), Error> {
-        self.set_header(NodeType::Leaf, src.get_nkeys() + 1);
+    pub fn leaf_kvupdate(&mut self, src: Node, idx: u16, key: &str, val: &str) -> Result<(), Error> {
+        self.set_header(NodeType::Leaf, src.get_nkeys());
         // copy kv before idx
         self.append_from_range(&src, 0, 0, idx)?;
         // insert new kv
@@ -273,13 +274,16 @@ impl Node {
     }
 
     /// helper function: consumes node and splits it in two
-    fn split_node(self, mut left: Node, mut right: Node) -> Result<(Node, Node), Error> {
+    pub fn split_node(self) -> Result<(Node, Node), Error> {
+        let mut left = Node::new();
+        let mut right = Node::new();      
         // splitting node in the middle as first guess
-        if self.get_nkeys() < 2 {
+        let nkeys = self.get_nkeys();
+        if nkeys < 2 {
             return Err(Error::IndexError);
         }
         // trying to fit the left half, making sure the new node is not oversized
-        let mut nkeys_left = (self.get_nkeys() / 2) as usize;
+        let mut nkeys_left = (nkeys / 2) as usize;
         let left_bytes = |n| -> usize {
             HEADER_OFFSET
             + POINTER_OFFSET * n
@@ -287,24 +291,25 @@ impl Node {
             + self.get_offset(from_usize(n)).unwrap() as usize
         };
         // incremently decreasing amount of keys for new node until it fits
-        while left_bytes(nkeys_left) > PAGE_SIZE {
+        while left_bytes(nkeys_left) > PAGE_SIZE && nkeys_left > 1 {
             nkeys_left -= 1;
         }
         assert!(nkeys_left >= 1);
         // fitting right node
         let right_bytes = |n: usize| -> usize {
-             self.nbytes() as usize - left_bytes(n) + 4
+             self.nbytes() as usize - left_bytes(n) + HEADER_OFFSET
         };
         while right_bytes(nkeys_left) > PAGE_SIZE {
             nkeys_left += 1;
         }
-        assert!(nkeys_left < self.get_nkeys() as usize);
+        assert!(nkeys_left > 0);
+        assert!(nkeys_left < nkeys as usize);
         // config new nodes        
         let nkeys_left = from_usize(nkeys_left);
         left.set_header(self.get_type()?, nkeys_left);
         left.append_from_range(&self, 0, 0, nkeys_left)
             .map_err(|_|Error::NodeSplitError("append error during split".to_string()))?;
-        let nkeys_right = self.get_nkeys() - nkeys_left;
+        let nkeys_right = nkeys - nkeys_left;
         right.set_header(self.get_type()?, nkeys_right);
         right.append_from_range(&self, 0, nkeys_left, nkeys_right)
             .map_err(|_|Error::NodeSplitError("append error during split".to_string()))?;
@@ -315,7 +320,7 @@ impl Node {
 
     /// consumes node and splits it potentially three ways, returns number of splits and array of split off nodes
     #[instrument(skip(self))]
-    fn split(self) -> Result<(u16, Vec<Node>), Error> {
+    pub fn split(self) -> Result<(u16, Vec<Node>), Error> {
         // no split
         let mut arr = Vec::with_capacity(3);
         if self.fits_page() {
@@ -325,25 +330,24 @@ impl Node {
         };
         // two way split
         info!("splitting node...");
-        let left = Node::new();
-        let right = Node::new();
         let (left, right) = self
-            .split_node(left, right)
+            .split_node()
             .map_err(|_|Error::NodeSplitError("Could not split node once".to_string()))?;
         if left.fits_page() {
             debug!("two way split");
+            debug!("split: left = {} bytes, right = {} bytes", left.nbytes(), right.nbytes());
             arr.push(left);
             arr.push(right);
             return Ok((2, arr));
         };
         // three way split
         debug!("three way split");
-        let leftleft = Node::new();
-        let middle = Node::new();
         let (leftleft, middle) = left
-            .split_node(leftleft, middle)
+            .split_node()
             .map_err(|_|Error::NodeSplitError("Could not split node twice".to_string()))?;
 
+        debug!("split: leftleft = {} bytes, middle = {} bytes, right = {}", 
+            leftleft.nbytes(), middle.nbytes(), right.nbytes());
         assert!(leftleft.fits_page());
         assert!(middle.fits_page());
         assert!(right.fits_page());
@@ -351,6 +355,12 @@ impl Node {
         arr.push(middle);
         arr.push(right);
         Ok((3, arr))
+    }
+
+    ///
+    #[instrument]
+    fn merge() {
+        todo!()
     }
 }
 
