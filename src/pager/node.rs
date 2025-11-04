@@ -95,7 +95,13 @@ impl Node {
         self.0[pos..pos + 8].copy_from_slice(&ptr.to_le_bytes());
         Ok(())
     }
-
+    #[instrument(skip(self))]   
+    pub fn replace_ptr(&mut self, old_node: Node, idx: u16, new_kids: (u16, Vec<Node>)) {
+        todo!()
+        // copy range before new idx
+        // insert new ptr at idx
+        // copy from range after idx
+    }
     /// reads the value from the offset array for a given index, 0 has no offset
     ///
     /// the offset is the last byte of the nth KV relative to the first KV
@@ -204,6 +210,7 @@ impl Node {
         n: u16,
     ) -> Result<(), Error> {
         info!("appending from range...");
+
         for i in 0..n {
             let dst_idx = dst_idx + i;
             let src_idx = src_idx + i;
@@ -251,25 +258,31 @@ impl Node {
     /// 
     /// does not update nkeys!
     pub fn leaf_kvinsert(&mut self, src: Node, idx: u16, key: &str, val: &str) -> Result<(), Error> {
-        self.set_header(NodeType::Leaf, src.get_nkeys() + 1);
+        let src_nkeys = src.get_nkeys();
+        self.set_header(NodeType::Leaf, src_nkeys + 1);
         // copy kv before idx
         self.append_from_range(&src, 0, 0, idx)?;
         // insert new kv
         self.append_kvptr(idx, 0, key, val)?;
         // copy kv after idx
-        self.append_from_range(&src, idx + 1, idx, src.get_nkeys() - idx)?;
+        self.append_from_range(&src, idx + 1, idx, src_nkeys - idx)?;
         Ok(())
     }
 
     /// helper function: updates existing KV in leaf node copies content from old node
+    /// 
+    /// does not update nkeys!
     pub fn leaf_kvupdate(&mut self, src: Node, idx: u16, key: &str, val: &str) -> Result<(), Error> {
-        self.set_header(NodeType::Leaf, src.get_nkeys());
+        let src_nkeys = src.get_nkeys();
+        self.set_header(NodeType::Leaf, src_nkeys);
         // copy kv before idx
         self.append_from_range(&src, 0, 0, idx)?;
         // insert new kv
         self.append_kvptr(idx, 0, key, val)?;
         // copy kv after idx
-        self.append_from_range(&src, idx + 1, idx + 1, src.get_nkeys() - (idx - 1))?;
+        if src_nkeys > idx + 1 { // in case the updated key is the last key
+            self.append_from_range(&src, idx + 1, idx + 1, src_nkeys - (idx + 1))?;
+        };
         Ok(())
     }
 
