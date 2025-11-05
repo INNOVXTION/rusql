@@ -77,7 +77,7 @@ impl Node {
     /// retrieves child pointer(page number) from pointer array: 8 bytes
     #[instrument(skip(self))]
     pub fn get_ptr(&self, idx: u16) -> Result<u64, Error> {
-        if idx > self.get_nkeys() {
+        if idx >= self.get_nkeys() {
             error!("invalid index");
             return Err(Error::IndexError);
         };
@@ -87,7 +87,7 @@ impl Node {
     /// sets points in array, does not increase nkeys!
     #[instrument(skip(self))]
     pub fn set_ptr(&mut self, idx: u16, ptr: u64) -> Result<(), Error> {
-        if idx > self.get_nkeys() {
+        if idx >= self.get_nkeys() {
             error!("invalid index");
             return Err(Error::IndexError);
         };
@@ -140,7 +140,7 @@ impl Node {
         if idx == 0 {
             return Ok(0);
         }
-        if idx > self.get_nkeys() {
+        if idx >= self.get_nkeys() {
             error!("index out of key range");
             return Err(Error::IndexError);
         }
@@ -160,7 +160,7 @@ impl Node {
 
     /// kv position relative to node
     fn kv_pos(&self, idx: u16) -> Result<usize, Error> {
-        if idx > self.get_nkeys() {
+        if idx >= self.get_nkeys() {
             error!("index out of key range");
             return Err(Error::IndexError);
         };
@@ -172,7 +172,7 @@ impl Node {
 
     /// retrieves key as byte array
     pub fn get_key(&self, idx: u16) -> Result<&[u8], Error> {
-        if idx > self.get_nkeys() {
+        if idx >= self.get_nkeys() {
             error!("get_key error");
             return Err(Error::IndexError);
         };
@@ -187,7 +187,7 @@ impl Node {
         if let NodeType::Node = self.get_type()? {
             return Ok(b"");
         }
-        if idx > self.get_nkeys() {
+        if idx >= self.get_nkeys() {
             error!("index out of key range");
             return Err(Error::IndexError);
         };
