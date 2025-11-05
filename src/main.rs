@@ -1,15 +1,15 @@
-mod pager;
 mod errors;
 mod helper;
+mod pager;
 
+use std::convert::TryInto;
 use std::error::Error;
 use std::fs::{DirBuilder, File, OpenOptions, rename};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::{env, io};
-use tracing_subscriber;
 use tracing::{Level, event, info, instrument};
-use std::convert::TryInto;
+use tracing_subscriber;
 
 const BLOCK_SIZE: usize = 50;
 
@@ -21,27 +21,23 @@ struct Row {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let env = env::var("INFO_LEVEL")
-        .map_or("rusql=info".to_string(), |v| "rusql=".to_owned() + &v);
-    tracing_subscriber::fmt()
-        .with_env_filter(env)
-        .init(); 
+    let env = env::var("INFO_LEVEL").map_or("rusql=info".to_string(), |v| "rusql=".to_owned() + &v);
+    tracing_subscriber::fmt().with_env_filter(env).init();
 
     let p1 = Row {
         id: 1,
         name: *encode_str(String::from("Alice")),
-        age: 20
+        age: 20,
     };
     let p2 = Row {
         id: 2,
         name: *encode_str(String::from("Bob")),
-        age: 20
+        age: 20,
     };
     encode(p1, 0)?;
     decode()?;
     Ok(())
 }
-
 
 #[instrument]
 fn encode(data: Row, page: u64) -> io::Result<()> {
@@ -64,20 +60,18 @@ fn decode() -> io::Result<()> {
     event!(target: "rusql", Level::INFO, "decoding file {:?}", buf);
     let person = Row {
         id: u32::from_le_bytes(buf[..4].try_into().unwrap()),
-        name: { 
-            let mut arr = [0u8;20];
+        name: {
+            let mut arr = [0u8; 20];
             arr.copy_from_slice(&buf[4..24]);
             arr
         },
         age: u32::from_le_bytes(buf[24..28].try_into().unwrap()),
-
     };
     let name_len: usize = usize::from_le_bytes(person.name[..8].try_into().unwrap());
     let name = String::from_utf8(person.name[8..8 + name_len].to_vec()).unwrap();
     info!("name: {:?}, id: {}, age: {}", name, person.id, person.age);
     Ok(())
 }
-
 
 #[instrument]
 fn encode_str(string: String) -> Box<[u8; 20]> {
@@ -95,35 +89,32 @@ fn encode_str(string: String) -> Box<[u8; 20]> {
     new_box
 }
 
-
 #[instrument]
 fn write_file_tmp(data: &str, path: &Path) -> io::Result<()> {
     info!("writing atomically!");
-    let mut tmp_path= PathBuf::from(path.parent().unwrap());
+    let mut tmp_path = PathBuf::from(path.parent().unwrap());
     if !tmp_path.is_dir() {
-        info!("directoy not found at, {:?}, creating new directory", &tmp_path);
-        DirBuilder::new()
-            .recursive(true)
-            .create(&tmp_path)?;
+        info!(
+            "directoy not found at, {:?}, creating new directory",
+            &tmp_path
+        );
+        DirBuilder::new().recursive(true).create(&tmp_path)?;
     }
     let mut tmp_filename = path.file_stem().unwrap().to_os_string();
     tmp_filename.push("_tmp.");
     tmp_filename.push(path.extension().unwrap());
     tmp_path.push(tmp_filename);
-    
+
     let mut new_file = File::create(&tmp_path)?;
     new_file.write_all(data.as_bytes())?;
     rename(&tmp_path, path)?;
     Ok(())
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test() {
-
-    }
+    fn test() {}
 }
