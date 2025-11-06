@@ -37,7 +37,7 @@ impl Node {
     }
 
     /// receive the total node size
-    fn nbytes(&self) -> u16 {
+    pub fn nbytes(&self) -> u16 {
         from_usize(self.kv_pos(self.get_nkeys()).unwrap())
     }
 
@@ -233,7 +233,9 @@ impl Node {
         n: u16,
     ) -> Result<(), Error> {
         info!("appending from range...");
-
+        if dst_idx >= self.get_nkeys() || src_idx >= src.get_nkeys() {
+            return Err(Error::IndexError);
+        }
         for i in 0..n {
             let dst_idx = dst_idx + i;
             let src_idx = src_idx + i;
@@ -245,6 +247,15 @@ impl Node {
             )?;
         }
         Ok(())
+    }
+    /// linear searching for key, for indexing use "lookupidx"
+    pub fn searchidx(&self, key: &str) -> Option<u16> {
+        for i in 0..self.get_nkeys() {
+            if key == str::from_utf8(self.get_key(i).unwrap()).unwrap() {
+                return Some(i);
+            }
+        }
+        None
     }
 
     /// find the last index that is less than or equal to the key
@@ -345,13 +356,18 @@ impl Node {
         };
         Ok(())
     }
-    /// deleting key value pair at idx in leaf node
+    /// updates node with old node with key at idx omitted, deleting a kv pair
     ///
     /// does not update nkeys!
-    fn leaf_deletekv(&mut self, src: &Node, idx: u16) -> Result<(), Error> {
+    pub fn leaf_deletekv(&mut self, src: &Node, idx: u16) -> Result<(), Error> {
         let src_nkeys = src.get_nkeys();
-        self.append_from_range(src, 0, 0, idx)?;
-        self.append_from_range(src, idx, idx + 1, src_nkeys - idx - 1)?;
+        self.append_from_range(src, 0, 0, idx).map_err(|_| {
+            Error::DeleteError("deletion error when appending before idx".to_string())
+        })?;
+        self.append_from_range(src, idx, idx + 1, src_nkeys - idx - 1)
+            .map_err(|_| {
+                Error::DeleteError("deletion error when appending after idx".to_string())
+            })?;
         Ok(())
     }
 
@@ -445,6 +461,21 @@ impl Node {
         arr.push(middle);
         arr.push(right);
         Ok((3, arr))
+    }
+
+    /// consumes and merges two nodes, taking type of left node
+    /// resulting node may be too large
+    /// updates nkeys
+    #[instrument]
+    pub fn node_merge(&mut self, left: Node, right: Node, ntype: NodeType) -> Result<(), Error> {
+        let left_nkeys = left.get_nkeys();
+        let right_nkeys = right.get_nkeys();
+        self.set_header(ntype, left_nkeys + right_nkeys);
+        self.append_from_range(&left, 0, 0, left_nkeys)
+            .map_err(|_| Error::MergeError)?;
+        self.append_from_range(&right, left_nkeys, 0, right_nkeys)
+            .map_err(|_| Error::MergeError)?;
+        Ok(())
     }
 }
 

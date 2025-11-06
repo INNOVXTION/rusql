@@ -11,21 +11,23 @@ pub enum Error {
     NodeSplitError(String),
     InsertError(String),
     MergeError,
+    DeleteError(String),
 }
 
 impl Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Error::IndexError => write!(f, "Index error"),
-            Error::FileError(e) => write!(f, "File error: {}", e),
-            Error::PointerError(e) => write!(f, "Pointer error: {}", e),
-            Error::IntCastingError(Some(e)) => write!(f, "Type casting error, {}", e),
+            Error::FileError(e) => write!(f, "File error: {e}"),
+            Error::PointerError(e) => write!(f, "Pointer error: {e}"),
+            Error::IntCastingError(Some(e)) => write!(f, "Type casting error, {e}"),
             Error::IntCastingError(None) => write!(f, "Type casting error"),
             Error::NodeTypeError => write!(f, "Wrong Node for operation"),
-            Error::StrCastError(e) => write!(f, "Casting from String error, {}", e),
-            Error::NodeSplitError(e) => write!(f, "Error when splitting, {}", e),
-            Error::InsertError(e) => write!(f, "Error when inserting, {}", e),
+            Error::StrCastError(e) => write!(f, "Casting from String error, {e}"),
+            Error::NodeSplitError(e) => write!(f, "Error when splitting, {e}"),
+            Error::InsertError(e) => write!(f, "Error when inserting, {e}"),
             Error::MergeError => write!(f, "Error when merging"),
+            Error::DeleteError(e) => write!(f, "Error when deleting {e}"),
         }
     }
 }

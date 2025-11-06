@@ -5,7 +5,7 @@ use crate::pager::node::*;
 
 const BTREE_MAX_KEY_SIZE: usize = 1000;
 const BTREE_MAX_VAL_SIZE: usize = 3000;
-const MERGE_FACTOR: usize = 4; // determines when nodes should be merged, higher number = less merges
+const MERGE_FACTOR: usize = PAGE_SIZE / 4; // determines when nodes should be merged, higher number = less merges
 
 pub struct BTree {
     root_ptr: Option<u64>,
@@ -59,10 +59,6 @@ impl BTree {
         Ok(())
     }
 
-    pub fn delete(key: &str) -> Result<(), Error> {
-        todo!()
-    }
-
     /// recursive insertion, node = current node, returns updated node
     fn tree_insert(node: Node, key: &str, val: &str) -> Node {
         let mut new_node = Node::new();
@@ -91,15 +87,34 @@ impl BTree {
         new_node
     }
 
-    /// checking if a node is empty and needs to be merges
-    ///
-    /// if it needs to be merged, returns pointer to sibling node
-    fn merge_check(&self, src: &Node) -> Option<Node> {
-        let src_nkeys = src.get_nkeys();
-        if src_nkeys != 0 {
-            return None; // no merge necessary
+    pub fn tree_delete(node: Node, key: &str) -> Option<Node> {
+        let mut new = Node::new();
+        let idx = node.lookupidx(key);
+        // base case: leaf node
+        match node.get_type().unwrap() {
+            NodeType::Leaf => {
+                if let Some(i) = node.searchidx(key) {
+                    new.leaf_deletekv(&node, i).unwrap();
+                    return Some(new);
+                }
+                None
+            }
+            NodeType::Node => {
+                let kptr = node.get_ptr(idx).unwrap();
+                if let Some(knode) = BTree::tree_delete(node_get(kptr), key) {
+                    match merge_check(&node, &knode) {
+                        Some(sibling) => {
+                            new.node_merge(sibling.left, sibling.right, node.get_type().unwrap())
+                                .unwrap();
+
+                            return Some(new);
+                        }
+                        None => return None,
+                    }
+                }
+                return None;
+            }
         }
-        todo!()
     }
 }
 
@@ -107,29 +122,33 @@ impl BTree {
 pub fn node_get(ptr: u64) -> Node {
     todo!()
 }
+
 /// finds a free spot to write node to
 pub fn node_encode(node: Node) -> u64 {
     todo!()
 }
+
 /// write node to disk at page
 pub fn node_encode_at(node: Node, ptr: u64) -> Result<(), Error> {
     todo!()
 }
+
 /// deallocate page
 pub fn node_dealloc(ptr: u64) {
     todo!()
 }
-/// consumes and merges two nodes, taking type of left node
-/// resulting node may be too large
-#[instrument]
-fn node_merge(left: Node, right: Node) -> Result<Node, Error> {
-    let mut new = Node::new();
-    let left_nkeys = left.get_nkeys();
-    let right_nkeys = right.get_nkeys();
-    new.set_header(left.get_type()?, left_nkeys + right_nkeys);
-    new.append_from_range(&left, 0, 0, left_nkeys)
-        .map_err(|_| Error::MergeError)?;
-    new.append_from_range(&right, left_nkeys, 0, right_nkeys)
-        .map_err(|_| Error::MergeError)?;
-    Ok(new)
+
+pub struct MergeNode {
+    left: Node,
+    right: Node,
+}
+
+/// checks if new node needs merging
+///
+/// if it needs to be merged, returns sibling nodes which should be merged
+fn merge_check(cur: &Node, new: &Node) -> Option<MergeNode> {
+    if new.nbytes() > MERGE_FACTOR as u16 {
+        return None; // no merge necessary
+    }
+    todo!()
 }
