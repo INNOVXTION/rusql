@@ -1,8 +1,11 @@
+use tracing::instrument;
+
 use crate::errors::Error;
 use crate::pager::node::*;
 
 const BTREE_MAX_KEY_SIZE: usize = 1000;
 const BTREE_MAX_VAL_SIZE: usize = 3000;
+const MERGE_FACTOR: usize = 4; // determines when nodes should be merged, higher number = less merges
 
 pub struct BTree {
     root_ptr: Option<u64>,
@@ -87,6 +90,17 @@ impl BTree {
         // TODO: encode to disk
         new_node
     }
+
+    /// checking if a node is empty and needs to be merges
+    ///
+    /// if it needs to be merged, returns pointer to sibling node
+    fn merge_check(&self, src: &Node) -> Option<Node> {
+        let src_nkeys = src.get_nkeys();
+        if src_nkeys != 0 {
+            return None; // no merge necessary
+        }
+        todo!()
+    }
 }
 
 /// loads page into memoory as a node
@@ -104,4 +118,18 @@ pub fn node_encode_at(node: Node, ptr: u64) -> Result<(), Error> {
 /// deallocate page
 pub fn node_dealloc(ptr: u64) {
     todo!()
+}
+/// consumes and merges two nodes, taking type of left node
+/// resulting node may be too large
+#[instrument]
+fn node_merge(left: Node, right: Node) -> Result<Node, Error> {
+    let mut new = Node::new();
+    let left_nkeys = left.get_nkeys();
+    let right_nkeys = right.get_nkeys();
+    new.set_header(left.get_type()?, left_nkeys + right_nkeys);
+    new.append_from_range(&left, 0, 0, left_nkeys)
+        .map_err(|_| Error::MergeError)?;
+    new.append_from_range(&right, left_nkeys, 0, right_nkeys)
+        .map_err(|_| Error::MergeError)?;
+    Ok(new)
 }

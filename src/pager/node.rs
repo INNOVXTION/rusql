@@ -225,7 +225,7 @@ impl Node {
     ///
     /// does not update nkeys!
     #[instrument]
-    fn append_from_range(
+    pub fn append_from_range(
         &mut self,
         src: &Node,
         dst_idx: u16,
@@ -345,6 +345,15 @@ impl Node {
         };
         Ok(())
     }
+    /// deleting key value pair at idx in leaf node
+    ///
+    /// does not update nkeys!
+    fn leaf_deletekv(&mut self, src: &Node, idx: u16) -> Result<(), Error> {
+        let src_nkeys = src.get_nkeys();
+        self.append_from_range(src, 0, 0, idx)?;
+        self.append_from_range(src, idx, idx + 1, src_nkeys - idx - 1)?;
+        Ok(())
+    }
 
     /// helper function: consumes node and splits it in two
     pub fn split_node(self) -> Result<(Node, Node), Error> {
@@ -436,12 +445,6 @@ impl Node {
         arr.push(middle);
         arr.push(right);
         Ok((3, arr))
-    }
-
-    ///
-    #[instrument]
-    fn merge() {
-        todo!()
     }
 }
 
