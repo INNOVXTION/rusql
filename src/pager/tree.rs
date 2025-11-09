@@ -77,7 +77,7 @@ impl BTree {
                 let kptr = node.get_ptr(idx).unwrap(); // ptr of child below us
                 let knode = BTree::tree_insert(node_get(kptr), key, val); // node below us
                 let split = knode.split().unwrap(); // potential split
-                                                    // delete old child
+                // delete old child
                 node_dealloc(kptr);
                 // update child ptr
                 new_node.insert_nkids(node, idx, split).unwrap();
@@ -107,8 +107,8 @@ impl BTree {
             }
             NodeType::Node => {
                 let kptr = node.get_ptr(idx).unwrap(); // child 2 ptr
-                                                       // in case leaf node was updated below us
-                                                       // updated chlild 2 comes back
+                // in case leaf node was updated below us
+                // updated chlild 2 comes back
                 if let Some(updated_child) = BTree::tree_delete(node_get(kptr), key) {
                     let mut new = Node::new();
                     match merge_check(&node, &updated_child, idx) {
@@ -199,6 +199,22 @@ fn merge_check(cur: &Node, new: &Node, idx: u16) -> Option<MergeDirection> {
     if new.nbytes() > MERGE_FACTOR as u16 {
         return None; // no merge necessary
     }
-    todo!();
+    let new_size = new.nbytes();
+    // check left
+    if idx > 0 {
+        let sibling = node_get(cur.get_ptr(idx - 1).unwrap());
+        let sibling_size = sibling.nbytes();
+        if sibling_size + new_size < PAGE_SIZE as u16 {
+            return Some(MergeDirection::left(sibling));
+        }
+    }
+    // check right
+    if idx < cur.get_nkeys() - 1 {
+        let sibling = node_get(cur.get_ptr(idx + 1).unwrap());
+        let sibling_size = sibling.nbytes();
+        if sibling_size + new_size < PAGE_SIZE as u16 {
+            return Some(MergeDirection::right(sibling));
+        }
+    }
+    None
 }
-
