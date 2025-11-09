@@ -77,39 +77,87 @@ impl BTree {
                 let kptr = node.get_ptr(idx).unwrap(); // ptr of child below us
                 let knode = BTree::tree_insert(node_get(kptr), key, val); // node below us
                 let split = knode.split().unwrap(); // potential split
-                // delete old child
+                                                    // delete old child
                 node_dealloc(kptr);
                 // update child ptr
-                new_node.insert_ptr(node, idx, split).unwrap();
+                new_node.insert_nkids(node, idx, split).unwrap();
             }
         }
         // TODO: encode to disk
         new_node
     }
 
+    pub fn delete(&mut self, key: &str) -> Result<(), Error> {
+        todo!()
+    }
+
+    /// recursive deletion, node = current node, returns updated node in case a deletion happened
     pub fn tree_delete(node: Node, key: &str) -> Option<Node> {
-        let mut new = Node::new();
-        let idx = node.lookupidx(key);
-        // base case: leaf node
+        // del(key = 5)
+        let idx = node.lookupidx(key); // 1
         match node.get_type().unwrap() {
             NodeType::Leaf => {
                 if let Some(i) = node.searchidx(key) {
+                    let mut new = Node::new();
                     new.leaf_deletekv(&node, i).unwrap();
+                    new.set_header(node.get_type().unwrap(), node.get_nkeys() - 1);
                     return Some(new);
                 }
-                None
+                return None;
             }
             NodeType::Node => {
-                let kptr = node.get_ptr(idx).unwrap();
-                if let Some(knode) = BTree::tree_delete(node_get(kptr), key) {
-                    match merge_check(&node, &knode) {
-                        Some(sibling) => {
-                            new.node_merge(sibling.left, sibling.right, node.get_type().unwrap())
-                                .unwrap();
-
+                let kptr = node.get_ptr(idx).unwrap(); // child 2 ptr
+                                                       // in case leaf node was updated below us
+                                                       // updated chlild 2 comes back
+                if let Some(updated_child) = BTree::tree_delete(node_get(kptr), key) {
+                    let mut new = Node::new();
+                    match merge_check(&node, &updated_child, idx) {
+                        // we need to merge
+                        Some(dir) => {
+                            let left: u64; // pointer to siblings
+                            let right: u64;
+                            let merge_index: u16; // idx of node we merge with
+                            let mut merged_node = Node::new();
+                            let merge_type = updated_child.get_type().unwrap();
+                            match dir {
+                                MergeDirection::left(sibling) => {
+                                    right = kptr;
+                                    left = node
+                                        .get_ptr(idx - 1)
+                                        .expect("idx error when merging with left");
+                                    merge_index = idx - 1;
+                                    merged_node
+                                        .merge(sibling, updated_child, merge_type)
+                                        .unwrap();
+                                }
+                                MergeDirection::right(sibling) => {
+                                    left = kptr;
+                                    right = node
+                                        .get_ptr(idx + 1)
+                                        .expect("idx error when merging with right");
+                                    merge_index = idx + 1;
+                                    merged_node
+                                        .merge(updated_child, sibling, merge_type)
+                                        .unwrap();
+                                }
+                            };
+                            // delete old nodes
+                            node_dealloc(left);
+                            node_dealloc(right);
+                            new.set_header(node.get_type().unwrap(), node.get_nkeys() - 1);
+                            // set ptr of new merged node
+                            new.set_ptr(merge_index, node_encode(merged_node)).unwrap();
+                            // update node and delete key of node we merged away
+                            new.leaf_deletekv(&node, idx).unwrap();
+                            // return updated internal node
                             return Some(new);
                         }
-                        None => return None,
+                        // no merge
+                        None => {
+                            new.set_header(node.get_type().unwrap(), node.get_nkeys());
+                            new.set_ptr(idx, node_encode(updated_child)).unwrap();
+                            return Some(new);
+                        }
                     }
                 }
                 return None;
@@ -138,17 +186,19 @@ pub fn node_dealloc(ptr: u64) {
     todo!()
 }
 
-pub struct MergeNode {
-    left: Node,
-    right: Node,
+/// which sibling we need to merge with
+pub enum MergeDirection {
+    left(Node),
+    right(Node),
 }
 
 /// checks if new node needs merging
 ///
 /// if it needs to be merged, returns sibling nodes which should be merged
-fn merge_check(cur: &Node, new: &Node) -> Option<MergeNode> {
+fn merge_check(cur: &Node, new: &Node, idx: u16) -> Option<MergeDirection> {
     if new.nbytes() > MERGE_FACTOR as u16 {
         return None; // no merge necessary
     }
-    todo!()
+    todo!();
 }
+

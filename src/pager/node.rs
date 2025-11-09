@@ -59,7 +59,7 @@ impl Node {
             }
         }
     }
-
+    /// receive number of keys, this function doesnt check if KV amount aligns with nkeys!
     pub fn get_nkeys(&self) -> u16 {
         slice_to_u16(self, 2).unwrap()
     }
@@ -97,7 +97,7 @@ impl Node {
     }
     /// inserts ptr when splitting or adding new leaf nodes, updates nkeys
     #[instrument(skip(self))]
-    pub fn insert_ptr(
+    pub fn insert_nkids(
         &mut self,
         old_node: Node,
         idx: u16,
@@ -463,11 +463,11 @@ impl Node {
         Ok((3, arr))
     }
 
-    /// consumes and merges two nodes, taking type of left node
-    /// resulting node may be too large
+    /// consumes two nodes and returns merged node
+    ///
     /// updates nkeys
     #[instrument]
-    pub fn node_merge(&mut self, left: Node, right: Node, ntype: NodeType) -> Result<(), Error> {
+    pub fn merge(&mut self, left: Node, right: Node, ntype: NodeType) -> Result<(), Error> {
         let left_nkeys = left.get_nkeys();
         let right_nkeys = right.get_nkeys();
         self.set_header(ntype, left_nkeys + right_nkeys);
