@@ -6,9 +6,9 @@ use crate::errors::Error;
 
 pub const PAGE_SIZE: usize = 4096; // 4096 bytes
 pub const NODE_SIZE: usize = 50; // PAGE_SIZE * 2; // in memory buffer
-const HEADER_OFFSET: usize = 4;
-const POINTER_OFFSET: usize = 8;
-const OFFSETARR_OFFSET: usize = 2;
+pub const HEADER_OFFSET: usize = 4;
+pub const POINTER_OFFSET: usize = 8;
+pub const OFFSETARR_OFFSET: usize = 2;
 
 /*
 -----------------------------------Node Layout----------------------------------
@@ -21,10 +21,10 @@ const OFFSETARR_OFFSET: usize = 2;
 */
 
 #[derive(Debug)]
-pub struct Node(pub Box<[u8]>);
+pub(crate) struct Node(pub Box<[u8]>);
 
 #[derive(PartialEq, Debug)]
-pub enum NodeType {
+pub(crate) enum NodeType {
     Node,
     Leaf,
 }
@@ -96,6 +96,8 @@ impl Node {
         Ok(())
     }
     /// inserts ptr when splitting or adding new leaf nodes, updates nkeys
+    ///
+    /// updates nkeys and header
     #[instrument(skip(self))]
     pub fn insert_nkids(
         &mut self,
@@ -249,6 +251,8 @@ impl Node {
         Ok(())
     }
     /// linear searching for key, for indexing use "lookupidx"
+    ///
+    /// TODO: binary search
     pub fn searchidx(&self, key: &str) -> Option<u16> {
         for i in 0..self.get_nkeys() {
             if key == str::from_utf8(self.get_key(i).unwrap()).unwrap() {
@@ -260,6 +264,7 @@ impl Node {
 
     /// find the last index that is less than or equal to the key
     /// if the key is not found, returns the index of the last KV
+    ///
     /// TODO: binary search
     pub fn lookupidx(&self, key: &str) -> u16 {
         let nkeys = self.get_nkeys();
@@ -314,7 +319,7 @@ impl Node {
 
     /// helper function: inserts new KV into leaf node copies content from old node
     ///
-    /// does not update nkeys!
+    /// updates nkeys
     pub fn leaf_kvinsert(
         &mut self,
         src: Node,
@@ -335,7 +340,7 @@ impl Node {
 
     /// helper function: updates existing KV in leaf node copies content from old node
     ///
-    /// does not update nkeys!
+    /// updates nkeys, takes type from src node
     pub fn leaf_kvupdate(
         &mut self,
         src: Node,
@@ -344,7 +349,7 @@ impl Node {
         val: &str,
     ) -> Result<(), Error> {
         let src_nkeys = src.get_nkeys();
-        self.set_header(NodeType::Leaf, src_nkeys);
+        self.set_header(src.get_type().unwrap(), src_nkeys);
         // copy kv before idx
         self.append_from_range(&src, 0, 0, idx)?;
         // insert new kv
@@ -356,9 +361,9 @@ impl Node {
         };
         Ok(())
     }
-    /// updates node with old node with key at idx omitted, deleting a kv pair
+    /// updates node with source node with kv at idx deleted
     ///
-    /// does not update nkeys!
+    /// updates nkeys, takes type from src node
     pub fn leaf_deletekv(&mut self, src: &Node, idx: u16) -> Result<(), Error> {
         let src_nkeys = src.get_nkeys();
         self.append_from_range(src, 0, 0, idx).map_err(|_| {
@@ -368,6 +373,8 @@ impl Node {
             .map_err(|_| {
                 Error::DeleteError("deletion error when appending after idx".to_string())
             })?;
+
+        self.set_header(src.get_type().unwrap(), src_nkeys - 1);
         Ok(())
     }
 
