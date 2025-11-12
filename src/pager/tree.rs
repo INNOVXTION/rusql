@@ -1,3 +1,5 @@
+use tracing::debug;
+
 use crate::errors::Error;
 use crate::pager::node::*;
 
@@ -7,12 +9,16 @@ const MERGE_FACTOR: usize = PAGE_SIZE / 4; // determines when nodes should be me
 
 pub struct BTree {
     root_ptr: Option<u64>,
+    height: u16,
 }
 
 #[allow(dead_code)]
 impl BTree {
     pub fn new() -> Self {
-        todo!()
+        BTree {
+            root_ptr: None,
+            height: 0,
+        }
     }
 
     pub fn insert(&mut self, key: &str, val: &str) -> Result<(), Error> {
@@ -28,6 +34,7 @@ impl BTree {
                 new_root.set_header(NodeType::Leaf, 2);
                 new_root.append_kvptr(0, 0, "", "")?; // empty key to remove edge case
                 new_root.append_kvptr(1, 0, key, val)?;
+                self.height += 1;
                 return Ok(());
             }
         };
@@ -55,6 +62,7 @@ impl BTree {
         }
         // encoding new root and updating tree ptr
         self.root_ptr = Some(node_encode(new_root));
+        self.height += 1;
         Ok(())
     }
 
@@ -86,7 +94,20 @@ impl BTree {
     }
 
     pub fn delete(&mut self, key: &str) -> Result<(), Error> {
-        todo!()
+        let root_ptr = match self.root_ptr {
+            Some(n) => n,
+            None => {
+                return Err(Error::DeleteError(
+                    "cant delete from empty tree!".to_string(),
+                ));
+            }
+        };
+        if let Some(updated) = BTree::tree_delete(node_get(root_ptr), key) {
+            node_dealloc(root_ptr);
+            self.root_ptr = Some(node_encode(updated));
+            return Ok(());
+        }
+        Err(Error::DeleteError("key not found!".to_string()))
     }
 
     /// recursive deletion, node = current node, returns updated node in case a deletion happened
@@ -113,6 +134,7 @@ impl BTree {
                     match merge_check(&node, &updated_child, idx) {
                         // we need to merge
                         Some(dir) => {
+                            debug!("merging node...");
                             let left: u64;
                             let right: u64;
                             let merge_index: u16; // idx of node we merge with
@@ -184,11 +206,6 @@ pub(crate) fn node_encode(node: Node) -> u64 {
     todo!()
 }
 
-/// write node to disk at page
-fn node_encode_at(node: Node, ptr: u64) -> Result<(), Error> {
-    todo!()
-}
-
 /// deallocate page
 fn node_dealloc(ptr: u64) {
     todo!()
@@ -210,6 +227,7 @@ fn merge_check(cur: &Node, new: &Node, idx: u16) -> Option<MergeDirection> {
     let new_size = new.nbytes() - crate::pager::node::HEADER_OFFSET as u16;
     // check left
     if idx > 0 {
+        debug!("merging with left node");
         let sibling = node_get(cur.get_ptr(idx - 1).unwrap());
         let sibling_size = sibling.nbytes();
         if sibling_size + new_size < PAGE_SIZE as u16 {
@@ -218,11 +236,13 @@ fn merge_check(cur: &Node, new: &Node, idx: u16) -> Option<MergeDirection> {
     }
     // check right
     if idx + 1 < cur.get_nkeys() {
+        debug!("merging with right node");
         let sibling = node_get(cur.get_ptr(idx + 1).unwrap());
         let sibling_size = sibling.nbytes();
         if sibling_size + new_size < PAGE_SIZE as u16 {
             return Some(MergeDirection::right(sibling));
         }
     }
+    debug!("no merge possible");
     None
 }

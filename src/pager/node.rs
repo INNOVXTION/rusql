@@ -479,9 +479,9 @@ impl Node {
         let right_nkeys = right.get_nkeys();
         self.set_header(ntype, left_nkeys + right_nkeys);
         self.append_from_range(&left, 0, 0, left_nkeys)
-            .map_err(|_| Error::MergeError)?;
+            .map_err(|_| Error::NodeMergeError("Error when merging first half".to_string()))?;
         self.append_from_range(&right, left_nkeys, 0, right_nkeys)
-            .map_err(|_| Error::MergeError)?;
+            .map_err(|_| Error::NodeMergeError("Error when merging second half".to_string()))?;
         Ok(())
     }
 }

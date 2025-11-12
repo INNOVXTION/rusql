@@ -9,8 +9,8 @@ pub enum Error {
     NodeTypeError,
     StrCastError(Utf8Error),
     NodeSplitError(String),
+    NodeMergeError(String),
     InsertError(String),
-    MergeError,
     DeleteError(String),
 }
 
@@ -26,7 +26,7 @@ impl Display for Error {
             Error::StrCastError(e) => write!(f, "Casting from String error, {e}"),
             Error::NodeSplitError(e) => write!(f, "Error when splitting, {e}"),
             Error::InsertError(e) => write!(f, "Error when inserting, {e}"),
-            Error::MergeError => write!(f, "Error when merging"),
+            Error::NodeMergeError(e) => write!(f, "Error when merging, {e}"),
             Error::DeleteError(e) => write!(f, "Error when deleting {e}"),
         }
     }
