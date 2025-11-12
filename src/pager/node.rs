@@ -5,7 +5,7 @@ use tracing_subscriber;
 use crate::errors::Error;
 
 pub const PAGE_SIZE: usize = 4096; // 4096 bytes
-pub const NODE_SIZE: usize = 50; // PAGE_SIZE * 2; // in memory buffer
+pub const NODE_SIZE: usize = 100; // PAGE_SIZE * 2; // in memory buffer
 pub const HEADER_OFFSET: usize = 4;
 pub const POINTER_OFFSET: usize = 8;
 pub const OFFSETARR_OFFSET: usize = 2;
@@ -226,7 +226,7 @@ impl Node {
     /// appends range to self starting at dst_idx from source Node starting at src_idx for n elements
     ///
     /// does not update nkeys!
-    #[instrument]
+    #[instrument(skip(self, src))]
     pub fn append_from_range(
         &mut self,
         src: &Node,
@@ -234,8 +234,12 @@ impl Node {
         src_idx: u16,
         n: u16,
     ) -> Result<(), Error> {
-        info!("appending from range...");
         if dst_idx >= self.get_nkeys() || src_idx >= src.get_nkeys() {
+            error!(
+                "indexing error, idx: {}, nkeys: {}",
+                dst_idx,
+                self.get_nkeys()
+            );
             return Err(Error::IndexError);
         }
         for i in 0..n {
@@ -364,17 +368,18 @@ impl Node {
     /// updates node with source node with kv at idx deleted
     ///
     /// updates nkeys, takes type from src node
+    #[instrument(skip(self, src))]
     pub fn leaf_deletekv(&mut self, src: &Node, idx: u16) -> Result<(), Error> {
         let src_nkeys = src.get_nkeys();
+        self.set_header(src.get_type().unwrap(), src_nkeys - 1);
         self.append_from_range(src, 0, 0, idx).map_err(|_| {
             Error::DeleteError("deletion error when appending before idx".to_string())
         })?;
-        self.append_from_range(src, idx, idx + 1, src_nkeys - idx - 1)
+        self.append_from_range(src, idx, idx + 1, src_nkeys - 1 - idx)
             .map_err(|_| {
                 Error::DeleteError("deletion error when appending after idx".to_string())
             })?;
 
-        self.set_header(src.get_type().unwrap(), src_nkeys - 1);
         Ok(())
     }
 
@@ -491,7 +496,7 @@ mod test {
     use super::*;
 
     #[test]
-    fn type_nkeys_setheader() {
+    fn setting_header() {
         let mut page = Node(Box::new([0u8; 50]));
         page.set_header(NodeType::Node, 5);
 
@@ -500,7 +505,7 @@ mod test {
     }
 
     #[test]
-    fn ptr() {
+    fn setting_ptr() {
         let mut page = Node(Box::new([0u8; 100]));
         page.set_header(NodeType::Node, 5);
 
@@ -518,7 +523,7 @@ mod test {
     }
 
     #[test]
-    fn append() -> Result<(), Error> {
+    fn kv_append() -> Result<(), Error> {
         let mut node = Node::new();
         node.set_header(NodeType::Leaf, 2);
         node.append_kvptr(0, 0, "k1", "hi")?;
@@ -532,8 +537,8 @@ mod test {
     }
 
     #[test]
-    fn append_range() -> Result<(), Error> {
-        tracing_subscriber::fmt().init();
+    fn kv_append_range() -> Result<(), Error> {
+        // tracing_subscriber::fmt().init();
         let mut n1 = Node::new();
         let mut n2 = Node::new();
         n2.set_header(NodeType::Leaf, 2);
@@ -548,5 +553,42 @@ mod test {
         assert_eq!(str::from_utf8(n2.get_key(1)?).unwrap(), "k3");
         assert_eq!(str::from_utf8(n2.get_val(1)?).unwrap(), "hello");
         Ok(())
+    }
+
+    #[test]
+    fn kv_delete() -> Result<(), Error> {
+        tracing_subscriber::fmt().init();
+        let mut n1 = Node::new();
+        n1.set_header(NodeType::Leaf, 3);
+        n1.append_kvptr(0, 0, "k1", "hi")?;
+        n1.append_kvptr(1, 0, "k2", "bonjour")?;
+        n1.append_kvptr(2, 0, "k3", "hello")?;
+
+        let mut n2 = Node::new();
+
+        n2.leaf_deletekv(&n1, 1)?;
+
+        assert_eq!(str::from_utf8(n2.get_key(0)?).unwrap(), "k1");
+        assert_eq!(str::from_utf8(n2.get_val(0)?).unwrap(), "hi");
+        assert_eq!(str::from_utf8(n2.get_key(1)?).unwrap(), "k3");
+        assert_eq!(str::from_utf8(n2.get_val(1)?).unwrap(), "hello");
+        Ok(())
+    }
+
+    #[test]
+    #[should_panic]
+    fn kv_delete_panic() -> () {
+        // tracing_subscriber::fmt().init();
+        let mut n1 = Node::new();
+        n1.set_header(NodeType::Leaf, 3);
+        n1.append_kvptr(0, 0, "k1", "hi").map_err(|_| ());
+        n1.append_kvptr(1, 0, "k2", "bonjour").map_err(|_| ());
+        n1.append_kvptr(2, 0, "k3", "hello").map_err(|_| ());
+
+        let mut n2 = Node::new();
+
+        n2.leaf_deletekv(&n1, 1);
+        n2.leaf_deletekv(&n1, 2).expect("index error");
+        ()
     }
 }

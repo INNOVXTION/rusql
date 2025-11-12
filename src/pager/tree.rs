@@ -69,6 +69,8 @@ impl BTree {
     }
 
     /// recursive insertion, node = current node, returns updated node
+    ///
+    /// TODO: update height
     fn tree_insert(node: Node, key: &str, val: &str) -> Node {
         let mut new = Node::new();
         let idx = node.lookupidx(key);
@@ -113,6 +115,8 @@ impl BTree {
     }
 
     /// recursive deletion, node = current node, returns updated node in case a deletion happened
+    ///
+    /// TODO: update height
     fn tree_delete(mut node: Node, key: &str) -> Option<Node> {
         // del(key = 5)
         let idx = node.lookupidx(key); // 1
