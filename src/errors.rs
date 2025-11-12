@@ -12,6 +12,7 @@ pub enum Error {
     NodeMergeError(String),
     InsertError(String),
     DeleteError(String),
+    SearchError(String),
 }
 
 impl Display for Error {
@@ -28,6 +29,7 @@ impl Display for Error {
             Error::InsertError(e) => write!(f, "Error when inserting, {e}"),
             Error::NodeMergeError(e) => write!(f, "Error when merging, {e}"),
             Error::DeleteError(e) => write!(f, "Error when deleting {e}"),
+            Error::SearchError(e) => write!(f, "Error when searching {e}"),
         }
     }
 }

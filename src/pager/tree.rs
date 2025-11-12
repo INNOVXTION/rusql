@@ -1,7 +1,9 @@
+use std::str::FromStr;
+
 use tracing::debug;
 
 use crate::errors::Error;
-use crate::pager::node::*;
+use crate::pager::node::{self, *};
 
 const BTREE_MAX_KEY_SIZE: usize = 1000;
 const BTREE_MAX_VAL_SIZE: usize = 3000;
@@ -191,6 +193,33 @@ impl BTree {
                     }
                 }
                 return None;
+            }
+        }
+    }
+
+    pub fn search(&self, key: &str) -> Option<String> {
+        let root_ptr = match self.root_ptr {
+            Some(n) => n,
+            None => return None,
+        };
+        BTree::tree_search(node_get(root_ptr), key)
+    }
+
+    fn tree_search(node: Node, key: &str) -> Option<String> {
+        let idx = node.lookupidx(key);
+        match node.get_type().unwrap() {
+            NodeType::Leaf => {
+                if let Some(i) = node.searchidx(key) {
+                    return Some(
+                        String::from_str(str::from_utf8(node.get_val(i).unwrap()).unwrap())
+                            .unwrap(),
+                    );
+                }
+                None
+            }
+            NodeType::Node => {
+                let kptr = node.get_ptr(idx).unwrap();
+                BTree::tree_search(node_get(kptr), key)
             }
         }
     }
