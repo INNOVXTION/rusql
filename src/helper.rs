@@ -1,14 +1,16 @@
 use crate::errors::Error;
 use crate::pager::node::Node;
 use crate::pager::node::PAGE_SIZE;
+use tracing::error;
 use tracing::instrument;
 
 /// assumes little endian
 ///
 /// converts a [u8] slice to u16
-#[instrument]
+#[instrument(skip(data))]
 pub(crate) fn slice_to_u16(data: &Node, pos: usize) -> Result<u16, Error> {
     if pos > PAGE_SIZE {
+        error!("pos idx {} exceeded page size", pos);
         return Err(Error::IndexError);
     }
     data.0
@@ -20,9 +22,10 @@ pub(crate) fn slice_to_u16(data: &Node, pos: usize) -> Result<u16, Error> {
 /// assumes little endian
 ///
 /// converts a [u8] slice to u64
-#[instrument]
+#[instrument(skip(data))]
 pub(crate) fn slice_to_u64(data: &Node, pos: usize) -> Result<u64, Error> {
     if pos > PAGE_SIZE {
+        error!("pos idx {} exceeded page size", pos);
         return Err(Error::IndexError);
     }
     data.0
@@ -31,9 +34,10 @@ pub(crate) fn slice_to_u64(data: &Node, pos: usize) -> Result<u64, Error> {
         .map(|buf: [u8; 8]| u64::from_le_bytes(buf))
         .ok_or(Error::IntCastingError(None))
 }
-#[instrument]
+#[instrument(skip(data))]
 pub(crate) fn write_u16(data: &mut Node, pos: usize, value: u16) -> Result<(), Error> {
     if pos > PAGE_SIZE {
+        error!("pos idx {} exceeded page size", pos);
         return Err(Error::IndexError);
     }
     data.0[pos..pos + 2].copy_from_slice(&value.to_le_bytes());
