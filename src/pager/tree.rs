@@ -34,8 +34,8 @@ impl BTree {
             None => {
                 let mut new_root = Node::new();
                 new_root.set_header(NodeType::Leaf, 2);
-                new_root.append_kvptr(0, 0, "", "")?; // empty key to remove edge case
-                new_root.append_kvptr(1, 0, key, val)?;
+                new_root.kvptr_append(0, 0, "", "")?; // empty key to remove edge case
+                new_root.kvptr_append(1, 0, key, val)?;
                 self.height += 1;
                 return Ok(());
             }
@@ -60,7 +60,7 @@ impl BTree {
                 str::from_utf8(key_ref)?
             }
             .to_string();
-            new_root.append_kvptr(i as u16, node_encode(node), &key, "")?;
+            new_root.kvptr_append(i as u16, node_encode(node), &key, "")?;
         }
         // encoding new root and updating tree ptr
         self.root_ptr = Some(node_encode(new_root));
@@ -78,9 +78,9 @@ impl BTree {
             NodeType::Leaf => {
                 // updating or inserting kv
                 if str::from_utf8(node.get_key(idx).unwrap()).unwrap() == key {
-                    new.leaf_kvupdate(node, idx, key, val).unwrap();
+                    new.kv_update(node, idx, key, val).unwrap();
                 } else {
-                    new.leaf_kvinsert(node, idx + 1, key, val).unwrap();
+                    new.kv_insert(node, idx + 1, key, val).unwrap();
                 }
             }
             // walking down the tree until we hit a leaf node
@@ -124,7 +124,7 @@ impl BTree {
             NodeType::Leaf => {
                 if let Some(i) = node.searchidx(key) {
                     let mut new = Node::new();
-                    new.leaf_deletekv(&node, i).unwrap();
+                    new.kv_delete(&node, i).unwrap();
                     new.set_header(NodeType::Leaf, node.get_nkeys() - 1);
                     return Some(new);
                 }
@@ -147,7 +147,7 @@ impl BTree {
                             let mut merged_node = Node::new();
                             let merge_type = updated_child.get_type().unwrap();
                             match dir {
-                                MergeDirection::left(sibling) => {
+                                MergeDirection::Left(sibling) => {
                                     right = kptr;
                                     left = node
                                         .get_ptr(idx - 1)
@@ -157,7 +157,7 @@ impl BTree {
                                         .merge(sibling, updated_child, merge_type)
                                         .unwrap();
                                 }
-                                MergeDirection::right(sibling) => {
+                                MergeDirection::Right(sibling) => {
                                     left = kptr;
                                     right = node
                                         .get_ptr(idx + 1)
@@ -174,7 +174,7 @@ impl BTree {
                             // set ptr of new merged node
                             node.set_ptr(merge_index, node_encode(merged_node)).unwrap();
                             // update node and delete key of node we merged away
-                            new.leaf_deletekv(&node, idx).unwrap();
+                            new.kv_delete(&node, idx).unwrap();
                             // return updated internal node
                             return Some(new);
                         }
@@ -246,8 +246,8 @@ fn node_dealloc(ptr: u64) {
 
 /// which sibling we need to merge with
 enum MergeDirection {
-    left(Node),
-    right(Node),
+    Left(Node),
+    Right(Node),
 }
 
 /// checks if new node needs merging
@@ -264,7 +264,7 @@ fn merge_check(cur: &Node, new: &Node, idx: u16) -> Option<MergeDirection> {
         let sibling = node_get(cur.get_ptr(idx - 1).unwrap());
         let sibling_size = sibling.nbytes();
         if sibling_size + new_size < PAGE_SIZE as u16 {
-            return Some(MergeDirection::left(sibling));
+            return Some(MergeDirection::Left(sibling));
         }
     }
     // check right
@@ -273,9 +273,21 @@ fn merge_check(cur: &Node, new: &Node, idx: u16) -> Option<MergeDirection> {
         let sibling = node_get(cur.get_ptr(idx + 1).unwrap());
         let sibling_size = sibling.nbytes();
         if sibling_size + new_size < PAGE_SIZE as u16 {
-            return Some(MergeDirection::right(sibling));
+            return Some(MergeDirection::Right(sibling));
         }
     }
     debug!("no merge possible");
     None
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    // test insert
+    #[test]
+    fn insert() {}
+
+    // test delete
+    #[test]
+    fn delete() {}
 }

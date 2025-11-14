@@ -113,12 +113,8 @@ impl Node {
         self.append_from_range(&old_node, 0, 0, idx)?;
         // insert new ptr at idx, consuming the split array
         for (i, node) in new_kids.1.into_iter().enumerate() {
-            let key = {
-                let key_ref = node.get_key(0)?;
-                str::from_utf8(key_ref)?
-            }
-            .to_string();
-            self.append_kvptr(
+            let key = { String::from(String::from_utf8_lossy(self.get_key(0)?)) };
+            self.kvptr_append(
                 idx + (i as u16),
                 crate::pager::tree::node_encode(node),
                 &key,
@@ -204,7 +200,7 @@ impl Node {
     /// appends key value and pointer at index
     ///
     /// does not update nkeys!
-    pub fn append_kvptr(&mut self, idx: u16, ptr: u64, key: &str, val: &str) -> Result<(), Error> {
+    pub fn kvptr_append(&mut self, idx: u16, ptr: u64, key: &str, val: &str) -> Result<(), Error> {
         self.set_ptr(idx, ptr)?;
         let kvpos = self.kv_pos(idx)?;
         let klen: u16 = key.len().try_into()?;
@@ -224,10 +220,10 @@ impl Node {
         Ok(())
     }
 
-    /// appends range to self starting at dst_idx from source Node starting at src_idx for n elements
+    /// helper function: appends range to self starting at dst_idx from source Node starting at src_idx for n elements
     ///
     /// does not update nkeys!
-    pub fn append_from_range(
+    fn append_from_range(
         &mut self,
         src: &Node,
         dst_idx: u16,
@@ -246,7 +242,7 @@ impl Node {
         for i in 0..n {
             let dst_idx = dst_idx + i;
             let src_idx = src_idx + i;
-            self.append_kvptr(
+            self.kvptr_append(
                 dst_idx,
                 src.get_ptr(src_idx)?,
                 str::from_utf8(src.get_key(src_idx)?)?,
@@ -289,90 +285,44 @@ impl Node {
         }
         idx - 1
     }
-    // pub fn lookupidx(&self, key: &str) -> u16 {
-    //     let nkeys = self.get_nkeys();
-    //     match nkeys {
-    //         0 => 0,
-    //         n => {
-    //             let mut idx: u16 = 0;
-    //             while idx < n {
-    //                 let cur = str::from_utf8(self.get_key(idx).unwrap()).unwrap();
-    //                 if cur == key {
-    //                     return idx;
-    //                 }
-    //                 if cur > key {
-    //                     return if idx == 0 { 0 } else { idx - 1 };
-    //                 }
-    //                 idx += 1;
-    //             }
-    //             n - 1
-    //         }
-    //     }
-    // }
-
-    /// inserts KV into self, copies content from src, upates keys if necessary
-    pub fn insert_from(&mut self, src: Node, key: &str, val: &str) -> Result<(), Error> {
-        let idx = src.lookupidx(key);
-        if str::from_utf8(src.get_key(idx).unwrap()).unwrap() == key {
-            // found! updating
-            self.leaf_kvupdate(src, idx, key, val)?;
-            return Ok(());
-        }
-        self.leaf_kvinsert(src, idx + 1, key, val)?; // not found. insert
-        Ok(())
-    }
 
     /// helper function: inserts new KV into leaf node copies content from old node
     ///
-    /// updates nkeys
+    /// updates nkeys, takes type leaf
     #[instrument(skip(self, src))]
-    pub fn leaf_kvinsert(
-        &mut self,
-        src: Node,
-        idx: u16,
-        key: &str,
-        val: &str,
-    ) -> Result<(), Error> {
+    pub fn kv_insert(&mut self, src: Node, idx: u16, key: &str, val: &str) -> Result<(), Error> {
         let src_nkeys = src.get_nkeys();
         self.set_header(NodeType::Leaf, src_nkeys + 1);
         // copy kv before idx
-        self.append_from_range(&src, 0, 0, idx)
-            .or_else(|err| {
+        self.append_from_range(&src, 0, 0, idx).or_else(|err| {
             error!("deletion error when appending before idx");
             Err(err)
         })?;
         // insert new kv
-        self.append_kvptr(idx, 0, key, val)?;
+        self.kvptr_append(idx, 0, key, val)?;
         // copy kv after idx
         self.append_from_range(&src, idx + 1, idx, src_nkeys - idx)
             .or_else(|err| {
                 error!("deletion error when appending after idx");
                 Err(err)
-        })?;
+            })?;
         Ok(())
     }
 
-    /// helper function: updates existing KV in leaf node copies content from old node
+    /// helper function: updates existing KV in leaf node copies content from old node, this function assumes the key exists and needs to be updated!
     ///
     /// updates nkeys, takes type from src node
     #[instrument(skip(self, src))]
-    pub fn leaf_kvupdate(
-        &mut self,
-        src: Node,
-        idx: u16,
-        key: &str,
-        val: &str,
-    ) -> Result<(), Error> {
+    pub fn kv_update(&mut self, src: Node, idx: u16, key: &str, val: &str) -> Result<(), Error> {
         let src_nkeys = src.get_nkeys();
         self.set_header(src.get_type().unwrap(), src_nkeys);
         // copy kv before idx
-        self.append_from_range(&src, 0, 0, idx)
-            .or_else(|err| {
+        self.append_from_range(&src, 0, 0, idx).or_else(|err| {
             error!("deletion error when appending before idx");
             Err(err)
         })?;
         // insert new kv
-        self.append_kvptr(idx, 0, key, val)?;
+        self.kvptr_append(idx, 0, key, val)?;
         // copy kv after idx
         if src_nkeys > idx + 1 {
             // in case the updated key is the last key
@@ -380,18 +330,17 @@ impl Node {
                 .or_else(|err| {
                     error!("deletion error when appending after idx");
                     Err(err)
-            })?;
+                })?;
         };
         Ok(())
     }
-    /// updates node with source node with kv at idx deleted
+    /// updates node with source node with kv at idx omitted
     ///
     /// updates nkeys, takes type from src node
-    pub fn leaf_deletekv(&mut self, src: &Node, idx: u16) -> Result<(), Error> {
+    pub fn kv_delete(&mut self, src: &Node, idx: u16) -> Result<(), Error> {
         let src_nkeys = src.get_nkeys();
         self.set_header(src.get_type().unwrap(), src_nkeys - 1);
-        self.append_from_range(src, 0, 0, idx)
-            .or_else(|err| {
+        self.append_from_range(src, 0, 0, idx).or_else(|err| {
             error!("deletion error when appending before idx");
             Err(err)
         })?;
@@ -399,7 +348,7 @@ impl Node {
             .or_else(|err| {
                 error!("deletion error when appending after idx");
                 Err(err)
-        })?;
+            })?;
         Ok(())
     }
 
@@ -546,8 +495,8 @@ mod test {
     fn kv_append() -> Result<(), Error> {
         let mut node = Node::new();
         node.set_header(NodeType::Leaf, 2);
-        node.append_kvptr(0, 0, "k1", "hi")?;
-        node.append_kvptr(1, 0, "k3", "hello")?;
+        node.kvptr_append(0, 0, "k1", "hi")?;
+        node.kvptr_append(1, 0, "k3", "hello")?;
 
         assert_eq!(str::from_utf8(node.get_key(0)?).unwrap(), "k1");
         assert_eq!(str::from_utf8(node.get_val(0)?).unwrap(), "hi");
@@ -564,8 +513,8 @@ mod test {
         n2.set_header(NodeType::Leaf, 2);
 
         n1.set_header(NodeType::Leaf, 2);
-        n1.append_kvptr(0, 0, "k1", "hi")?;
-        n1.append_kvptr(1, 0, "k3", "hello")?;
+        n1.kvptr_append(0, 0, "k1", "hi")?;
+        n1.kvptr_append(1, 0, "k3", "hello")?;
         n2.append_from_range(&n1, 0, 0, n1.get_nkeys())?;
 
         assert_eq!(str::from_utf8(n2.get_key(0)?).unwrap(), "k1");
@@ -580,13 +529,13 @@ mod test {
         tracing_subscriber::fmt().init();
         let mut n1 = Node::new();
         n1.set_header(NodeType::Leaf, 3);
-        n1.append_kvptr(0, 0, "k1", "hi")?;
-        n1.append_kvptr(1, 0, "k2", "bonjour")?;
-        n1.append_kvptr(2, 0, "k3", "hello")?;
+        n1.kvptr_append(0, 0, "k1", "hi")?;
+        n1.kvptr_append(1, 0, "k2", "bonjour")?;
+        n1.kvptr_append(2, 0, "k3", "hello")?;
 
         let mut n2 = Node::new();
 
-        n2.leaf_deletekv(&n1, 1)?;
+        n2.kv_delete(&n1, 1)?;
 
         assert_eq!(str::from_utf8(n2.get_key(0)?).unwrap(), "k1");
         assert_eq!(str::from_utf8(n2.get_val(0)?).unwrap(), "hi");
@@ -601,15 +550,21 @@ mod test {
         // tracing_subscriber::fmt().init();
         let mut n1 = Node::new();
         n1.set_header(NodeType::Leaf, 3);
-        n1.append_kvptr(0, 0, "k1", "hi").map_err(|_| ());
-        n1.append_kvptr(1, 0, "k2", "bonjour").map_err(|_| ());
-        n1.append_kvptr(2, 0, "k3", "hello").map_err(|_| ());
-        n1.append_kvptr(idx, ptr, key, val).and
+        n1.kvptr_append(0, 0, "k1", "hi")
+            .map_err(|_| ())
+            .expect("unexpected panic");
+        n1.kvptr_append(1, 0, "k2", "bonjour")
+            .map_err(|_| ())
+            .expect("unexpected panic");
+        n1.kvptr_append(2, 0, "k3", "hello")
+            .map_err(|_| ())
+            .expect("unexpected panic");
 
         let mut n2 = Node::new();
 
-        n2.leaf_deletekv(&n1, 1);
-        n2.leaf_deletekv(&n1, 2).expect("index error");
+        n2.kv_delete(&n1, 1).expect("unexpected panic");
+        // deleting out of bounds
+        n2.kv_delete(&n1, 2).expect("index error");
         ()
     }
 }
