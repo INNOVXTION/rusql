@@ -1,6 +1,6 @@
+use crate::database::node::Node;
+use crate::database::types::PAGE_SIZE;
 use crate::errors::Error;
-use crate::pager::node::Node;
-use crate::pager::node::PAGE_SIZE;
 use tracing::error;
 use tracing::instrument;
 

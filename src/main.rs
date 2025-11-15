@@ -1,6 +1,6 @@
+mod database;
 mod errors;
 mod helper;
-mod pager;
 
 use std::convert::TryInto;
 use std::error::Error;
