@@ -489,7 +489,7 @@ mod test {
 
     #[test]
     fn setting_header() {
-        let mut page = Node(Box::new([0u8; 50]));
+        let mut page = Node::new();
         page.set_header(NodeType::Node, 5);
 
         assert_eq!(page.get_type().unwrap(), NodeType::Node);
@@ -498,18 +498,11 @@ mod test {
 
     #[test]
     fn setting_ptr() {
-        let mut page = Node(Box::new([0u8; 100]));
+        let mut page = Node::new();
         page.set_header(NodeType::Node, 5);
 
         page.set_ptr(1, 10).unwrap();
         page.set_ptr(2, 20).unwrap();
-
-        // for byte in page.0.iter() {
-        //     print!("{:08b} ", *byte);
-        // }
-        // for byte in page.0.iter() {
-        //     print!("{:02x} ", *byte);
-        // }
         assert_eq!(page.get_ptr(1).unwrap(), 10);
         assert_eq!(page.get_ptr(2).unwrap(), 20);
     }
@@ -530,11 +523,10 @@ mod test {
 
     #[test]
     fn kv_append_range() -> Result<(), Error> {
-        // tracing_subscriber::fmt().init();
         let mut n1 = Node::new();
         let mut n2 = Node::new();
-        n2.set_header(NodeType::Leaf, 2);
 
+        n2.set_header(NodeType::Leaf, 2);
         n1.set_header(NodeType::Leaf, 2);
         n1.kvptr_append(0, 0, "k1", "hi")?;
         n1.kvptr_append(1, 0, "k3", "hello")?;
@@ -549,14 +541,13 @@ mod test {
 
     #[test]
     fn kv_delete() -> Result<(), Error> {
-        tracing_subscriber::fmt().init();
         let mut n1 = Node::new();
+        let mut n2 = Node::new();
+
         n1.set_header(NodeType::Leaf, 3);
         n1.kvptr_append(0, 0, "k1", "hi")?;
         n1.kvptr_append(1, 0, "k2", "bonjour")?;
         n1.kvptr_append(2, 0, "k3", "hello")?;
-
-        let mut n2 = Node::new();
 
         n2.kv_delete(&n1, 1)?;
 
@@ -570,7 +561,6 @@ mod test {
     #[test]
     #[should_panic]
     fn kv_delete_panic() -> () {
-        // tracing_subscriber::fmt().init();
         let mut n1 = Node::new();
         n1.set_header(NodeType::Leaf, 3);
         n1.kvptr_append(0, 0, "k1", "hi")

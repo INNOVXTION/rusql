@@ -279,14 +279,12 @@ fn merge_check(cur: &Node, new: &Node, idx: u16) -> Option<MergeDirection> {
 #[cfg(test)]
 mod test {
     use super::*;
+    use test_log::test;
+    use tracing::info;
 
-    // test insert
     #[test]
     fn tree_insert() {
-        tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::DEBUG)
-            .init();
-
+        info!("help i just want to log :(");
         let mut tree = BTree::new();
         tree.insert("1", "hello").unwrap();
         tree.insert("2", "world").unwrap();
@@ -294,6 +292,14 @@ mod test {
         assert_eq!(tree.search("1").unwrap(), "hello");
         assert_eq!(tree.search("2").unwrap(), "world");
         assert!(tree.search("3").is_none());
+    }
+
+    #[test]
+    fn should_fail() {
+        info!("help i just want to log :(");
+        let mut tree = BTree::new();
+        tree.insert("1", "hello").unwrap();
+        assert_eq!(tree.search("2").unwrap(), "hello");
     }
 
     // // test delete

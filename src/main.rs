@@ -110,11 +110,3 @@ fn write_file_tmp(data: &str, path: &Path) -> io::Result<()> {
     rename(&tmp_path, path)?;
     Ok(())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test() {}
-}

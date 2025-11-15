@@ -7,7 +7,6 @@ use tracing::instrument;
 /// assumes little endian
 ///
 /// converts a [u8] slice to u16
-#[instrument(skip(data))]
 pub(crate) fn slice_to_u16(data: &Node, pos: usize) -> Result<u16, Error> {
     if pos > PAGE_SIZE {
         error!("pos idx {} exceeded page size", pos);
@@ -22,7 +21,6 @@ pub(crate) fn slice_to_u16(data: &Node, pos: usize) -> Result<u16, Error> {
 /// assumes little endian
 ///
 /// converts a [u8] slice to u64
-#[instrument(skip(data))]
 pub(crate) fn slice_to_u64(data: &Node, pos: usize) -> Result<u64, Error> {
     if pos > PAGE_SIZE {
         error!("pos idx {} exceeded page size", pos);
@@ -34,7 +32,6 @@ pub(crate) fn slice_to_u64(data: &Node, pos: usize) -> Result<u64, Error> {
         .map(|buf: [u8; 8]| u64::from_le_bytes(buf))
         .ok_or(Error::IntCastingError(None))
 }
-#[instrument(skip(data))]
 pub(crate) fn write_u16(data: &mut Node, pos: usize, value: u16) -> Result<(), Error> {
     if pos > PAGE_SIZE {
         error!("pos idx {} exceeded page size", pos);
@@ -43,7 +40,6 @@ pub(crate) fn write_u16(data: &mut Node, pos: usize, value: u16) -> Result<(), E
     data.0[pos..pos + 2].copy_from_slice(&value.to_le_bytes());
     Ok(())
 }
-#[instrument]
 pub(crate) fn from_usize(n: usize) -> u16 {
     if n > u16::MAX as usize {
         panic!("casting error");
@@ -60,3 +56,9 @@ pub(crate) fn from_usize(n: usize) -> u16 {
 //     file.read(&mut *new_page.0)?;
 //     Ok(new_page)
 // }
+
+pub(crate) fn log_config() {
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .init();
+}
