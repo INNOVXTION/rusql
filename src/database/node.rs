@@ -120,7 +120,8 @@ impl Node {
             old_node.get_nkeys() + new_kids.0 - 1,
         );
         // copy range before new idx
-        self.append_from_range(&old_node, 0, 0, idx)?;
+        self.append_from_range(&old_node, 0, 0, idx)
+            .map_err(|e| Error::InsertError(format!("{e}")))?;
         // insert new ptr at idx, consuming the split array
         for (i, node) in new_kids.1.into_iter().enumerate() {
             let key = { String::from(String::from_utf8_lossy(self.get_key(0)?)) };
@@ -132,7 +133,8 @@ impl Node {
             idx + new_kids.0,
             idx + 1,
             old_node.get_nkeys() - (idx + 1),
-        )?;
+        )
+        .map_err(|e| Error::InsertError(format!("{e}")))?;
         Ok(())
     }
     /// reads the value from the offset array for a given index, 0 has no offset
