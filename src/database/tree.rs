@@ -135,14 +135,14 @@ impl BTree {
                     new.set_header(NodeType::Leaf, node.get_nkeys() - 1);
                     return Some(new);
                 }
-                return None; // key not found
+                None // key not found
             }
             NodeType::Node => {
                 let kptr = node.get_ptr(idx).unwrap(); // child 2 ptr
                 // in case leaf node was updated below us
                 // updated chlild 2 comes back
                 match BTree::tree_delete(node_get(kptr), key) {
-                    None => return None, // no update below use
+                    None => return None, // no update below us
                     Some(updated_child) => {
                         let mut new = Node::new();
                         let cur_nkeys = node.get_nkeys();
@@ -185,7 +185,7 @@ impl BTree {
                                 // update node and delete key of node we merged away
                                 new.kv_delete(&node, idx).unwrap();
                                 // return updated internal node
-                                return Some(new);
+                                Some(new)
                             }
                             // no merge necessary, or no sibling to merge with
                             None => {
@@ -201,7 +201,7 @@ impl BTree {
                                 // new.set_header(NodeType::Node, cur_nkeys);
                                 // new.insert_nkids(node, idx, (0, vec![updated_child]))
                                 //     .unwrap();
-                                return Some(node);
+                                Some(node)
                             }
                         }
                     }
@@ -211,10 +211,7 @@ impl BTree {
     }
 
     pub fn search(&self, key: &str) -> Option<String> {
-        let root_ptr = match self.root_ptr {
-            Some(n) => n,
-            None => return None,
-        };
+        let root_ptr = self.root_ptr?;
         BTree::tree_search(node_get(root_ptr), key)
     }
 

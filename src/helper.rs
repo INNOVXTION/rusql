@@ -46,19 +46,3 @@ pub(crate) fn from_usize(n: usize) -> u16 {
     }
     n as u16
 }
-
-// // retrieve page content from page number
-// #[instrument]
-// pub fn get_node(page_number: u64) -> Result<Self, Error> {
-//     let mut file = File::open("database.rdb")?;
-//     let mut new_page = Node::new();
-//     file.seek(io::SeekFrom::Start(PAGE_SIZE as u64 * page_number))?;
-//     file.read(&mut *new_page.0)?;
-//     Ok(new_page)
-// }
-
-pub(crate) fn log_config() {
-    tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::DEBUG)
-        .init();
-}

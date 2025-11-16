@@ -100,7 +100,7 @@ impl Node {
     }
 
     /// abstracted API, not yet ready
-    pub fn insert(&mut self, node: Node, key: &str, val: &str, ptr: u64, idx: u16) {
+    pub fn insert(&mut self, node: Node, key: &str, val: &str, _ptr: u64, idx: u16) {
         if str::from_utf8(node.get_key(idx).unwrap()).unwrap() == key {
             self.kv_update(node, idx, key, val).unwrap();
         } else {
@@ -269,12 +269,12 @@ impl Node {
     ///
     /// TODO: binary search
     pub fn searchidx(&self, key: &str) -> Option<u16> {
-        for i in 0..self.get_nkeys() {
-            if key == str::from_utf8(self.get_key(i).unwrap()).unwrap() {
-                return Some(i);
-            }
-        }
-        None
+        // for i in 0..self.get_nkeys() {
+        //     if key == str::from_utf8(self.get_key(i).unwrap()).unwrap() {
+        //         return Some(i);
+        //     }
+        // }
+        (0..self.get_nkeys()).find(|i| key == str::from_utf8(self.get_key(*i).unwrap()).unwrap())
     }
 
     /// find the last index that is less than or equal to the key
@@ -308,18 +308,18 @@ impl Node {
         let src_nkeys = src.get_nkeys();
         self.set_header(NodeType::Leaf, src_nkeys + 1);
         // copy kv before idx
-        self.append_from_range(&src, 0, 0, idx).or_else(|err| {
+        self.append_from_range(&src, 0, 0, idx).map_err(|err| {
             error!("insertion error when appending before idx");
-            Err(err)
+            err
         })?;
         // insert new kv
         self.kvptr_append(idx, 0, key, val)?;
         // copy kv after idx
         if src_nkeys > idx + 1 {
             self.append_from_range(&src, idx + 1, idx, src_nkeys - idx)
-                .or_else(|err| {
+                .map_err(|err| {
                     error!("insertion error when appending after idx, {}", err);
-                    Err(err)
+                    err
                 })?;
         }
         Ok(())
@@ -486,6 +486,7 @@ impl Clone for Node {
 #[cfg(test)]
 mod test {
     use super::*;
+    use test_log::test;
 
     #[test]
     fn setting_header() {

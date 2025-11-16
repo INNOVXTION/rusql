@@ -4,15 +4,12 @@ use std::{fmt::Display, io, num::TryFromIntError, str::Utf8Error};
 pub enum Error {
     IndexError,
     FileError(io::Error),
-    PointerError(String),
     IntCastingError(Option<TryFromIntError>),
-    NodeTypeError,
     StrCastError(Utf8Error),
     NodeSplitError(String),
     NodeMergeError(String),
     InsertError(String),
     DeleteError(String),
-    SearchError(String),
 }
 
 impl Display for Error {
@@ -20,16 +17,13 @@ impl Display for Error {
         match self {
             Error::IndexError => write!(f, "Index error"),
             Error::FileError(e) => write!(f, "File error: {e}"),
-            Error::PointerError(e) => write!(f, "Pointer error: {e}"),
             Error::IntCastingError(Some(e)) => write!(f, "Type casting error, {e}"),
             Error::IntCastingError(None) => write!(f, "Type casting error"),
-            Error::NodeTypeError => write!(f, "Wrong Node for operation"),
             Error::StrCastError(e) => write!(f, "Casting from String error, {e}"),
             Error::NodeSplitError(e) => write!(f, "Error when splitting, {e}"),
             Error::InsertError(e) => write!(f, "Error when inserting, {e}"),
             Error::NodeMergeError(e) => write!(f, "Error when merging, {e}"),
             Error::DeleteError(e) => write!(f, "Error when deleting {e}"),
-            Error::SearchError(e) => write!(f, "Error when searching {e}"),
         }
     }
 }
