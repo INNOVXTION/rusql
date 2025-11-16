@@ -100,9 +100,9 @@ impl Node {
     /// abstracted API, not yet ready
     pub fn insert(&mut self, node: Node, key: &str, val: &str, _ptr: u64, idx: u16) {
         if str::from_utf8(node.get_key(idx).unwrap()).unwrap() == key {
-            self.kv_update(node, idx, key, val).unwrap();
+            self.leaf_kvupdate(node, idx, key, val).unwrap();
         } else {
-            self.kv_insert(node, idx + 1, key, val).unwrap();
+            self.leaf_kvinsert(node, idx + 1, key, val).unwrap();
         }
     }
 
@@ -115,26 +115,30 @@ impl Node {
         idx: u16,
         new_kids: (u16, Vec<Node>),
     ) -> Result<(), Error> {
-        self.set_header(
-            old_node.get_type().unwrap(),
-            old_node.get_nkeys() + new_kids.0 - 1,
-        );
+        let old_nkeys = old_node.get_nkeys();
+        self.set_header(NodeType::Node, old_nkeys + new_kids.0 - 1);
         // copy range before new idx
-        self.append_from_range(&old_node, 0, 0, idx)
-            .map_err(|e| Error::InsertError(format!("{e}")))?;
+        self.append_from_range(&old_node, 0, 0, idx).map_err(|e| {
+            error!("append error before idx");
+            Error::InsertError(format!("{e}"))
+        })?;
         // insert new ptr at idx, consuming the split array
         for (i, node) in new_kids.1.into_iter().enumerate() {
             let key = { String::from(String::from_utf8_lossy(self.get_key(0)?)) };
-            self.kvptr_append(idx + (i as u16), node_encode(node), &key, "")?;
+            self.kvptr_append(idx + (i as u16), node_encode(node), &key, "")
+                .map_err(|e| {
+                    error!("error when appending split array");
+                    Error::InsertError(format!("{e}"))
+                })?;
         }
         // copy from range after idx
-        self.append_from_range(
-            &old_node,
-            idx + new_kids.0,
-            idx + 1,
-            old_node.get_nkeys() - (idx + 1),
-        )
-        .map_err(|e| Error::InsertError(format!("{e}")))?;
+        if old_nkeys > idx + new_kids.0 {
+            self.append_from_range(&old_node, idx + new_kids.0, idx + 1, old_nkeys - (idx + 1))
+                .map_err(|e| {
+                    error!("append error after idx");
+                    Error::InsertError(format!("{e}"))
+                })?;
+        }
         Ok(())
     }
     /// reads the value from the offset array for a given index, 0 has no offset
@@ -245,7 +249,7 @@ impl Node {
     ) -> Result<(), Error> {
         if dst_idx >= self.get_nkeys() || src_idx >= src.get_nkeys() {
             error!(
-                "indexing error when appending from range, dst idx: {}, src idx {}, nkeys: {}",
+                "indexing error when appending from range, dst idx: {}, src idx {}, dst nkeys: {}, n: {n}",
                 dst_idx,
                 src_idx,
                 self.get_nkeys()
@@ -308,9 +312,15 @@ impl Node {
 
     /// helper function: inserts new KV into leaf node copies content from old node
     ///
-    /// updates nkeys, takes type leaf
+    /// updates nkeys, sets node to leaf
     #[instrument(skip(self, src))]
-    pub fn kv_insert(&mut self, src: Node, idx: u16, key: &str, val: &str) -> Result<(), Error> {
+    pub fn leaf_kvinsert(
+        &mut self,
+        src: Node,
+        idx: u16,
+        key: &str,
+        val: &str,
+    ) -> Result<(), Error> {
         let src_nkeys = src.get_nkeys();
         self.set_header(NodeType::Leaf, src_nkeys + 1);
         debug!("insert new header: {}", src_nkeys + 1);
@@ -332,14 +342,20 @@ impl Node {
 
     /// helper function: updates existing KV in leaf node copies content from old node, this function assumes the key exists and needs to be updated!
     ///
-    /// updates nkeys, takes type from src node
+    /// updates nkeys, sets node to leaf
     #[instrument(skip(self, src))]
-    pub fn kv_update(&mut self, src: Node, idx: u16, key: &str, val: &str) -> Result<(), Error> {
+    pub fn leaf_kvupdate(
+        &mut self,
+        src: Node,
+        idx: u16,
+        key: &str,
+        val: &str,
+    ) -> Result<(), Error> {
         let src_nkeys = src.get_nkeys();
-        self.set_header(src.get_type().unwrap(), src_nkeys);
+        self.set_header(NodeType::Leaf, src_nkeys);
         // copy kv before idx
         self.append_from_range(&src, 0, 0, idx).or_else(|err| {
-            error!("deletion error when appending before idx");
+            error!("kv update error: when appending before idx");
             Err(err)
         })?;
         // insert new kv
@@ -349,7 +365,7 @@ impl Node {
             // in case the updated key is the last key
             self.append_from_range(&src, idx + 1, idx + 1, src_nkeys - (idx + 1))
                 .or_else(|err| {
-                    error!("deletion error when appending after idx");
+                    error!("kv update error: when appending after idx");
                     Err(err)
                 })?;
         };
@@ -357,10 +373,10 @@ impl Node {
     }
     /// updates node with source node with kv at idx omitted
     ///
-    /// updates nkeys, takes type from src node
-    pub fn kv_delete(&mut self, src: &Node, idx: u16) -> Result<(), Error> {
+    /// updates nkeys, sets node to leaf
+    pub fn leaf_kvdelete(&mut self, src: &Node, idx: u16) -> Result<(), Error> {
         let src_nkeys = src.get_nkeys();
-        self.set_header(src.get_type().unwrap(), src_nkeys - 1);
+        self.set_header(NodeType::Leaf, src_nkeys - 1);
         self.append_from_range(src, 0, 0, idx).or_else(|err| {
             error!("deletion error when appending before idx");
             Err(err)
@@ -428,6 +444,7 @@ impl Node {
         // no split
         let mut arr = Vec::with_capacity(3);
         if self.fits_page() {
+            debug!("no split needed: {}", self.nbytes());
             arr.push(self);
             return Ok((1, arr)); // no split necessary
         };
@@ -556,7 +573,7 @@ mod test {
         n1.kvptr_append(1, 0, "k2", "bonjour")?;
         n1.kvptr_append(2, 0, "k3", "hello")?;
 
-        n2.kv_delete(&n1, 1)?;
+        n2.leaf_kvdelete(&n1, 1)?;
 
         assert_eq!(str::from_utf8(n2.get_key(0)?).unwrap(), "k1");
         assert_eq!(str::from_utf8(n2.get_val(0)?).unwrap(), "hi");
@@ -582,9 +599,9 @@ mod test {
 
         let mut n2 = Node::new();
 
-        n2.kv_delete(&n1, 1).expect("unexpected panic");
+        n2.leaf_kvdelete(&n1, 1).expect("unexpected panic");
         // deleting out of bounds
-        n2.kv_delete(&n1, 2).expect("index error");
+        n2.leaf_kvdelete(&n1, 2).expect("index error");
         ()
     }
 }

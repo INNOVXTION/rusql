@@ -85,9 +85,9 @@ impl BTree {
                 // updating or inserting kv
                 debug!("inserting in leaf at idx: {}", idx + 1);
                 if str::from_utf8(node.get_key(idx).unwrap()).unwrap() == key {
-                    new.kv_update(node, idx, key, val).unwrap();
+                    new.leaf_kvupdate(node, idx, key, val).unwrap();
                 } else {
-                    new.kv_insert(node, idx + 1, key, val).unwrap();
+                    new.leaf_kvinsert(node, idx + 1, key, val).unwrap();
                 }
             }
             // walking down the tree until we hit a leaf node
@@ -95,10 +95,6 @@ impl BTree {
                 debug!(
                     "traversing through node, at idx: {idx} key: {}",
                     str::from_utf8(node.get_key(idx).unwrap()).unwrap()
-                );
-                debug!(
-                    "idx 0 key {}",
-                    str::from_utf8(node.get_key(0).unwrap()).unwrap()
                 );
                 let kptr = node.get_ptr(idx).unwrap(); // ptr of child below us
                 let knode = BTree::tree_insert(node_get(kptr), key, val); // node below us
@@ -139,7 +135,7 @@ impl BTree {
             NodeType::Leaf => {
                 if let Some(i) = node.searchidx(key) {
                     let mut new = Node::new();
-                    new.kv_delete(&node, i).unwrap();
+                    new.leaf_kvdelete(&node, i).unwrap();
                     new.set_header(NodeType::Leaf, node.get_nkeys() - 1);
                     return Some(new);
                 }
@@ -191,7 +187,7 @@ impl BTree {
                                 // set ptr of new merged node
                                 node.set_ptr(merge_index, node_encode(merged_node)).unwrap();
                                 // update node and delete key of node we merged away
-                                new.kv_delete(&node, idx).unwrap();
+                                new.leaf_kvdelete(&node, idx).unwrap();
                                 // return updated internal node
                                 Some(new)
                             }
@@ -322,9 +318,21 @@ mod test {
     }
 
     #[test]
-    fn insert_split() {
+    fn insert_split1() {
         let mut tree = BTree::new();
         for i in 1u16..=200u16 {
+            tree.insert(&format!("{i}"), "value").unwrap()
+        }
+        assert_eq!(
+            node_get(tree.root_ptr.unwrap()).get_type().unwrap(),
+            NodeType::Node
+        );
+    }
+
+    #[test]
+    fn insert_split2() {
+        let mut tree = BTree::new();
+        for i in 1u16..=400u16 {
             tree.insert(&format!("{i}"), "value").unwrap()
         }
         assert_eq!(

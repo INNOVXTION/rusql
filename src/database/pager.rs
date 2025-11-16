@@ -22,7 +22,7 @@ pub(crate) fn node_encode(node: Node) -> u64 {
 
 /// deallocate page
 pub(crate) fn node_dealloc(ptr: u64) {
-    FREELIST.with_borrow_mut(|v| v.push((v.len() + 1) as u64));
+    FREELIST.with_borrow_mut(|v| v.push(ptr));
     PAGER
         .with_borrow_mut(|x| x.remove(&ptr))
         .expect("couldnt remove() page number");
