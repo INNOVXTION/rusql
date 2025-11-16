@@ -1,3 +1,5 @@
+use std::num::ParseIntError;
+
 use crate::{
     database::{
         pager::*,
@@ -51,7 +53,6 @@ impl Node {
         true
     }
 
-    #[instrument(skip(self))]
     pub fn get_type(&self) -> Result<NodeType, Error> {
         match slice_to_u16(self, 0)? {
             1 => Ok(NodeType::Node),
@@ -67,7 +68,6 @@ impl Node {
         slice_to_u16(self, 2).unwrap()
     }
 
-    #[instrument(skip(self))]
     pub fn set_header(&mut self, nodetype: NodeType, nkeys: u16) {
         let nodetype: u16 = match nodetype {
             NodeType::Node => 1,
@@ -78,7 +78,6 @@ impl Node {
     }
 
     /// retrieves child pointer(page number) from pointer array: 8 bytes
-    #[instrument(skip(self))]
     pub fn get_ptr(&self, idx: u16) -> Result<u64, Error> {
         if idx >= self.get_nkeys() {
             error!("invalid index");
@@ -88,7 +87,6 @@ impl Node {
         slice_to_u64(self, pos)
     }
     /// sets points in array, does not increase nkeys!
-    #[instrument(skip(self))]
     pub fn set_ptr(&mut self, idx: u16, ptr: u64) -> Result<(), Error> {
         if idx >= self.get_nkeys() {
             error!("invalid index");
@@ -111,7 +109,6 @@ impl Node {
     /// inserts ptr when splitting or adding new leaf nodes, encodes nodes
     ///
     /// updates nkeys and header
-    #[instrument(skip(self))]
     pub fn insert_nkids(
         &mut self,
         old_node: Node,
@@ -278,21 +275,28 @@ impl Node {
     }
 
     /// find the last index that is less than or equal to the key
-    /// if the key is not found, returns the index of the last KV
+    /// if the key is not found, returns the nkeys - 1
     ///
     /// TODO: binary search
     pub fn lookupidx(&self, key: &str) -> u16 {
         let nkeys = self.get_nkeys();
+        debug!("lookup nkeys {}", nkeys);
         if nkeys == 0 {
             return 0;
         }
+        let key: u32 = key.parse().expect("key parse error lookupidx");
         let mut idx: u16 = 0;
         while idx < nkeys {
-            let cur = str::from_utf8(self.get_key(idx).unwrap()).unwrap();
-            if cur == key {
+            let cur_key = str::from_utf8(self.get_key(idx).unwrap()).unwrap();
+            let cur_as_num = match cur_key.is_empty() {
+                // handling edge case for empty key
+                true => 0,
+                false => cur_key.parse().unwrap(),
+            };
+            if cur_as_num == key {
                 return idx;
             }
-            if cur > key {
+            if cur_as_num > key {
                 return idx - 1;
             }
             idx += 1;
@@ -307,10 +311,10 @@ impl Node {
     pub fn kv_insert(&mut self, src: Node, idx: u16, key: &str, val: &str) -> Result<(), Error> {
         let src_nkeys = src.get_nkeys();
         self.set_header(NodeType::Leaf, src_nkeys + 1);
+        debug!("insert new header: {}", src_nkeys + 1);
         // copy kv before idx
         self.append_from_range(&src, 0, 0, idx).map_err(|err| {
-            error!("insertion error when appending before idx");
-            err
+            Error::InsertError(format!("insertion error when appending before idx {}", err))
         })?;
         // insert new kv
         self.kvptr_append(idx, 0, key, val)?;
@@ -318,8 +322,7 @@ impl Node {
         if src_nkeys > idx + 1 {
             self.append_from_range(&src, idx + 1, idx, src_nkeys - idx)
                 .map_err(|err| {
-                    error!("insertion error when appending after idx, {}", err);
-                    err
+                    Error::InsertError(format!("insertion error when appending after idx {}", err))
                 })?;
         }
         Ok(())
@@ -403,12 +406,16 @@ impl Node {
         let nkeys_left = from_usize(nkeys_left);
         left.set_header(self.get_type()?, nkeys_left);
         left.append_from_range(&self, 0, 0, nkeys_left)
-            .map_err(|_| Error::NodeSplitError("append error during split".to_string()))?;
+            .map_err(|err| {
+                Error::NodeSplitError(format!("append error during left split, {err}"))
+            })?;
         let nkeys_right = nkeys - nkeys_left;
         right.set_header(self.get_type()?, nkeys_right);
         right
             .append_from_range(&self, 0, nkeys_left, nkeys_right)
-            .map_err(|_| Error::NodeSplitError("append error during split".to_string()))?;
+            .map_err(|err| {
+                Error::NodeSplitError(format!("append error during right split: {err}"))
+            })?;
         assert!(right.fits_page());
         assert!(left.fits_page());
         Ok((left, right))
@@ -419,7 +426,6 @@ impl Node {
         // no split
         let mut arr = Vec::with_capacity(3);
         if self.fits_page() {
-            debug!("no split necessary");
             arr.push(self);
             return Ok((1, arr)); // no split necessary
         };
@@ -427,11 +433,10 @@ impl Node {
         debug!("splitting node...");
         let (left, right) = self
             .split_node()
-            .map_err(|_| Error::NodeSplitError("Could not split node once".to_string()))?;
+            .map_err(|err| Error::NodeSplitError(format!("Could not split node once: {}", err)))?;
         if left.fits_page() {
-            debug!("two way split");
             debug!(
-                "split: left = {} bytes, right = {} bytes",
+                "two way split: left = {} bytes, right = {} bytes",
                 left.nbytes(),
                 right.nbytes()
             );
@@ -440,13 +445,12 @@ impl Node {
             return Ok((2, arr));
         };
         // three way split
-        debug!("three way split");
         let (leftleft, middle) = left
             .split_node()
-            .map_err(|_| Error::NodeSplitError("Could not split node twice".to_string()))?;
+            .map_err(|err| Error::NodeSplitError(format!("Could not split node twice: {}", err)))?;
 
         debug!(
-            "split: leftleft = {} bytes, middle = {} bytes, right = {}",
+            "three way split: leftleft = {} bytes, middle = {} bytes, right = {}",
             leftleft.nbytes(),
             middle.nbytes(),
             right.nbytes()

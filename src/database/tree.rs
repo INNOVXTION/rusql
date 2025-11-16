@@ -51,8 +51,8 @@ impl BTree {
         node_dealloc(self.root_ptr.unwrap());
         if split.0 == 1 {
             // no split, update root
+            debug!("inserted without root split, size: {}", split.1[0].nbytes());
             self.root_ptr = Some(node_encode(split.1.remove(0)));
-            debug!("inserted without root split");
             return Ok(());
         }
         // in case of split tree grows in height
@@ -80,10 +80,10 @@ impl BTree {
     fn tree_insert(node: Node, key: &str, val: &str) -> Node {
         let mut new = Node::new();
         let idx = node.lookupidx(key);
-        debug!("inserting value: {key}, {val}, idx: {idx}");
         match node.get_type().unwrap() {
             NodeType::Leaf => {
                 // updating or inserting kv
+                debug!("inserting in leaf at idx: {}", idx + 1);
                 if str::from_utf8(node.get_key(idx).unwrap()).unwrap() == key {
                     new.kv_update(node, idx, key, val).unwrap();
                 } else {
@@ -92,6 +92,14 @@ impl BTree {
             }
             // walking down the tree until we hit a leaf node
             NodeType::Node => {
+                debug!(
+                    "traversing through node, at idx: {idx} key: {}",
+                    str::from_utf8(node.get_key(idx).unwrap()).unwrap()
+                );
+                debug!(
+                    "idx 0 key {}",
+                    str::from_utf8(node.get_key(0).unwrap()).unwrap()
+                );
                 let kptr = node.get_ptr(idx).unwrap(); // ptr of child below us
                 let knode = BTree::tree_insert(node_get(kptr), key, val); // node below us
                 let split = knode.split().unwrap(); // potential split
@@ -211,8 +219,7 @@ impl BTree {
     }
 
     pub fn search(&self, key: &str) -> Option<String> {
-        let root_ptr = self.root_ptr?;
-        BTree::tree_search(node_get(root_ptr), key)
+        BTree::tree_search(node_get(self.root_ptr?), key)
     }
 
     fn tree_search(node: Node, key: &str) -> Option<String> {
@@ -280,7 +287,7 @@ mod test {
     use tracing::info;
 
     #[test]
-    fn tree_insert() {
+    fn simple_insert() {
         info!("help i just want to log :(");
         let mut tree = BTree::new();
         tree.insert("1", "hello").unwrap();
@@ -288,15 +295,42 @@ mod test {
 
         assert_eq!(tree.search("1").unwrap(), "hello");
         assert_eq!(tree.search("2").unwrap(), "world");
-        assert!(tree.search("3").is_none());
+        assert_eq!(node_get(tree.root_ptr.unwrap()).get_nkeys(), 3);
+        assert_eq!(
+            node_get(tree.root_ptr.unwrap()).get_type().unwrap(),
+            NodeType::Leaf
+        );
     }
 
     #[test]
-    fn should_fail() {
-        info!("help i just want to log :(");
+    fn simple_delete() {
         let mut tree = BTree::new();
         tree.insert("1", "hello").unwrap();
-        assert_eq!(tree.search("2").unwrap(), "hello");
+        tree.insert("2", "world").unwrap();
+        tree.insert("3", "bonjour").unwrap();
+        assert_eq!(
+            node_get(tree.root_ptr.unwrap()).get_type().unwrap(),
+            NodeType::Leaf
+        );
+
+        assert_eq!(node_get(tree.root_ptr.unwrap()).get_nkeys(), 4);
+        tree.delete("2");
+
+        assert_eq!(tree.search("1").unwrap(), "hello");
+        assert_eq!(tree.search("3").unwrap(), "bonjour");
+        assert_eq!(node_get(tree.root_ptr.unwrap()).get_nkeys(), 3);
+    }
+
+    #[test]
+    fn insert_split() {
+        let mut tree = BTree::new();
+        for i in 1u16..=200u16 {
+            tree.insert(&format!("{i}"), "value").unwrap()
+        }
+        assert_eq!(
+            node_get(tree.root_ptr.unwrap()).get_type().unwrap(),
+            NodeType::Node
+        );
     }
 
     // // test delete

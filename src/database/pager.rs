@@ -10,7 +10,7 @@ thread_local! {
 
 /// loads page into memoory as a node
 pub(crate) fn node_get(ptr: u64) -> Node {
-    PAGER.with_borrow_mut(|x| x.get(&ptr).unwrap().clone())
+    PAGER.with_borrow_mut(|x| x.get(&ptr).expect("couldnt get() page").clone())
 }
 
 /// finds a free spot to write node to
@@ -23,7 +23,9 @@ pub(crate) fn node_encode(node: Node) -> u64 {
 /// deallocate page
 pub(crate) fn node_dealloc(ptr: u64) {
     FREELIST.with_borrow_mut(|v| v.push((v.len() + 1) as u64));
-    PAGER.with_borrow_mut(|x| x.remove(&ptr)).unwrap();
+    PAGER
+        .with_borrow_mut(|x| x.remove(&ptr))
+        .expect("couldnt remove() page number");
 }
 
 // // retrieve page content from page number

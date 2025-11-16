@@ -1,15 +1,14 @@
 use crate::database::node::Node;
-use crate::database::types::PAGE_SIZE;
+use crate::database::types::NODE_SIZE;
 use crate::errors::Error;
 use tracing::error;
-use tracing::instrument;
 
 /// assumes little endian
 ///
-/// converts a [u8] slice to u16
+/// reads a [u8] slice to u16
 pub(crate) fn slice_to_u16(data: &Node, pos: usize) -> Result<u16, Error> {
-    if pos > PAGE_SIZE {
-        error!("pos idx {} exceeded page size", pos);
+    if pos > NODE_SIZE {
+        error!("slice_to_u16: pos idx {} exceeded node size", pos);
         return Err(Error::IndexError);
     }
     data.0
@@ -20,10 +19,10 @@ pub(crate) fn slice_to_u16(data: &Node, pos: usize) -> Result<u16, Error> {
 }
 /// assumes little endian
 ///
-/// converts a [u8] slice to u64
+/// reads a [u8] slice to u64
 pub(crate) fn slice_to_u64(data: &Node, pos: usize) -> Result<u64, Error> {
-    if pos > PAGE_SIZE {
-        error!("pos idx {} exceeded page size", pos);
+    if pos > NODE_SIZE {
+        error!("slice_to_u64: pos idx {} exceeded node size", pos);
         return Err(Error::IndexError);
     }
     data.0
@@ -32,17 +31,22 @@ pub(crate) fn slice_to_u64(data: &Node, pos: usize) -> Result<u64, Error> {
         .map(|buf: [u8; 8]| u64::from_le_bytes(buf))
         .ok_or(Error::IntCastingError(None))
 }
+
+/// writes u16 to node
 pub(crate) fn write_u16(data: &mut Node, pos: usize, value: u16) -> Result<(), Error> {
-    if pos > PAGE_SIZE {
-        error!("pos idx {} exceeded page size", pos);
+    if pos > NODE_SIZE {
+        error!("pos idx {} exceeded node size", pos);
         return Err(Error::IndexError);
     }
     data.0[pos..pos + 2].copy_from_slice(&value.to_le_bytes());
     Ok(())
 }
+
+/// casts usize to u16
 pub(crate) fn from_usize(n: usize) -> u16 {
     if n > u16::MAX as usize {
-        panic!("casting error");
+        error!("casting error");
+        panic!();
     }
     n as u16
 }
