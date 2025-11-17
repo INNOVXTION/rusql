@@ -3,7 +3,7 @@ use std::num::ParseIntError;
 use crate::{
     database::{
         pager::*,
-        types::{NODE_SIZE, PAGE_SIZE},
+        types::{MERGE_FACTOR, NODE_SIZE, PAGE_SIZE},
     },
     helper::*,
 };
@@ -32,6 +32,11 @@ pub(crate) struct Node(pub Box<[u8]>);
 pub(crate) enum NodeType {
     Node,
     Leaf,
+}
+/// which sibling we need to merge with
+pub enum MergeDirection {
+    Left(Node),
+    Right(Node),
 }
 
 #[allow(dead_code)]
@@ -301,9 +306,9 @@ impl Node {
             let cur_as_num = match cur_key.is_empty() {
                 // handling edge case for empty key
                 true => 0,
-                false => cur_key.parse().unwrap(),
+                false => cur_key.parse().expect("cur key parse error"),
             };
-            debug!("checking {key} against {cur_as_num} at idx {idx}");
+            // debug!("checking {key} against {cur_as_num} at idx {idx}");
             if cur_as_num == key {
                 debug!(
                     "key found, returning idx {} for cur_as_num {}, key {}",
@@ -333,8 +338,10 @@ impl Node {
     /// abstracted API over leaf_kvinsert and leaf_kvupdate
     pub fn insert(&mut self, node: Node, key: &str, val: &str, idx: u16) {
         if str::from_utf8(node.get_key(idx).unwrap()).unwrap() == key {
+            debug!("upating in leaf at idx: {}", idx);
             self.leaf_kvupdate(node, idx, key, val).unwrap();
         } else {
+            debug!("inserting in leaf at idx: {}", idx + 1);
             self.leaf_kvinsert(node, idx + 1, key, val).unwrap();
         }
     }
@@ -531,6 +538,36 @@ impl Node {
                 Error::MergeError(format!("{}", err))
             })?;
         Ok(())
+    }
+
+    /// checks if new node needs merging
+    ///
+    /// returns sibling node to merge with
+    pub fn merge_check(&self, new: &Node, idx: u16) -> Option<MergeDirection> {
+        if new.nbytes() > MERGE_FACTOR as u16 {
+            return None; // no merge necessary
+        }
+        let new_size = new.nbytes() - crate::database::node::HEADER_OFFSET as u16;
+        // check left
+        if idx > 0 {
+            debug!("merging with left node");
+            let sibling = node_get(self.get_ptr(idx - 1).unwrap());
+            let sibling_size = sibling.nbytes();
+            if sibling_size + new_size < PAGE_SIZE as u16 {
+                return Some(MergeDirection::Left(sibling));
+            }
+        }
+        // check right
+        if idx + 1 < self.get_nkeys() {
+            debug!("merging with right node");
+            let sibling = node_get(self.get_ptr(idx + 1).unwrap());
+            let sibling_size = sibling.nbytes();
+            if sibling_size + new_size < PAGE_SIZE as u16 {
+                return Some(MergeDirection::Right(sibling));
+            }
+        }
+        debug!("no merge possible");
+        None
     }
 }
 

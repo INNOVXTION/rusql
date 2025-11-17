@@ -27,7 +27,7 @@ impl BTree {
 
     #[instrument(skip(self))]
     pub fn insert(&mut self, key: &str, val: &str) -> Result<(), Error> {
-        info!("inserting...");
+        info!("inserting new kv...");
         // check size limit
         if key.len() > BTREE_MAX_KEY_SIZE || val.len() > BTREE_MAX_VAL_SIZE {
             return Err(Error::InsertError("invalid key value size".to_string()));
@@ -91,12 +91,7 @@ impl BTree {
         match node.get_type().unwrap() {
             NodeType::Leaf => {
                 // updating or inserting kv
-                debug!("inserting in leaf at idx: {}", idx + 1);
-                if str::from_utf8(node.get_key(idx).unwrap()).unwrap() == key {
-                    new.leaf_kvupdate(node, idx, key, val).unwrap();
-                } else {
-                    new.leaf_kvinsert(node, idx + 1, key, val).unwrap();
-                }
+                new.insert(node, key, val, idx);
             }
             // walking down the tree until we hit a leaf node
             NodeType::Node => {
@@ -117,6 +112,7 @@ impl BTree {
     }
 
     pub fn delete(&mut self, key: &str) -> Result<(), Error> {
+        info!("deleting kv...");
         let root_ptr = match self.root_ptr {
             Some(n) => n,
             None => {
@@ -158,7 +154,7 @@ impl BTree {
                     Some(updated_child) => {
                         let mut new = Node::new();
                         let cur_nkeys = node.get_nkeys();
-                        match merge_check(&node, &updated_child, idx) {
+                        match node.merge_check(&updated_child, idx) {
                             // we need to merge
                             Some(dir) => {
                                 debug!("merging node...");
@@ -250,42 +246,6 @@ impl BTree {
     }
 }
 
-/// which sibling we need to merge with
-enum MergeDirection {
-    Left(Node),
-    Right(Node),
-}
-
-/// checks if new node needs merging
-///
-/// returns sibling node to merge with
-fn merge_check(cur: &Node, new: &Node, idx: u16) -> Option<MergeDirection> {
-    if new.nbytes() > MERGE_FACTOR as u16 {
-        return None; // no merge necessary
-    }
-    let new_size = new.nbytes() - crate::database::node::HEADER_OFFSET as u16;
-    // check left
-    if idx > 0 {
-        debug!("merging with left node");
-        let sibling = node_get(cur.get_ptr(idx - 1).unwrap());
-        let sibling_size = sibling.nbytes();
-        if sibling_size + new_size < PAGE_SIZE as u16 {
-            return Some(MergeDirection::Left(sibling));
-        }
-    }
-    // check right
-    if idx + 1 < cur.get_nkeys() {
-        debug!("merging with right node");
-        let sibling = node_get(cur.get_ptr(idx + 1).unwrap());
-        let sibling_size = sibling.nbytes();
-        if sibling_size + new_size < PAGE_SIZE as u16 {
-            return Some(MergeDirection::Right(sibling));
-        }
-    }
-    debug!("no merge possible");
-    None
-}
-
 #[cfg(test)]
 mod test {
     use super::*;
@@ -337,6 +297,7 @@ mod test {
             node_get(tree.root_ptr.unwrap()).get_type().unwrap(),
             NodeType::Node
         );
+        assert_eq!(tree.search("40").unwrap(), "value");
         assert_eq!(tree.search("90").unwrap(), "value");
         assert_eq!(tree.search("150").unwrap(), "value");
         assert_eq!(tree.search("170").unwrap(), "value");
@@ -353,6 +314,7 @@ mod test {
             node_get(tree.root_ptr.unwrap()).get_type().unwrap(),
             NodeType::Node
         );
+        assert_eq!(tree.search("50").unwrap(), "value");
         assert_eq!(tree.search("90").unwrap(), "value");
         assert_eq!(tree.search("150").unwrap(), "value");
         assert_eq!(tree.search("170").unwrap(), "value");

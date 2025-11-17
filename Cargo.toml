@@ -7,4 +7,6 @@ edition = "2024"
 tracing = { version = "0.1", features = ["log"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"] }
 thiserror = { version = "2.0" }
+
+[dev-dependencies]
 test-log = {version = "0.2", default-features = false, features = ["trace"]}
