@@ -1,6 +1,8 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
+use tracing::debug;
+
 use crate::database::node::Node;
 
 thread_local! {

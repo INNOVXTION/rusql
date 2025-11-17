@@ -1,6 +1,7 @@
 use std::str::FromStr;
 
 use tracing::debug;
+use tracing::info;
 use tracing::instrument;
 
 use crate::database::node::*;
@@ -26,6 +27,7 @@ impl BTree {
 
     #[instrument(skip(self))]
     pub fn insert(&mut self, key: &str, val: &str) -> Result<(), Error> {
+        info!("inserting...");
         // check size limit
         if key.len() > BTREE_MAX_KEY_SIZE || val.len() > BTREE_MAX_VAL_SIZE {
             return Err(Error::InsertError("invalid key value size".to_string()));
@@ -51,8 +53,11 @@ impl BTree {
         node_dealloc(self.root_ptr.unwrap());
         if split.0 == 1 {
             // no split, update root
-            debug!("inserted without root split, size: {}", split.1[0].nbytes());
             self.root_ptr = Some(node_encode(split.1.remove(0)));
+            debug!(
+                "inserted without root split, root ptr {}",
+                self.root_ptr.unwrap()
+            );
             return Ok(());
         }
         // in case of split tree grows in height
@@ -70,7 +75,10 @@ impl BTree {
         // encoding new root and updating tree ptr
         self.root_ptr = Some(node_encode(new_root));
         self.height += 1;
-        debug!("inserted with root split");
+        debug!(
+            "inserted with root split, new root ptr {}",
+            self.root_ptr.unwrap()
+        );
         Ok(())
     }
 
@@ -214,6 +222,7 @@ impl BTree {
         }
     }
 
+    #[instrument(skip(self))]
     pub fn search(&self, key: &str) -> Option<String> {
         BTree::tree_search(node_get(self.root_ptr?), key)
     }
@@ -233,6 +242,7 @@ impl BTree {
                 None
             }
             NodeType::Node => {
+                debug!("traversing through node, at idx: {idx} key: {}", key);
                 let kptr = node.get_ptr(idx).unwrap();
                 BTree::tree_search(node_get(kptr), key)
             }
@@ -327,6 +337,10 @@ mod test {
             node_get(tree.root_ptr.unwrap()).get_type().unwrap(),
             NodeType::Node
         );
+        assert_eq!(tree.search("90").unwrap(), "value");
+        assert_eq!(tree.search("150").unwrap(), "value");
+        assert_eq!(tree.search("170").unwrap(), "value");
+        assert_eq!(tree.search("200").unwrap(), "value");
     }
 
     #[test]
@@ -339,6 +353,12 @@ mod test {
             node_get(tree.root_ptr.unwrap()).get_type().unwrap(),
             NodeType::Node
         );
+        assert_eq!(tree.search("90").unwrap(), "value");
+        assert_eq!(tree.search("150").unwrap(), "value");
+        assert_eq!(tree.search("170").unwrap(), "value");
+        assert_eq!(tree.search("200").unwrap(), "value");
+        assert_eq!(tree.search("300").unwrap(), "value");
+        assert_eq!(tree.search("400").unwrap(), "value");
     }
 
     // // test delete

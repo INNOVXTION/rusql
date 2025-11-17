@@ -4,10 +4,10 @@ use std::{fmt::Display, io, num::TryFromIntError, str::Utf8Error};
 pub enum Error {
     IndexError,
     FileError(io::Error),
-    IntCastingError(Option<TryFromIntError>),
+    IntCastError(Option<TryFromIntError>),
     StrCastError(Utf8Error),
-    NodeSplitError(String),
-    NodeMergeError(String),
+    SplitError(String),
+    MergeError(String),
     InsertError(String),
     DeleteError(String),
 }
@@ -17,12 +17,12 @@ impl Display for Error {
         match self {
             Error::IndexError => write!(f, "Index error"),
             Error::FileError(e) => write!(f, "File error: {e}"),
-            Error::IntCastingError(Some(e)) => write!(f, "Type casting error, {e}"),
-            Error::IntCastingError(None) => write!(f, "Type casting error"),
+            Error::IntCastError(Some(e)) => write!(f, "Type casting error, {e}"),
+            Error::IntCastError(None) => write!(f, "Type casting error"),
             Error::StrCastError(e) => write!(f, "Casting from String error, {e}"),
-            Error::NodeSplitError(e) => write!(f, "Error when splitting, {e}"),
+            Error::SplitError(e) => write!(f, "Error when splitting, {e}"),
             Error::InsertError(e) => write!(f, "Error when inserting, {e}"),
-            Error::NodeMergeError(e) => write!(f, "Error when merging, {e}"),
+            Error::MergeError(e) => write!(f, "Error when merging, {e}"),
             Error::DeleteError(e) => write!(f, "Error when deleting {e}"),
         }
     }
@@ -37,7 +37,7 @@ impl From<io::Error> for Error {
 }
 impl From<TryFromIntError> for Error {
     fn from(err: TryFromIntError) -> Self {
-        Error::IntCastingError(Some(err))
+        Error::IntCastError(Some(err))
     }
 }
 impl From<Utf8Error> for Error {

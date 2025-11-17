@@ -7,7 +7,7 @@ use crate::{
     },
     helper::*,
 };
-use tracing::{debug, error, instrument};
+use tracing::{debug, error, instrument, warn};
 
 use crate::errors::Error;
 
@@ -97,15 +97,6 @@ impl Node {
         Ok(())
     }
 
-    /// abstracted API, not yet ready
-    pub fn insert(&mut self, node: Node, key: &str, val: &str, _ptr: u64, idx: u16) {
-        if str::from_utf8(node.get_key(idx).unwrap()).unwrap() == key {
-            self.leaf_kvupdate(node, idx, key, val).unwrap();
-        } else {
-            self.leaf_kvinsert(node, idx + 1, key, val).unwrap();
-        }
-    }
-
     /// inserts ptr when splitting or adding new leaf nodes, encodes nodes
     ///
     /// updates nkeys and header
@@ -115,20 +106,29 @@ impl Node {
         idx: u16,
         new_kids: (u16, Vec<Node>),
     ) -> Result<(), Error> {
+        debug!("inserting new kids...");
         let old_nkeys = old_node.get_nkeys();
         self.set_header(NodeType::Node, old_nkeys + new_kids.0 - 1);
         // copy range before new idx
         self.append_from_range(&old_node, 0, 0, idx).map_err(|e| {
             error!("append error before idx");
-            Error::InsertError(format!("{e}"))
+            e
         })?;
         // insert new ptr at idx, consuming the split array
         for (i, node) in new_kids.1.into_iter().enumerate() {
-            let key = { String::from(String::from_utf8_lossy(self.get_key(0)?)) };
-            self.kvptr_append(idx + (i as u16), node_encode(node), &key, "")
+            let key = {
+                let key_ref = node.get_key(0)?;
+                str::from_utf8(key_ref)?.to_string()
+            };
+            let ptr = node_encode(node);
+            debug!(
+                "appending new ptr: {ptr} with {key} at idx {}",
+                idx + i as u16
+            );
+            self.kvptr_append(idx + (i as u16), ptr, &key, "")
                 .map_err(|e| {
                     error!("error when appending split array");
-                    Error::InsertError(format!("{e}"))
+                    e
                 })?;
         }
         // copy from range after idx
@@ -136,7 +136,7 @@ impl Node {
             self.append_from_range(&old_node, idx + new_kids.0, idx + 1, old_nkeys - (idx + 1))
                 .map_err(|e| {
                     error!("append error after idx");
-                    Error::InsertError(format!("{e}"))
+                    e
                 })?;
         }
         Ok(())
@@ -286,7 +286,11 @@ impl Node {
     /// TODO: binary search
     pub fn lookupidx(&self, key: &str) -> u16 {
         let nkeys = self.get_nkeys();
-        debug!("lookup nkeys {}", nkeys);
+        debug!(
+            "lookupidx in {:?} nkeys {}",
+            self.get_type().unwrap(),
+            nkeys
+        );
         if nkeys == 0 {
             return 0;
         }
@@ -299,15 +303,40 @@ impl Node {
                 true => 0,
                 false => cur_key.parse().unwrap(),
             };
+            debug!("checking {key} against {cur_as_num} at idx {idx}");
             if cur_as_num == key {
+                debug!(
+                    "key found, returning idx {} for cur_as_num {}, key {}",
+                    idx, cur_as_num, key
+                );
                 return idx;
             }
             if cur_as_num > key {
+                debug!(
+                    "larger than key found, returning idx {} for cur_as_num {}, key {}",
+                    idx - 1,
+                    cur_as_num,
+                    key,
+                );
                 return idx - 1;
             }
             idx += 1;
         }
+        debug!(
+            "neither larger nor matching key found, returning idx {} for key {}",
+            idx - 1,
+            key,
+        );
         idx - 1
+    }
+
+    /// abstracted API over leaf_kvinsert and leaf_kvupdate
+    pub fn insert(&mut self, node: Node, key: &str, val: &str, idx: u16) {
+        if str::from_utf8(node.get_key(idx).unwrap()).unwrap() == key {
+            self.leaf_kvupdate(node, idx, key, val).unwrap();
+        } else {
+            self.leaf_kvinsert(node, idx + 1, key, val).unwrap();
+        }
     }
 
     /// helper function: inserts new KV into leaf node copies content from old node
@@ -424,16 +453,12 @@ impl Node {
         let nkeys_left = from_usize(nkeys_left);
         left.set_header(self.get_type()?, nkeys_left);
         left.append_from_range(&self, 0, 0, nkeys_left)
-            .map_err(|err| {
-                Error::NodeSplitError(format!("append error during left split, {err}"))
-            })?;
+            .map_err(|err| Error::SplitError(format!("append error during left split, {err}")))?;
         let nkeys_right = nkeys - nkeys_left;
         right.set_header(self.get_type()?, nkeys_right);
         right
             .append_from_range(&self, 0, nkeys_left, nkeys_right)
-            .map_err(|err| {
-                Error::NodeSplitError(format!("append error during right split: {err}"))
-            })?;
+            .map_err(|err| Error::SplitError(format!("append error during right split: {err}")))?;
         assert!(right.fits_page());
         assert!(left.fits_page());
         Ok((left, right))
@@ -450,11 +475,12 @@ impl Node {
         };
         // two way split
         debug!("splitting node...");
-        let (left, right) = self
-            .split_node()
-            .map_err(|err| Error::NodeSplitError(format!("Could not split node once: {}", err)))?;
+        let (left, right) = self.split_node().map_err(|err| {
+            error!("Could not split node once: {}", err);
+            err
+        })?;
         if left.fits_page() {
-            debug!(
+            warn!(
                 "two way split: left = {} bytes, right = {} bytes",
                 left.nbytes(),
                 right.nbytes()
@@ -464,11 +490,11 @@ impl Node {
             return Ok((2, arr));
         };
         // three way split
-        let (leftleft, middle) = left
-            .split_node()
-            .map_err(|err| Error::NodeSplitError(format!("Could not split node twice: {}", err)))?;
-
-        debug!(
+        let (leftleft, middle) = left.split_node().map_err(|err| {
+            error!("Could not split node twice: {}", err);
+            err
+        })?;
+        warn!(
             "three way split: leftleft = {} bytes, middle = {} bytes, right = {}",
             leftleft.nbytes(),
             middle.nbytes(),
@@ -492,9 +518,18 @@ impl Node {
         let right_nkeys = right.get_nkeys();
         self.set_header(ntype, left_nkeys + right_nkeys);
         self.append_from_range(&left, 0, 0, left_nkeys)
-            .map_err(|_| Error::NodeMergeError("Error when merging first half".to_string()))?;
+            .map_err(|err| {
+                error!("Error when merging first half left_nkeys {}", left_nkeys);
+                Error::MergeError(format!("{}", err))
+            })?;
         self.append_from_range(&right, left_nkeys, 0, right_nkeys)
-            .map_err(|_| Error::NodeMergeError("Error when merging second half".to_string()))?;
+            .map_err(|err| {
+                error!(
+                    "Error when merging second half left_nkeys {}, right_nkeys {}",
+                    left_nkeys, right_nkeys
+                );
+                Error::MergeError(format!("{}", err))
+            })?;
         Ok(())
     }
 }

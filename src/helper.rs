@@ -15,7 +15,7 @@ pub(crate) fn slice_to_u16(data: &Node, pos: usize) -> Result<u16, Error> {
         .get(pos..pos + 2)
         .and_then(|x| x.try_into().ok())
         .map(|buf: [u8; 2]| u16::from_le_bytes(buf))
-        .ok_or(Error::IntCastingError(None))
+        .ok_or(Error::IntCastError(None))
 }
 /// assumes little endian
 ///
@@ -29,7 +29,7 @@ pub(crate) fn slice_to_u64(data: &Node, pos: usize) -> Result<u64, Error> {
         .get(pos..pos + 8)
         .and_then(|x| x.try_into().ok())
         .map(|buf: [u8; 8]| u64::from_le_bytes(buf))
-        .ok_or(Error::IntCastingError(None))
+        .ok_or(Error::IntCastError(None))
 }
 
 /// writes u16 to node
