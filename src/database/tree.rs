@@ -65,11 +65,7 @@ impl BTree {
         new_root.set_header(NodeType::Node, split.0);
         // iterate through node array from split to create new root node
         for (i, node) in split.1.into_iter().enumerate() {
-            let key = {
-                let key_ref = node.get_key(0)?;
-                str::from_utf8(key_ref)?
-            }
-            .to_string();
+            let key = node.get_key(0)?.to_string();
             new_root.kvptr_append(i as u16, node_encode(node), &key, "")?;
         }
         // encoding new root and updating tree ptr
@@ -97,7 +93,7 @@ impl BTree {
             NodeType::Node => {
                 debug!(
                     "traversing through node, at idx: {idx} key: {}",
-                    str::from_utf8(node.get_key(idx).unwrap()).unwrap()
+                    node.get_key(idx).unwrap()
                 );
                 let kptr = node.get_ptr(idx).unwrap(); // ptr of child below us
                 let knode = BTree::tree_insert(node_get(kptr), key, val); // node below us
@@ -229,10 +225,7 @@ impl BTree {
             NodeType::Leaf => {
                 if let Some(i) = node.searchidx(key) {
                     debug!("key {key} found!");
-                    return Some(
-                        String::from_str(str::from_utf8(node.get_val(i).unwrap()).unwrap())
-                            .unwrap(),
-                    );
+                    return Some(node.get_val(i).unwrap().to_string());
                 }
                 debug!("key {key} not found!");
                 None

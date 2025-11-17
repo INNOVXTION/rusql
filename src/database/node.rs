@@ -121,10 +121,7 @@ impl Node {
         })?;
         // insert new ptr at idx, consuming the split array
         for (i, node) in new_kids.1.into_iter().enumerate() {
-            let key = {
-                let key_ref = node.get_key(0)?;
-                str::from_utf8(key_ref)?.to_string()
-            };
+            let key = node.get_key(0)?.to_string();
             let ptr = node_encode(node);
             debug!(
                 "appending new ptr: {ptr} with {key} at idx {}",
@@ -188,7 +185,7 @@ impl Node {
     }
 
     /// retrieves key as byte array
-    pub fn get_key(&self, idx: u16) -> Result<&[u8], Error> {
+    pub fn get_key(&self, idx: u16) -> Result<&str, Error> {
         if idx >= self.get_nkeys() {
             error!(
                 "get_key: index {} out of key range {}",
@@ -200,13 +197,18 @@ impl Node {
         let kvpos = self.kv_pos(idx)?;
         let key_len = slice_to_u16(self, kvpos)? as usize;
 
-        Ok(&self.0[kvpos + 4..kvpos + 4 + key_len])
+        Ok(
+            str::from_utf8(&self.0[kvpos + 4..kvpos + 4 + key_len]).map_err(|e| {
+                error!("reading key error when casting from slice");
+                e
+            })?,
+        )
     }
 
     /// retrieves value as byte array
-    pub fn get_val(&self, idx: u16) -> Result<&[u8], Error> {
+    pub fn get_val(&self, idx: u16) -> Result<&str, Error> {
         if let NodeType::Node = self.get_type()? {
-            return Ok(b"");
+            return Ok("");
         }
         if idx >= self.get_nkeys() {
             error!("index {} out of key range {}", idx, self.get_nkeys());
@@ -216,7 +218,14 @@ impl Node {
         let key_len = slice_to_u16(self, kvpos)? as usize;
         let val_len = slice_to_u16(self, kvpos + 2)? as usize;
 
-        Ok(&self.0[kvpos + 4 + key_len..kvpos + 4 + key_len + val_len])
+        Ok(
+            str::from_utf8(&self.0[kvpos + 4 + key_len..kvpos + 4 + key_len + val_len]).map(
+                |e| {
+                    error!("reading value error when casting from slice");
+                    e
+                },
+            )?,
+        )
     }
 
     /// appends key value and pointer at index
@@ -267,8 +276,8 @@ impl Node {
             self.kvptr_append(
                 dst_idx,
                 src.get_ptr(src_idx)?,
-                str::from_utf8(src.get_key(src_idx)?)?,
-                str::from_utf8(src.get_val(src_idx)?)?,
+                src.get_key(src_idx)?,
+                src.get_val(src_idx)?,
             )?;
         }
         Ok(())
@@ -282,7 +291,7 @@ impl Node {
         //         return Some(i);
         //     }
         // }
-        (0..self.get_nkeys()).find(|i| key == str::from_utf8(self.get_key(*i).unwrap()).unwrap())
+        (0..self.get_nkeys()).find(|i| key == self.get_key(*i).unwrap())
     }
 
     /// find the last index that is less than or equal to the key
@@ -302,7 +311,7 @@ impl Node {
         let key: u32 = key.parse().expect("key parse error lookupidx");
         let mut idx: u16 = 0;
         while idx < nkeys {
-            let cur_key = str::from_utf8(self.get_key(idx).unwrap()).unwrap();
+            let cur_key = self.get_key(idx).unwrap();
             let cur_as_num = match cur_key.is_empty() {
                 // handling edge case for empty key
                 true => 0,
@@ -337,7 +346,7 @@ impl Node {
 
     /// abstracted API over leaf_kvinsert and leaf_kvupdate
     pub fn insert(&mut self, node: Node, key: &str, val: &str, idx: u16) {
-        if str::from_utf8(node.get_key(idx).unwrap()).unwrap() == key {
+        if node.get_key(idx).unwrap() == key {
             debug!("upating in leaf at idx: {}", idx);
             self.leaf_kvupdate(node, idx, key, val).unwrap();
         } else {
@@ -610,10 +619,10 @@ mod test {
         node.kvptr_append(0, 0, "k1", "hi")?;
         node.kvptr_append(1, 0, "k3", "hello")?;
 
-        assert_eq!(str::from_utf8(node.get_key(0)?).unwrap(), "k1");
-        assert_eq!(str::from_utf8(node.get_val(0)?).unwrap(), "hi");
-        assert_eq!(str::from_utf8(node.get_key(1)?).unwrap(), "k3");
-        assert_eq!(str::from_utf8(node.get_val(1)?).unwrap(), "hello");
+        assert_eq!(node.get_key(0).unwrap(), "k1");
+        assert_eq!(node.get_val(0).unwrap(), "hi");
+        assert_eq!(node.get_key(1).unwrap(), "k3");
+        assert_eq!(node.get_val(1).unwrap(), "hello");
         Ok(())
     }
 
@@ -628,10 +637,10 @@ mod test {
         n1.kvptr_append(1, 0, "k3", "hello")?;
         n2.append_from_range(&n1, 0, 0, n1.get_nkeys())?;
 
-        assert_eq!(str::from_utf8(n2.get_key(0)?).unwrap(), "k1");
-        assert_eq!(str::from_utf8(n2.get_val(0)?).unwrap(), "hi");
-        assert_eq!(str::from_utf8(n2.get_key(1)?).unwrap(), "k3");
-        assert_eq!(str::from_utf8(n2.get_val(1)?).unwrap(), "hello");
+        assert_eq!(n2.get_key(0).unwrap(), "k1");
+        assert_eq!(n2.get_val(0).unwrap(), "hi");
+        assert_eq!(n2.get_key(1).unwrap(), "k3");
+        assert_eq!(n2.get_val(1).unwrap(), "hello");
         Ok(())
     }
 
@@ -647,10 +656,10 @@ mod test {
 
         n2.leaf_kvdelete(&n1, 1)?;
 
-        assert_eq!(str::from_utf8(n2.get_key(0)?).unwrap(), "k1");
-        assert_eq!(str::from_utf8(n2.get_val(0)?).unwrap(), "hi");
-        assert_eq!(str::from_utf8(n2.get_key(1)?).unwrap(), "k3");
-        assert_eq!(str::from_utf8(n2.get_val(1)?).unwrap(), "hello");
+        assert_eq!(n2.get_key(0).unwrap(), "k1");
+        assert_eq!(n2.get_val(0).unwrap(), "hi");
+        assert_eq!(n2.get_key(1).unwrap(), "k3");
+        assert_eq!(n2.get_val(1).unwrap(), "hello");
         Ok(())
     }
 
