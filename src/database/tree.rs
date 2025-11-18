@@ -106,7 +106,7 @@ impl BTree {
         }
         new
     }
-
+    #[instrument(skip(self))]
     pub fn delete(&mut self, key: &str) -> Result<(), Error> {
         info!("deleting kv...");
         let root_ptr = match self.root_ptr {
@@ -117,12 +117,30 @@ impl BTree {
                 ));
             }
         };
-        if let Some(updated) = BTree::tree_delete(node_get(root_ptr), key) {
-            node_dealloc(root_ptr);
-            self.root_ptr = Some(node_encode(updated));
-            return Ok(());
+        let updated = BTree::tree_delete(node_get(root_ptr), key)
+            .ok_or(Error::DeleteError("key not found!".to_string()))?;
+        node_dealloc(root_ptr);
+        match updated.get_type()? {
+            // check if tree needs to shrink in height
+            NodeType::Node if updated.get_nkeys() == 1 => {
+                debug!(
+                    "tree shrunk, root updated to: {:?} nkeys: {}",
+                    updated.get_type().unwrap(),
+                    updated.get_nkeys()
+                );
+                self.root_ptr = Some(updated.get_ptr(0)?);
+                Ok(())
+            }
+            _ => {
+                debug!(
+                    "root updated to: {:?} nkeys: {}",
+                    updated.get_type().unwrap(),
+                    updated.get_nkeys()
+                );
+                self.root_ptr = Some(node_encode(updated));
+                Ok(())
+            }
         }
-        Err(Error::DeleteError("key not found!".to_string()))
     }
 
     /// recursive deletion, node = current node, returns updated node in case a deletion happened
@@ -134,15 +152,23 @@ impl BTree {
         match node.get_type().unwrap() {
             NodeType::Leaf => {
                 if let Some(i) = node.searchidx(key) {
+                    debug!("deleting key {key} at idx {idx}");
                     let mut new = Node::new();
                     new.leaf_kvdelete(&node, i).unwrap();
                     new.set_header(NodeType::Leaf, node.get_nkeys() - 1);
                     return Some(new);
                 }
+                debug!("key not found!");
                 None // key not found
             }
             NodeType::Node => {
-                let kptr = node.get_ptr(idx).unwrap(); // child 2 ptr
+                debug!(
+                    "traversing through node, at idx: {idx} key: {}",
+                    node.get_key(idx).unwrap()
+                );
+                let kptr = node
+                    .get_ptr(idx)
+                    .expect("delete error: couldnt get kptr at idx {idx}"); // child 2 ptr
                 // in case leaf node was updated below us
                 // updated chlild 2 comes back
                 match BTree::tree_delete(node_get(kptr), key) {
@@ -153,7 +179,6 @@ impl BTree {
                         match node.merge_check(&updated_child, idx) {
                             // we need to merge
                             Some(dir) => {
-                                debug!("merging node...");
                                 let left: u64;
                                 let right: u64;
                                 let merge_index: u16; // idx of node we merge with
@@ -161,33 +186,44 @@ impl BTree {
                                 let merge_type = updated_child.get_type().unwrap();
                                 match dir {
                                     MergeDirection::Left(sibling) => {
+                                        debug!(
+                                            "merging {idx} with left node at idx {}, cur_nkeys {cur_nkeys}...",
+                                            idx - 1
+                                        );
                                         right = kptr;
                                         left = node
                                             .get_ptr(idx - 1)
-                                            .expect("idx error when merging with left");
+                                            .expect("couldnt get pointer of left node");
                                         merge_index = idx - 1;
                                         merged_node
                                             .merge(sibling, updated_child, merge_type)
-                                            .unwrap();
+                                            .expect("merge error when merging with left node");
                                     }
                                     MergeDirection::Right(sibling) => {
+                                        debug!(
+                                            "merging {idx} with right node at idx {}, cur_nkeys {cur_nkeys}...",
+                                            idx + 1
+                                        );
                                         left = kptr;
                                         right = node
                                             .get_ptr(idx + 1)
-                                            .expect("idx error when merging with right");
+                                            .expect("couldnt get pointer of right node");
                                         merge_index = idx + 1;
                                         merged_node
                                             .merge(updated_child, sibling, merge_type)
-                                            .unwrap();
+                                            .expect("merge error when merging with right node");
                                     }
                                 };
+                                debug!(
+                                    "merged node: type {:?} nkeys {}",
+                                    merged_node.get_type().unwrap(),
+                                    merged_node.get_nkeys()
+                                );
                                 // delete old nodes
                                 node_dealloc(left);
                                 node_dealloc(right);
-                                // set ptr of new merged node
-                                node.set_ptr(merge_index, node_encode(merged_node)).unwrap();
-                                // update node and delete key of node we merged away
-                                new.leaf_kvdelete(&node, idx).unwrap();
+                                new.merge_ptrdelete(node, merged_node, merge_index, idx)
+                                    .unwrap();
                                 // return updated internal node
                                 Some(new)
                             }
@@ -205,6 +241,7 @@ impl BTree {
                                 // new.set_header(NodeType::Node, cur_nkeys);
                                 // new.insert_nkids(node, idx, (0, vec![updated_child]))
                                 //     .unwrap();
+                                debug!("key deleted without merge");
                                 Some(node)
                             }
                         }
@@ -273,7 +310,7 @@ mod test {
         );
 
         assert_eq!(node_get(tree.root_ptr.unwrap()).get_nkeys(), 4);
-        tree.delete("2");
+        tree.delete("2").unwrap();
 
         assert_eq!(tree.search("1").unwrap(), "hello");
         assert_eq!(tree.search("3").unwrap(), "bonjour");
@@ -316,7 +353,35 @@ mod test {
         assert_eq!(tree.search("400").unwrap(), "value");
     }
 
-    // // test delete
-    // #[test]
-    // fn delete() {}
+    #[test]
+    fn merge_delete1() {
+        let mut tree = BTree::new();
+        for i in 1u16..=200u16 {
+            tree.insert(&format!("{i}"), "value").unwrap()
+        }
+        for i in 1u16..=199u16 {
+            tree.delete(&format!("{i}")).unwrap()
+        }
+        assert_eq!(
+            node_get(tree.root_ptr.unwrap()).get_type().unwrap(),
+            NodeType::Leaf
+        );
+        assert_eq!(node_get(tree.root_ptr.unwrap()).get_nkeys(), 2)
+    }
+
+    #[test]
+    fn merge_delete2() {
+        let mut tree = BTree::new();
+        for i in 1u16..=400u16 {
+            tree.insert(&format!("{i}"), "value").unwrap()
+        }
+        for i in 1u16..=399u16 {
+            tree.delete(&format!("{i}")).unwrap()
+        }
+        assert_eq!(
+            node_get(tree.root_ptr.unwrap()).get_type().unwrap(),
+            NodeType::Leaf
+        );
+        assert_eq!(node_get(tree.root_ptr.unwrap()).get_nkeys(), 2)
+    }
 }

@@ -199,7 +199,7 @@ impl Node {
 
         Ok(
             str::from_utf8(&self.0[kvpos + 4..kvpos + 4 + key_len]).map_err(|e| {
-                error!("reading key error when casting from slice");
+                error!("reading key error when casting from slice idx {idx} with kvpos {kvpos}");
                 e
             })?,
         )
@@ -208,7 +208,7 @@ impl Node {
     /// retrieves value as byte array
     pub fn get_val(&self, idx: u16) -> Result<&str, Error> {
         if let NodeType::Node = self.get_type()? {
-            return Ok("");
+            return Ok(" ");
         }
         if idx >= self.get_nkeys() {
             error!("index {} out of key range {}", idx, self.get_nkeys());
@@ -219,9 +219,11 @@ impl Node {
         let val_len = slice_to_u16(self, kvpos + 2)? as usize;
 
         Ok(
-            str::from_utf8(&self.0[kvpos + 4 + key_len..kvpos + 4 + key_len + val_len]).map(
+            str::from_utf8(&self.0[kvpos + 4 + key_len..kvpos + 4 + key_len + val_len]).map_err(
                 |e| {
-                    error!("reading value error when casting from slice");
+                    error!(
+                        "reading value error when casting from slice idx {idx} with kvpos {kvpos}"
+                    );
                     e
                 },
             )?,
@@ -254,6 +256,7 @@ impl Node {
     /// helper function: appends range to self starting at dst_idx from source Node starting at src_idx for n elements
     ///
     /// does not update nkeys!
+    #[instrument(skip(self, src))]
     fn append_from_range(
         &mut self,
         src: &Node,
@@ -291,6 +294,7 @@ impl Node {
         //         return Some(i);
         //     }
         // }
+        debug!("searching for key in leaf...");
         (0..self.get_nkeys()).find(|i| key == self.get_key(*i).unwrap())
     }
 
@@ -305,7 +309,7 @@ impl Node {
             self.get_type().unwrap(),
             nkeys
         );
-        if nkeys == 0 {
+        if nkeys == 0 | 1 {
             return 0;
         }
         let key: u32 = key.parse().expect("key parse error lookupidx");
@@ -317,20 +321,20 @@ impl Node {
                 true => 0,
                 false => cur_key.parse().expect("cur key parse error"),
             };
-            // debug!("checking {key} against {cur_as_num} at idx {idx}");
+            // debug!("checking {key} against {cuGr_as_num} at idx {idx}");
             if cur_as_num == key {
                 debug!(
-                    "key found, returning idx {} for cur_as_num {}, key {}",
-                    idx, cur_as_num, key
+                    "key found, returning idx {} for key {}, cur_as_num {}",
+                    idx, key, cur_as_num,
                 );
                 return idx;
             }
             if cur_as_num > key {
                 debug!(
-                    "larger than key found, returning idx {} for cur_as_num {}, key {}",
+                    "larger than key found, returning idx {} for key {}, cur_as_num {}, ",
                     idx - 1,
-                    cur_as_num,
                     key,
+                    cur_as_num,
                 );
                 return idx - 1;
             }
@@ -370,16 +374,18 @@ impl Node {
         self.set_header(NodeType::Leaf, src_nkeys + 1);
         debug!("insert new header: {}", src_nkeys + 1);
         // copy kv before idx
-        self.append_from_range(&src, 0, 0, idx).map_err(|err| {
-            Error::InsertError(format!("insertion error when appending before idx {}", err))
+        self.append_from_range(&src, 0, 0, idx).map_err(|e| {
+            error!("insertion error when appending before idx");
+            e
         })?;
         // insert new kv
         self.kvptr_append(idx, 0, key, val)?;
         // copy kv after idx
-        if src_nkeys > idx + 1 {
+        if src_nkeys > (idx + 1) {
             self.append_from_range(&src, idx + 1, idx, src_nkeys - idx)
-                .map_err(|err| {
-                    Error::InsertError(format!("insertion error when appending after idx {}", err))
+                .map_err(|e| {
+                    error!("insertion error when appending after idx");
+                    e
                 })?;
         }
         Ok(())
@@ -399,9 +405,9 @@ impl Node {
         let src_nkeys = src.get_nkeys();
         self.set_header(NodeType::Leaf, src_nkeys);
         // copy kv before idx
-        self.append_from_range(&src, 0, 0, idx).or_else(|err| {
+        self.append_from_range(&src, 0, 0, idx).map_err(|err| {
             error!("kv update error: when appending before idx");
-            Err(err)
+            err
         })?;
         // insert new kv
         self.kvptr_append(idx, 0, key, val)?;
@@ -409,9 +415,9 @@ impl Node {
         if src_nkeys > idx + 1 {
             // in case the updated key is the last key
             self.append_from_range(&src, idx + 1, idx + 1, src_nkeys - (idx + 1))
-                .or_else(|err| {
+                .map_err(|err| {
                     error!("kv update error: when appending after idx");
-                    Err(err)
+                    err
                 })?;
         };
         Ok(())
@@ -422,14 +428,14 @@ impl Node {
     pub fn leaf_kvdelete(&mut self, src: &Node, idx: u16) -> Result<(), Error> {
         let src_nkeys = src.get_nkeys();
         self.set_header(NodeType::Leaf, src_nkeys - 1);
-        self.append_from_range(src, 0, 0, idx).or_else(|err| {
+        self.append_from_range(src, 0, 0, idx).map_err(|err| {
             error!("deletion error when appending before idx");
-            Err(err)
+            err
         })?;
         self.append_from_range(src, idx, idx + 1, src_nkeys - 1 - idx)
-            .or_else(|err| {
+            .map_err(|err| {
                 error!("deletion error when appending after idx");
-                Err(err)
+                err
             })?;
         Ok(())
     }
@@ -465,6 +471,7 @@ impl Node {
         }
         assert!(nkeys_left > 0);
         assert!(nkeys_left < nkeys as usize);
+
         // config new nodes
         let nkeys_left = from_usize(nkeys_left);
         left.set_header(self.get_type()?, nkeys_left);
@@ -475,6 +482,7 @@ impl Node {
         right
             .append_from_range(&self, 0, nkeys_left, nkeys_right)
             .map_err(|err| Error::SplitError(format!("append error during right split: {err}")))?;
+
         assert!(right.fits_page());
         assert!(left.fits_page());
         Ok((left, right))
@@ -528,7 +536,6 @@ impl Node {
     /// consumes two nodes and returns merged node
     ///
     /// updates nkeys
-    #[instrument]
     pub fn merge(&mut self, left: Node, right: Node, ntype: NodeType) -> Result<(), Error> {
         let left_nkeys = left.get_nkeys();
         let right_nkeys = right.get_nkeys();
@@ -559,7 +566,6 @@ impl Node {
         let new_size = new.nbytes() - crate::database::node::HEADER_OFFSET as u16;
         // check left
         if idx > 0 {
-            debug!("merging with left node");
             let sibling = node_get(self.get_ptr(idx - 1).unwrap());
             let sibling_size = sibling.nbytes();
             if sibling_size + new_size < PAGE_SIZE as u16 {
@@ -568,7 +574,6 @@ impl Node {
         }
         // check right
         if idx + 1 < self.get_nkeys() {
-            debug!("merging with right node");
             let sibling = node_get(self.get_ptr(idx + 1).unwrap());
             let sibling_size = sibling.nbytes();
             if sibling_size + new_size < PAGE_SIZE as u16 {
@@ -577,6 +582,28 @@ impl Node {
         }
         debug!("no merge possible");
         None
+    }
+
+    pub fn merge_ptrdelete(
+        &mut self,
+        mut src: Node,
+        merged_node: Node,
+        merge_idx: u16,
+        idx: u16, // idx of node that got merged away
+    ) -> Result<(), Error> {
+        let src_nkeys = src.get_nkeys();
+        self.set_header(NodeType::Node, src_nkeys - 1);
+        src.set_ptr(merge_idx, node_encode(merged_node))?;
+        self.append_from_range(&src, 0, 0, idx).map_err(|err| {
+            error!("deletion error when appending before idx");
+            err
+        })?;
+        self.append_from_range(&src, idx, idx + 1, src_nkeys - 1 - idx)
+            .map_err(|err| {
+                error!("deletion error when appending after idx");
+                err
+            })?;
+        Ok(())
     }
 }
 
