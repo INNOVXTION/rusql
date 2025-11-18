@@ -1,6 +1,7 @@
 use std::str::FromStr;
 
 use tracing::debug;
+use tracing::error;
 use tracing::info;
 use tracing::instrument;
 
@@ -181,7 +182,6 @@ impl BTree {
                             Some(dir) => {
                                 let left: u64;
                                 let right: u64;
-                                let merge_index: u16; // idx of node we merge with
                                 let mut merged_node = Node::new();
                                 let merge_type = updated_child.get_type().unwrap();
                                 match dir {
@@ -194,10 +194,15 @@ impl BTree {
                                         left = node
                                             .get_ptr(idx - 1)
                                             .expect("couldnt get pointer of left node");
-                                        merge_index = idx - 1;
                                         merged_node
                                             .merge(sibling, updated_child, merge_type)
                                             .expect("merge error when merging with left node");
+                                        debug!(
+                                            "merged node: type {:?} nkeys {}",
+                                            merged_node.get_type().unwrap(),
+                                            merged_node.get_nkeys()
+                                        );
+                                        new.merge_setptr(node, merged_node, idx - 1).unwrap();
                                     }
                                     MergeDirection::Right(sibling) => {
                                         debug!(
@@ -208,23 +213,20 @@ impl BTree {
                                         right = node
                                             .get_ptr(idx + 1)
                                             .expect("couldnt get pointer of right node");
-                                        merge_index = idx + 1;
                                         merged_node
                                             .merge(updated_child, sibling, merge_type)
                                             .expect("merge error when merging with right node");
+                                        debug!(
+                                            "merged node: type {:?} nkeys {}",
+                                            merged_node.get_type().unwrap(),
+                                            merged_node.get_nkeys()
+                                        );
+                                        new.merge_setptr(node, merged_node, idx).unwrap();
                                     }
                                 };
-                                debug!(
-                                    "merged node: type {:?} nkeys {}",
-                                    merged_node.get_type().unwrap(),
-                                    merged_node.get_nkeys()
-                                );
                                 // delete old nodes
                                 node_dealloc(left);
                                 node_dealloc(right);
-                                new.merge_ptrdelete(node, merged_node, merge_index, idx)
-                                    .unwrap();
-                                // return updated internal node
                                 Some(new)
                             }
                             // no merge necessary, or no sibling to merge with
@@ -359,29 +361,45 @@ mod test {
         for i in 1u16..=200u16 {
             tree.insert(&format!("{i}"), "value").unwrap()
         }
-        for i in 1u16..=199u16 {
+        for i in 1u16..=200u16 {
             tree.delete(&format!("{i}")).unwrap()
         }
         assert_eq!(
             node_get(tree.root_ptr.unwrap()).get_type().unwrap(),
             NodeType::Leaf
         );
-        assert_eq!(node_get(tree.root_ptr.unwrap()).get_nkeys(), 2)
+        assert_eq!(node_get(tree.root_ptr.unwrap()).get_nkeys(), 1)
     }
 
     #[test]
-    fn merge_delete2() {
+    fn merge_delete_left_right() {
         let mut tree = BTree::new();
         for i in 1u16..=400u16 {
             tree.insert(&format!("{i}"), "value").unwrap()
         }
-        for i in 1u16..=399u16 {
+        for i in 1u16..=400u16 {
             tree.delete(&format!("{i}")).unwrap()
         }
         assert_eq!(
             node_get(tree.root_ptr.unwrap()).get_type().unwrap(),
             NodeType::Leaf
         );
-        assert_eq!(node_get(tree.root_ptr.unwrap()).get_nkeys(), 2)
+        assert_eq!(node_get(tree.root_ptr.unwrap()).get_nkeys(), 1)
+    }
+
+    #[test]
+    fn merge_delete_right_left() {
+        let mut tree = BTree::new();
+        for i in 1u16..=400u16 {
+            tree.insert(&format!("{i}"), "value").unwrap()
+        }
+        for i in (1..=400u16).rev() {
+            tree.delete(&format!("{i}")).unwrap()
+        }
+        assert_eq!(
+            node_get(tree.root_ptr.unwrap()).get_type().unwrap(),
+            NodeType::Leaf
+        );
+        assert_eq!(node_get(tree.root_ptr.unwrap()).get_nkeys(), 1);
     }
 }

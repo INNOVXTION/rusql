@@ -257,7 +257,7 @@ impl Node {
     ///
     /// does not update nkeys!
     #[instrument(skip(self, src))]
-    fn append_from_range(
+    pub fn append_from_range(
         &mut self,
         src: &Node,
         dst_idx: u16,
@@ -432,11 +432,13 @@ impl Node {
             error!("deletion error when appending before idx");
             err
         })?;
-        self.append_from_range(src, idx, idx + 1, src_nkeys - 1 - idx)
-            .map_err(|err| {
-                error!("deletion error when appending after idx");
-                err
-            })?;
+        if src_nkeys > (idx + 1) {
+            self.append_from_range(src, idx, idx + 1, src_nkeys - 1 - idx)
+                .map_err(|err| {
+                    error!("deletion error when appending after idx");
+                    err
+                })?;
+        }
         Ok(())
     }
 
@@ -584,25 +586,30 @@ impl Node {
         None
     }
 
-    pub fn merge_ptrdelete(
+    pub fn merge_setptr(
         &mut self,
-        mut src: Node,
+        src: Node,
         merged_node: Node,
-        merge_idx: u16,
         idx: u16, // idx of node that got merged away
     ) -> Result<(), Error> {
         let src_nkeys = src.get_nkeys();
         self.set_header(NodeType::Node, src_nkeys - 1);
-        src.set_ptr(merge_idx, node_encode(merged_node))?;
+
+        let merge_ptr_key = merged_node.get_key(0).unwrap().to_string();
+        let merge_node_ptr = node_encode(merged_node);
+
         self.append_from_range(&src, 0, 0, idx).map_err(|err| {
-            error!("deletion error when appending before idx");
+            error!("merge error when appending before idx");
             err
         })?;
-        self.append_from_range(&src, idx, idx + 1, src_nkeys - 1 - idx)
-            .map_err(|err| {
-                error!("deletion error when appending after idx");
-                err
-            })?;
+        self.kvptr_append(idx, merge_node_ptr, &merge_ptr_key, "")?;
+        if src_nkeys > (idx + 2) {
+            self.append_from_range(&src, idx + 1, idx + 2, src_nkeys - idx - 2)
+                .map_err(|err| {
+                    error!("merge error when appending after idx");
+                    err
+                })?;
+        }
         Ok(())
     }
 }
