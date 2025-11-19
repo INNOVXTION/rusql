@@ -274,13 +274,13 @@ impl Node {
             return Err(Error::IndexError);
         }
         for i in 0..n {
-            let dst_idx = dst_idx + i;
-            let src_idx = src_idx + i;
+            // let dst_idx = dst_idx + i;
+            // let src_idx = src_idx + i;
             self.kvptr_append(
-                dst_idx,
-                src.get_ptr(src_idx)?,
-                src.get_key(src_idx)?,
-                src.get_val(src_idx)?,
+                dst_idx + i,
+                src.get_ptr(src_idx + i)?,
+                src.get_key(src_idx + i)?,
+                src.get_val(src_idx + i)?,
             )?;
         }
         Ok(())

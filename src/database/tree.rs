@@ -1,7 +1,4 @@
-use std::str::FromStr;
-
 use tracing::debug;
-use tracing::error;
 use tracing::info;
 use tracing::instrument;
 
@@ -14,16 +11,12 @@ use crate::errors::Error;
 
 pub struct BTree {
     root_ptr: Option<u64>,
-    height: u16,
 }
 
 #[allow(dead_code)]
 impl BTree {
     pub fn new() -> Self {
-        BTree {
-            root_ptr: None,
-            height: 0,
-        }
+        BTree { root_ptr: None }
     }
 
     #[instrument(skip(self), err)]
@@ -42,7 +35,6 @@ impl BTree {
                 new_root.set_header(NodeType::Leaf, 2);
                 new_root.kvptr_append(0, 0, "", "")?; // empty key to remove edge case
                 new_root.kvptr_append(1, 0, key, val)?;
-                self.height += 1;
                 self.root_ptr = Some(node_encode(new_root));
                 return Ok(());
             }
@@ -71,7 +63,6 @@ impl BTree {
         }
         // encoding new root and updating tree ptr
         self.root_ptr = Some(node_encode(new_root));
-        self.height += 1;
         debug!(
             "inserted with root split, new root ptr {}",
             self.root_ptr.unwrap()
@@ -430,12 +421,8 @@ mod test {
             node_get(tree.root_ptr.unwrap()).get_type().unwrap(),
             NodeType::Node
         );
-        assert_eq!(tree.search("50").unwrap(), "value");
-        assert_eq!(tree.search("90").unwrap(), "value");
-        assert_eq!(tree.search("150").unwrap(), "value");
-        assert_eq!(tree.search("170").unwrap(), "value");
-        assert_eq!(tree.search("200").unwrap(), "value");
-        assert_eq!(tree.search("300").unwrap(), "value");
-        assert_eq!(tree.search("400").unwrap(), "value");
+        for i in 1u16..=1000u16 {
+            assert_eq!(tree.search(&format!("{i}")).unwrap(), "value")
+        }
     }
 }
