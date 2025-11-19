@@ -26,7 +26,7 @@ impl BTree {
         }
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip(self), err)]
     pub fn insert(&mut self, key: &str, val: &str) -> Result<(), Error> {
         info!("inserting new kv...");
         // check size limit
@@ -107,7 +107,7 @@ impl BTree {
         }
         new
     }
-    #[instrument(skip(self))]
+    #[instrument(skip(self), err)]
     pub fn delete(&mut self, key: &str) -> Result<(), Error> {
         info!("deleting kv...");
         let root_ptr = match self.root_ptr {
@@ -121,16 +121,20 @@ impl BTree {
         let updated = BTree::tree_delete(node_get(root_ptr), key)
             .ok_or(Error::DeleteError("key not found!".to_string()))?;
         node_dealloc(root_ptr);
-        match updated.get_type()? {
+        match updated.get_nkeys() {
             // check if tree needs to shrink in height
-            NodeType::Node if updated.get_nkeys() == 1 => {
+            1 if updated.get_type()? == NodeType::Node => {
                 debug!(
                     "tree shrunk, root updated to: {:?} nkeys: {}",
                     updated.get_type().unwrap(),
                     updated.get_nkeys()
                 );
                 self.root_ptr = Some(updated.get_ptr(0)?);
-                Ok(())
+            }
+            // delete tree if node is empty
+            0 => {
+                debug!("tree is now empty!");
+                self.root_ptr = None;
             }
             _ => {
                 debug!(
@@ -139,9 +143,9 @@ impl BTree {
                     updated.get_nkeys()
                 );
                 self.root_ptr = Some(node_encode(updated));
-                Ok(())
             }
         }
+        Ok(())
     }
 
     /// recursive deletion, node = current node, returns updated node in case a deletion happened
@@ -401,5 +405,37 @@ mod test {
             NodeType::Leaf
         );
         assert_eq!(node_get(tree.root_ptr.unwrap()).get_nkeys(), 1);
+    }
+
+    #[test]
+    fn merge_delete3() {
+        let mut tree = BTree::new();
+        for i in 1u16..=400u16 {
+            tree.insert(&format!("{i}"), "value").unwrap()
+        }
+        for i in (1..=400u16).rev() {
+            tree.delete(&format!("{i}")).unwrap()
+        }
+        tree.delete("").unwrap();
+        assert_eq!(tree.root_ptr, None);
+    }
+
+    #[test]
+    fn insert_big() {
+        let mut tree = BTree::new();
+        for i in 1u16..=1000u16 {
+            tree.insert(&format!("{i}"), "value").unwrap()
+        }
+        assert_eq!(
+            node_get(tree.root_ptr.unwrap()).get_type().unwrap(),
+            NodeType::Node
+        );
+        assert_eq!(tree.search("50").unwrap(), "value");
+        assert_eq!(tree.search("90").unwrap(), "value");
+        assert_eq!(tree.search("150").unwrap(), "value");
+        assert_eq!(tree.search("170").unwrap(), "value");
+        assert_eq!(tree.search("200").unwrap(), "value");
+        assert_eq!(tree.search("300").unwrap(), "value");
+        assert_eq!(tree.search("400").unwrap(), "value");
     }
 }

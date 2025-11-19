@@ -1,12 +1,10 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use tracing::debug;
-
 use crate::database::node::Node;
 
 thread_local! {
-    pub static FREELIST: RefCell<Vec<u64>> = RefCell::new(Vec::from_iter(1..10));
+    pub static FREELIST: RefCell<Vec<u64>> = RefCell::new(Vec::from_iter(1..20));
     pub static PAGER: RefCell<HashMap<u64, Node>> = RefCell::new(HashMap::new());
 }
 

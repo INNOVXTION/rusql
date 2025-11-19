@@ -427,6 +427,9 @@ impl Node {
     /// updates nkeys, sets node to leaf
     pub fn leaf_kvdelete(&mut self, src: &Node, idx: u16) -> Result<(), Error> {
         let src_nkeys = src.get_nkeys();
+        if (src_nkeys - 1) == 0 {
+            return Ok(());
+        }
         self.set_header(NodeType::Leaf, src_nkeys - 1);
         self.append_from_range(src, 0, 0, idx).map_err(|err| {
             error!("deletion error when appending before idx");
