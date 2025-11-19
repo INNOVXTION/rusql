@@ -274,8 +274,6 @@ impl Node {
             return Err(Error::IndexError);
         }
         for i in 0..n {
-            // let dst_idx = dst_idx + i;
-            // let src_idx = src_idx + i;
             self.kvptr_append(
                 dst_idx + i,
                 src.get_ptr(src_idx + i)?,
@@ -717,9 +715,7 @@ mod test {
 
         let mut n2 = Node::new();
 
-        n2.leaf_kvdelete(&n1, 1).expect("unexpected panic");
-        // deleting out of bounds
-        n2.leaf_kvdelete(&n1, 2).expect("index error");
+        n2.leaf_kvdelete(&n1, 3).expect("index error");
         ()
     }
 }

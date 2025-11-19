@@ -276,6 +276,7 @@ impl BTree {
 #[cfg(test)]
 mod test {
     use super::*;
+    use rand::Rng;
     use test_log::test;
     use tracing::info;
 
@@ -423,6 +424,15 @@ mod test {
         );
         for i in 1u16..=1000u16 {
             assert_eq!(tree.search(&format!("{i}")).unwrap(), "value")
+        }
+    }
+
+    #[test]
+    fn random_1k() {
+        let mut tree = BTree::new();
+        for _ in 1u16..=1000 {
+            tree.insert(&format!("{:?}", rand::rng().random_range(0..1000)), "val")
+                .unwrap()
         }
     }
 }

@@ -10,3 +10,4 @@ thiserror = { version = "2.0" }
 
 [dev-dependencies]
 test-log = {version = "0.2", default-features = false, features = ["trace"]}
+rand = { version = "0.9"}
