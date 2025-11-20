@@ -11,24 +11,12 @@ use crate::errors::Error;
 
 pub struct BTree {
     root_ptr: Option<Pointer>,
-    get: fn(Pointer) -> Node,
-    encode: fn(Node) -> Pointer,
-    dealloc: fn(Pointer),
-}
-
-fn foo() {
-    let tree = BTree::new();
 }
 
 #[allow(dead_code)]
 impl BTree {
     pub fn new() -> Self {
-        BTree {
-            root_ptr: None,
-            get: node_get,
-            encode: node_encode,
-            dealloc: node_dealloc,
-        }
+        BTree { root_ptr: None }
     }
 
     #[instrument(skip(self), err)]

@@ -39,7 +39,6 @@ pub enum MergeDirection {
     Right(Node),
 }
 
-#[allow(dead_code)]
 impl Node {
     /// new empty node
     pub fn new() -> Self {

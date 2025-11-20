@@ -51,6 +51,7 @@ pub enum PagerError {
     PageNotFound(u64),
     NoAvailablePage,
     DeallocError(u64),
+    CodecError(io::Error),
 }
 
 impl Display for PagerError {
@@ -59,8 +60,15 @@ impl Display for PagerError {
             PagerError::PageNotFound(e) => write!(f, "Couldnt retrieve page: {}", e),
             PagerError::NoAvailablePage => write!(f, "No free pages available"),
             PagerError::DeallocError(e) => write!(f, "Deallocation failed for page: {}", e),
+            PagerError::CodecError(e) => write!(f, "Error when encoding/decoding node: {}", e),
         }
     }
 }
 
 impl std::error::Error for PagerError {}
+
+impl From<io::Error> for PagerError {
+    fn from(value: io::Error) -> Self {
+        Self::CodecError(value)
+    }
+}

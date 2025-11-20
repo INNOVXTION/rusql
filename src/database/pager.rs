@@ -1,11 +1,12 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::fmt::Display;
-use std::io::{self, Read, Seek};
+use std::fs::File;
 
 use crate::database::node::Node;
+use crate::database::tree::BTree;
 use crate::database::types::PAGE_SIZE;
-use crate::errors::Error;
 
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Eq, Hash)]
 pub struct Pointer(u64);
@@ -56,11 +57,44 @@ pub(crate) fn node_dealloc(ptr: Pointer) {
         .expect("couldnt remove() page number");
 }
 
-// retrieve page content from page number
-pub fn decode(page_number: Pointer) -> Result<Node, Error> {
-    let mut file = std::fs::File::open("database.rdb")?;
-    let mut new_page = Node::new();
-    file.seek(io::SeekFrom::Start(PAGE_SIZE as u64 * page_number.0))?;
-    file.read_exact(&mut *new_page.0)?;
-    Ok(new_page)
+pub trait Paging {
+    fn new() -> Self;
+    fn encode(&mut self, node: Node) -> Pointer;
+    fn decode(&self, ptr: Pointer) -> Node;
+    fn delete(&mut self, ptr: Pointer);
 }
+
+#[allow(dead_code)]
+pub struct Pager {
+    path: OsString,
+    database: File,
+    tree: BTree,
+}
+
+#[allow(dead_code)]
+impl Paging for Pager {
+    fn new() -> Self {
+        todo!()
+    }
+
+    fn encode(&mut self, node: Node) -> Pointer {
+        todo!()
+    }
+
+    fn decode(&self, ptr: Pointer) -> Node {
+        todo!()
+    }
+
+    fn delete(&mut self, ptr: Pointer) {
+        todo!()
+    }
+}
+
+// // retrieve page content from page number
+// pub fn decode(&self, page_number: Pointer) -> Result<Node, PagerError> {
+//     let mut file = std::fs::File::open("database.rdb")?;
+//     let mut new_page = Node::new();
+//     file.seek(io::SeekFrom::Start(PAGE_SIZE as u64 * page_number.0))?;
+//     file.read_exact(&mut *new_page.0)?;
+//     Ok(new_page)
+// }
