@@ -45,3 +45,22 @@ impl From<Utf8Error> for Error {
         Error::StrCastError(value)
     }
 }
+
+#[derive(Debug)]
+pub enum PagerError {
+    PageNotFound(u64),
+    NoAvailablePage,
+    DeallocError(u64),
+}
+
+impl Display for PagerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PagerError::PageNotFound(e) => write!(f, "Couldnt retrieve page: {}", e),
+            PagerError::NoAvailablePage => write!(f, "No free pages available"),
+            PagerError::DeallocError(e) => write!(f, "Deallocation failed for page: {}", e),
+        }
+    }
+}
+
+impl std::error::Error for PagerError {}

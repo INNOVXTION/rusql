@@ -10,13 +10,25 @@ use crate::errors::Error;
 // determines when nodes should be merged, higher number = less merges
 
 pub struct BTree {
-    root_ptr: Option<u64>,
+    root_ptr: Option<Pointer>,
+    get: fn(Pointer) -> Node,
+    encode: fn(Node) -> Pointer,
+    dealloc: fn(Pointer),
+}
+
+fn foo() {
+    let tree = BTree::new();
 }
 
 #[allow(dead_code)]
 impl BTree {
     pub fn new() -> Self {
-        BTree { root_ptr: None }
+        BTree {
+            root_ptr: None,
+            get: node_get,
+            encode: node_encode,
+            dealloc: node_dealloc,
+        }
     }
 
     #[instrument(skip(self), err)]
@@ -33,8 +45,8 @@ impl BTree {
                 debug!("no root found, creating new root");
                 let mut new_root = Node::new();
                 new_root.set_header(NodeType::Leaf, 2);
-                new_root.kvptr_append(0, 0, "", "")?; // empty key to remove edge case
-                new_root.kvptr_append(1, 0, key, val)?;
+                new_root.kvptr_append(0, Pointer::from(0), "", "")?; // empty key to remove edge case
+                new_root.kvptr_append(1, Pointer::from(0), key, val)?;
                 self.root_ptr = Some(node_encode(new_root));
                 return Ok(());
             }
@@ -175,8 +187,8 @@ impl BTree {
                         match node.merge_check(&updated_child, idx) {
                             // we need to merge
                             Some(dir) => {
-                                let left: u64;
-                                let right: u64;
+                                let left: Pointer;
+                                let right: Pointer;
                                 let mut merged_node = Node::new();
                                 let merge_type = updated_child.get_type().unwrap();
                                 match dir {

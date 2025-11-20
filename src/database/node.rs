@@ -78,27 +78,27 @@ impl Node {
             NodeType::Node => 1,
             NodeType::Leaf => 2,
         };
-        self.0[..2].copy_from_slice(&nodetype.to_le_bytes());
-        self.0[2..4].copy_from_slice(&nkeys.to_le_bytes());
+        write_u16(self, 0, nodetype).expect("panic when setting header");
+        write_u16(self, 2, nkeys).expect("panic when setting header");
     }
 
     /// retrieves child pointer(page number) from pointer array: 8 bytes
-    pub fn get_ptr(&self, idx: u16) -> Result<u64, Error> {
+    pub fn get_ptr(&self, idx: u16) -> Result<Pointer, Error> {
         if idx >= self.get_nkeys() {
             error!("invalid index");
             return Err(Error::IndexError);
         };
         let pos: usize = HEADER_OFFSET + 8 * idx as usize;
-        slice_to_u64(self, pos)
+        slice_to_pointer(self, pos)
     }
     /// sets points in array, does not increase nkeys!
-    pub fn set_ptr(&mut self, idx: u16, ptr: u64) -> Result<(), Error> {
+    pub fn set_ptr(&mut self, idx: u16, ptr: Pointer) -> Result<(), Error> {
         if idx >= self.get_nkeys() {
             error!("invalid index");
             return Err(Error::IndexError);
         };
         let pos: usize = HEADER_OFFSET + 8 * idx as usize;
-        self.0[pos..pos + 8].copy_from_slice(&ptr.to_le_bytes());
+        write_pointer(self, pos, ptr)?;
         Ok(())
     }
 
@@ -169,7 +169,7 @@ impl Node {
             panic!()
         }
         let pos = HEADER_OFFSET + (8 * self.get_nkeys() as usize) + 2 * (idx as usize - 1);
-        self.0[pos..pos + 2].copy_from_slice(&size.to_le_bytes())
+        write_u16(self, pos, size).expect("error when setting offset")
     }
 
     /// kv position relative to node
@@ -233,7 +233,13 @@ impl Node {
     /// appends key value and pointer at index
     ///
     /// does not update nkeys!
-    pub fn kvptr_append(&mut self, idx: u16, ptr: u64, key: &str, val: &str) -> Result<(), Error> {
+    pub fn kvptr_append(
+        &mut self,
+        idx: u16,
+        ptr: Pointer,
+        key: &str,
+        val: &str,
+    ) -> Result<(), Error> {
         self.set_ptr(idx, ptr)?;
         let kvpos = self.kv_pos(idx)?;
         let klen: u16 = key.len().try_into()?;
@@ -272,7 +278,7 @@ impl Node {
                 self.get_nkeys()
             );
             return Err(Error::IndexError);
-        }
+        };
         for i in 0..n {
             self.kvptr_append(
                 dst_idx + i,
@@ -377,7 +383,7 @@ impl Node {
             e
         })?;
         // insert new kv
-        self.kvptr_append(idx, 0, key, val)?;
+        self.kvptr_append(idx, Pointer::from(0), key, val)?;
         // copy kv after idx
         if src_nkeys > (idx + 1) {
             self.append_from_range(&src, idx + 1, idx, src_nkeys - idx)
@@ -408,7 +414,7 @@ impl Node {
             err
         })?;
         // insert new kv
-        self.kvptr_append(idx, 0, key, val)?;
+        self.kvptr_append(idx, Pointer::from(0), key, val)?;
         // copy kv after idx
         if src_nkeys > idx + 1 {
             // in case the updated key is the last key
@@ -617,9 +623,7 @@ impl Node {
 
 impl Clone for Node {
     fn clone(&self) -> Self {
-        let mut node = Node::new();
-        node.0 = self.0.clone();
-        node
+        Node(self.0.clone())
     }
 }
 #[cfg(test)]
@@ -641,18 +645,18 @@ mod test {
         let mut page = Node::new();
         page.set_header(NodeType::Node, 5);
 
-        page.set_ptr(1, 10).unwrap();
-        page.set_ptr(2, 20).unwrap();
-        assert_eq!(page.get_ptr(1).unwrap(), 10);
-        assert_eq!(page.get_ptr(2).unwrap(), 20);
+        page.set_ptr(1, Pointer::from(10)).unwrap();
+        page.set_ptr(2, Pointer::from(20)).unwrap();
+        assert_eq!(page.get_ptr(1).unwrap(), Pointer::from(10));
+        assert_eq!(page.get_ptr(2).unwrap(), Pointer::from(20));
     }
 
     #[test]
     fn kv_append() -> Result<(), Error> {
         let mut node = Node::new();
         node.set_header(NodeType::Leaf, 2);
-        node.kvptr_append(0, 0, "k1", "hi")?;
-        node.kvptr_append(1, 0, "k3", "hello")?;
+        node.kvptr_append(0, Pointer::from(0), "k1", "hi")?;
+        node.kvptr_append(1, Pointer::from(0), "k3", "hello")?;
 
         assert_eq!(node.get_key(0).unwrap(), "k1");
         assert_eq!(node.get_val(0).unwrap(), "hi");
@@ -668,8 +672,8 @@ mod test {
 
         n2.set_header(NodeType::Leaf, 2);
         n1.set_header(NodeType::Leaf, 2);
-        n1.kvptr_append(0, 0, "k1", "hi")?;
-        n1.kvptr_append(1, 0, "k3", "hello")?;
+        n1.kvptr_append(0, Pointer::from(0), "k1", "hi")?;
+        n1.kvptr_append(1, Pointer::from(0), "k3", "hello")?;
         n2.append_from_range(&n1, 0, 0, n1.get_nkeys())?;
 
         assert_eq!(n2.get_key(0).unwrap(), "k1");
@@ -685,9 +689,9 @@ mod test {
         let mut n2 = Node::new();
 
         n1.set_header(NodeType::Leaf, 3);
-        n1.kvptr_append(0, 0, "k1", "hi")?;
-        n1.kvptr_append(1, 0, "k2", "bonjour")?;
-        n1.kvptr_append(2, 0, "k3", "hello")?;
+        n1.kvptr_append(0, Pointer::from(0), "k1", "hi")?;
+        n1.kvptr_append(1, Pointer::from(0), "k2", "bonjour")?;
+        n1.kvptr_append(2, Pointer::from(0), "k3", "hello")?;
 
         n2.leaf_kvdelete(&n1, 1)?;
 
@@ -703,13 +707,13 @@ mod test {
     fn kv_delete_panic() -> () {
         let mut n1 = Node::new();
         n1.set_header(NodeType::Leaf, 3);
-        n1.kvptr_append(0, 0, "k1", "hi")
+        n1.kvptr_append(0, Pointer::from(0), "k1", "hi")
             .map_err(|_| ())
             .expect("unexpected panic");
-        n1.kvptr_append(1, 0, "k2", "bonjour")
+        n1.kvptr_append(1, Pointer::from(0), "k2", "bonjour")
             .map_err(|_| ())
             .expect("unexpected panic");
-        n1.kvptr_append(2, 0, "k3", "hello")
+        n1.kvptr_append(2, Pointer::from(0), "k3", "hello")
             .map_err(|_| ())
             .expect("unexpected panic");
 
