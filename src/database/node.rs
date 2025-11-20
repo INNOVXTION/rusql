@@ -58,13 +58,13 @@ impl Node {
         true
     }
 
-    pub fn get_type(&self) -> Result<NodeType, Error> {
-        match slice_to_u16(self, 0)? {
-            1 => Ok(NodeType::Node),
-            2 => Ok(NodeType::Leaf),
+    pub fn get_type(&self) -> NodeType {
+        match slice_to_u16(self, 0).expect("error when reading node type") {
+            1 => NodeType::Node,
+            2 => NodeType::Leaf,
             _ => {
                 error!("corrupted node type");
-                Err(Error::IndexError)
+                panic!("invaild node type, possibly corrupted")
             }
         }
     }
@@ -83,23 +83,22 @@ impl Node {
     }
 
     /// retrieves child pointer(page number) from pointer array: 8 bytes
-    pub fn get_ptr(&self, idx: u16) -> Result<Pointer, Error> {
+    pub fn get_ptr(&self, idx: u16) -> Pointer {
         if idx >= self.get_nkeys() {
             error!("invalid index");
-            return Err(Error::IndexError);
+            panic!("invalid index")
         };
         let pos: usize = HEADER_OFFSET + 8 * idx as usize;
-        slice_to_pointer(self, pos)
+        slice_to_pointer(self, pos).expect("error when getting pointer")
     }
     /// sets points in array, does not increase nkeys!
-    pub fn set_ptr(&mut self, idx: u16, ptr: Pointer) -> Result<(), Error> {
+    pub fn set_ptr(&mut self, idx: u16, ptr: Pointer) {
         if idx >= self.get_nkeys() {
             error!("invalid index");
-            return Err(Error::IndexError);
+            panic!("invalid index")
         };
         let pos: usize = HEADER_OFFSET + 8 * idx as usize;
-        write_pointer(self, pos, ptr)?;
-        Ok(())
+        write_pointer(self, pos, ptr).expect("error when setting pointer")
     }
 
     /// inserts ptr when splitting or adding new leaf nodes, encodes nodes
@@ -207,7 +206,7 @@ impl Node {
 
     /// retrieves value as byte array
     pub fn get_val(&self, idx: u16) -> Result<&str, Error> {
-        if let NodeType::Node = self.get_type()? {
+        if let NodeType::Node = self.get_type() {
             return Ok(" ");
         }
         if idx >= self.get_nkeys() {
@@ -240,7 +239,7 @@ impl Node {
         key: &str,
         val: &str,
     ) -> Result<(), Error> {
-        self.set_ptr(idx, ptr)?;
+        self.set_ptr(idx, ptr);
         let kvpos = self.kv_pos(idx)?;
         let klen: u16 = key.len().try_into()?;
         let vlen: u16 = val.len().try_into()?;
@@ -282,7 +281,7 @@ impl Node {
         for i in 0..n {
             self.kvptr_append(
                 dst_idx + i,
-                src.get_ptr(src_idx + i)?,
+                src.get_ptr(src_idx + i),
                 src.get_key(src_idx + i)?,
                 src.get_val(src_idx + i)?,
             )?;
@@ -308,11 +307,7 @@ impl Node {
     /// TODO: binary search
     pub fn lookupidx(&self, key: &str) -> u16 {
         let nkeys = self.get_nkeys();
-        debug!(
-            "lookupidx in {:?} nkeys {}",
-            self.get_type().unwrap(),
-            nkeys
-        );
+        debug!("lookupidx in {:?} nkeys {}", self.get_type(), nkeys);
         if nkeys == 0 | 1 {
             return 0;
         }
@@ -483,11 +478,11 @@ impl Node {
 
         // config new nodes
         let nkeys_left = from_usize(nkeys_left);
-        left.set_header(self.get_type()?, nkeys_left);
+        left.set_header(self.get_type(), nkeys_left);
         left.append_from_range(&self, 0, 0, nkeys_left)
             .map_err(|err| Error::SplitError(format!("append error during left split, {err}")))?;
         let nkeys_right = nkeys - nkeys_left;
-        right.set_header(self.get_type()?, nkeys_right);
+        right.set_header(self.get_type(), nkeys_right);
         right
             .append_from_range(&self, 0, nkeys_left, nkeys_right)
             .map_err(|err| Error::SplitError(format!("append error during right split: {err}")))?;
@@ -575,7 +570,7 @@ impl Node {
         let new_size = new.nbytes() - crate::database::node::HEADER_OFFSET as u16;
         // check left
         if idx > 0 {
-            let sibling = node_get(self.get_ptr(idx - 1).unwrap());
+            let sibling = node_get(self.get_ptr(idx - 1));
             let sibling_size = sibling.nbytes();
             if sibling_size + new_size < PAGE_SIZE as u16 {
                 return Some(MergeDirection::Left(sibling));
@@ -583,7 +578,7 @@ impl Node {
         }
         // check right
         if idx + 1 < self.get_nkeys() {
-            let sibling = node_get(self.get_ptr(idx + 1).unwrap());
+            let sibling = node_get(self.get_ptr(idx + 1));
             let sibling_size = sibling.nbytes();
             if sibling_size + new_size < PAGE_SIZE as u16 {
                 return Some(MergeDirection::Right(sibling));
@@ -636,7 +631,7 @@ mod test {
         let mut page = Node::new();
         page.set_header(NodeType::Node, 5);
 
-        assert_eq!(page.get_type().unwrap(), NodeType::Node);
+        assert_eq!(page.get_type(), NodeType::Node);
         assert_eq!(page.get_nkeys(), 5);
     }
 
@@ -645,10 +640,10 @@ mod test {
         let mut page = Node::new();
         page.set_header(NodeType::Node, 5);
 
-        page.set_ptr(1, Pointer::from(10)).unwrap();
-        page.set_ptr(2, Pointer::from(20)).unwrap();
-        assert_eq!(page.get_ptr(1).unwrap(), Pointer::from(10));
-        assert_eq!(page.get_ptr(2).unwrap(), Pointer::from(20));
+        page.set_ptr(1, Pointer::from(10));
+        page.set_ptr(2, Pointer::from(20));
+        assert_eq!(page.get_ptr(1), Pointer::from(10));
+        assert_eq!(page.get_ptr(2), Pointer::from(20));
     }
 
     #[test]

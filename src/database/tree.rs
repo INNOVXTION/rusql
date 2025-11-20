@@ -88,7 +88,7 @@ impl BTree {
     fn tree_insert(node: Node, key: &str, val: &str) -> Node {
         let mut new = Node::new();
         let idx = node.lookupidx(key);
-        match node.get_type().unwrap() {
+        match node.get_type() {
             NodeType::Leaf => {
                 // updating or inserting kv
                 new.insert(node, key, val, idx);
@@ -99,7 +99,7 @@ impl BTree {
                     "traversing through node, at idx: {idx} key: {}",
                     node.get_key(idx).unwrap()
                 );
-                let kptr = node.get_ptr(idx).unwrap(); // ptr of child below us
+                let kptr = node.get_ptr(idx); // ptr of child below us
                 let knode = BTree::tree_insert(node_get(kptr), key, val); // node below us
                 let split = knode.split().unwrap(); // potential split
                 // delete old child
@@ -126,13 +126,13 @@ impl BTree {
         node_dealloc(root_ptr);
         match updated.get_nkeys() {
             // check if tree needs to shrink in height
-            1 if updated.get_type()? == NodeType::Node => {
+            1 if updated.get_type() == NodeType::Node => {
                 debug!(
                     "tree shrunk, root updated to: {:?} nkeys: {}",
-                    updated.get_type().unwrap(),
+                    updated.get_type(),
                     updated.get_nkeys()
                 );
-                self.root_ptr = Some(updated.get_ptr(0)?);
+                self.root_ptr = Some(updated.get_ptr(0));
             }
             // delete tree if node is empty
             0 => {
@@ -142,7 +142,7 @@ impl BTree {
             _ => {
                 debug!(
                     "root updated to: {:?} nkeys: {}",
-                    updated.get_type().unwrap(),
+                    updated.get_type(),
                     updated.get_nkeys()
                 );
                 self.root_ptr = Some(node_encode(updated));
@@ -157,7 +157,7 @@ impl BTree {
     fn tree_delete(mut node: Node, key: &str) -> Option<Node> {
         // del(key = 5)
         let idx = node.lookupidx(key); // 1
-        match node.get_type().unwrap() {
+        match node.get_type() {
             NodeType::Leaf => {
                 if let Some(i) = node.searchidx(key) {
                     debug!("deleting key {key} at idx {idx}");
@@ -174,9 +174,7 @@ impl BTree {
                     "traversing through node, at idx: {idx} key: {}",
                     node.get_key(idx).unwrap()
                 );
-                let kptr = node
-                    .get_ptr(idx)
-                    .expect("delete error: couldnt get kptr at idx {idx}"); // child 2 ptr
+                let kptr = node.get_ptr(idx); // child 2 ptr
                 // in case leaf node was updated below us
                 // updated chlild 2 comes back
                 match BTree::tree_delete(node_get(kptr), key) {
@@ -190,7 +188,7 @@ impl BTree {
                                 let left: Pointer;
                                 let right: Pointer;
                                 let mut merged_node = Node::new();
-                                let merge_type = updated_child.get_type().unwrap();
+                                let merge_type = updated_child.get_type();
                                 match dir {
                                     MergeDirection::Left(sibling) => {
                                         debug!(
@@ -198,15 +196,13 @@ impl BTree {
                                             idx - 1
                                         );
                                         right = kptr;
-                                        left = node
-                                            .get_ptr(idx - 1)
-                                            .expect("couldnt get pointer of left node");
+                                        left = node.get_ptr(idx - 1);
                                         merged_node
                                             .merge(sibling, updated_child, merge_type)
                                             .expect("merge error when merging with left node");
                                         debug!(
                                             "merged node: type {:?} nkeys {}",
-                                            merged_node.get_type().unwrap(),
+                                            merged_node.get_type(),
                                             merged_node.get_nkeys()
                                         );
                                         new.merge_setptr(node, merged_node, idx - 1).unwrap();
@@ -217,15 +213,13 @@ impl BTree {
                                             idx + 1
                                         );
                                         left = kptr;
-                                        right = node
-                                            .get_ptr(idx + 1)
-                                            .expect("couldnt get pointer of right node");
+                                        right = node.get_ptr(idx + 1);
                                         merged_node
                                             .merge(updated_child, sibling, merge_type)
                                             .expect("merge error when merging with right node");
                                         debug!(
                                             "merged node: type {:?} nkeys {}",
-                                            merged_node.get_type().unwrap(),
+                                            merged_node.get_type(),
                                             merged_node.get_nkeys()
                                         );
                                         new.merge_setptr(node, merged_node, idx).unwrap();
@@ -246,7 +240,7 @@ impl BTree {
                                     return Some(new);
                                 }
                                 // no merge, update new child
-                                node.set_ptr(idx, node_encode(updated_child)).unwrap();
+                                node.set_ptr(idx, node_encode(updated_child));
                                 // new.set_header(NodeType::Node, cur_nkeys);
                                 // new.insert_nkids(node, idx, (0, vec![updated_child]))
                                 //     .unwrap();
@@ -267,7 +261,7 @@ impl BTree {
 
     fn tree_search(node: Node, key: &str) -> Option<String> {
         let idx = node.lookupidx(key);
-        match node.get_type().unwrap() {
+        match node.get_type() {
             NodeType::Leaf => {
                 if let Some(i) = node.searchidx(key) {
                     debug!("key {key} found!");
@@ -278,7 +272,7 @@ impl BTree {
             }
             NodeType::Node => {
                 debug!("traversing through node, at idx: {idx} key: {}", key);
-                let kptr = node.get_ptr(idx).unwrap();
+                let kptr = node.get_ptr(idx);
                 BTree::tree_search(node_get(kptr), key)
             }
         }
@@ -302,10 +296,7 @@ mod test {
         assert_eq!(tree.search("1").unwrap(), "hello");
         assert_eq!(tree.search("2").unwrap(), "world");
         assert_eq!(node_get(tree.root_ptr.unwrap()).get_nkeys(), 3);
-        assert_eq!(
-            node_get(tree.root_ptr.unwrap()).get_type().unwrap(),
-            NodeType::Leaf
-        );
+        assert_eq!(node_get(tree.root_ptr.unwrap()).get_type(), NodeType::Leaf);
     }
 
     #[test]
@@ -314,10 +305,7 @@ mod test {
         tree.insert("1", "hello").unwrap();
         tree.insert("2", "world").unwrap();
         tree.insert("3", "bonjour").unwrap();
-        assert_eq!(
-            node_get(tree.root_ptr.unwrap()).get_type().unwrap(),
-            NodeType::Leaf
-        );
+        assert_eq!(node_get(tree.root_ptr.unwrap()).get_type(), NodeType::Leaf);
 
         assert_eq!(node_get(tree.root_ptr.unwrap()).get_nkeys(), 4);
         tree.delete("2").unwrap();
@@ -333,10 +321,7 @@ mod test {
         for i in 1u16..=200u16 {
             tree.insert(&format!("{i}"), "value").unwrap()
         }
-        assert_eq!(
-            node_get(tree.root_ptr.unwrap()).get_type().unwrap(),
-            NodeType::Node
-        );
+        assert_eq!(node_get(tree.root_ptr.unwrap()).get_type(), NodeType::Node);
         assert_eq!(tree.search("40").unwrap(), "value");
         assert_eq!(tree.search("90").unwrap(), "value");
         assert_eq!(tree.search("150").unwrap(), "value");
@@ -350,10 +335,7 @@ mod test {
         for i in 1u16..=400u16 {
             tree.insert(&format!("{i}"), "value").unwrap()
         }
-        assert_eq!(
-            node_get(tree.root_ptr.unwrap()).get_type().unwrap(),
-            NodeType::Node
-        );
+        assert_eq!(node_get(tree.root_ptr.unwrap()).get_type(), NodeType::Node);
         assert_eq!(tree.search("50").unwrap(), "value");
         assert_eq!(tree.search("90").unwrap(), "value");
         assert_eq!(tree.search("150").unwrap(), "value");
@@ -372,10 +354,7 @@ mod test {
         for i in 1u16..=200u16 {
             tree.delete(&format!("{i}")).unwrap()
         }
-        assert_eq!(
-            node_get(tree.root_ptr.unwrap()).get_type().unwrap(),
-            NodeType::Leaf
-        );
+        assert_eq!(node_get(tree.root_ptr.unwrap()).get_type(), NodeType::Leaf);
         assert_eq!(node_get(tree.root_ptr.unwrap()).get_nkeys(), 1)
     }
 
@@ -388,10 +367,7 @@ mod test {
         for i in 1u16..=400u16 {
             tree.delete(&format!("{i}")).unwrap()
         }
-        assert_eq!(
-            node_get(tree.root_ptr.unwrap()).get_type().unwrap(),
-            NodeType::Leaf
-        );
+        assert_eq!(node_get(tree.root_ptr.unwrap()).get_type(), NodeType::Leaf);
         assert_eq!(node_get(tree.root_ptr.unwrap()).get_nkeys(), 1)
     }
 
@@ -404,10 +380,7 @@ mod test {
         for i in (1..=400u16).rev() {
             tree.delete(&format!("{i}")).unwrap()
         }
-        assert_eq!(
-            node_get(tree.root_ptr.unwrap()).get_type().unwrap(),
-            NodeType::Leaf
-        );
+        assert_eq!(node_get(tree.root_ptr.unwrap()).get_type(), NodeType::Leaf);
         assert_eq!(node_get(tree.root_ptr.unwrap()).get_nkeys(), 1);
     }
 
@@ -430,10 +403,7 @@ mod test {
         for i in 1u16..=1000u16 {
             tree.insert(&format!("{i}"), "value").unwrap()
         }
-        assert_eq!(
-            node_get(tree.root_ptr.unwrap()).get_type().unwrap(),
-            NodeType::Node
-        );
+        assert_eq!(node_get(tree.root_ptr.unwrap()).get_type(), NodeType::Node);
         for i in 1u16..=1000u16 {
             assert_eq!(tree.search(&format!("{i}")).unwrap(), "value")
         }
