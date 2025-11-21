@@ -1,12 +1,18 @@
+use rustix::fs::{self, Mode, OFlags};
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::ffi::OsString;
 use std::fmt::Display;
 use std::fs::File;
+use std::os::fd::OwnedFd;
+use std::path::{Path, PathBuf};
+use std::str::FromStr;
+
+use tracing::{debug, error};
 
 use crate::database::node::Node;
 use crate::database::tree::BTree;
 use crate::database::types::PAGE_SIZE;
+use crate::errors::{Error, PagerError};
 
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Eq, Hash)]
 pub struct Pointer(u64);
@@ -65,29 +71,67 @@ pub trait Paging {
 }
 
 #[allow(dead_code)]
-pub struct Pager {
-    path: OsString,
+pub struct KVStore {
+    path: &'static str,
     database: File,
     tree: BTree,
 }
 
 #[allow(dead_code)]
-impl Paging for Pager {
-    fn new() -> Self {
+impl KVStore {
+    fn open() -> Self {
         todo!()
     }
 
-    fn encode(&mut self, node: Node) -> Pointer {
+    pub fn get(&self, key: &str) -> Option<String> {
+        self.tree.search(key)
+    }
+
+    pub fn insert(&mut self, key: &str, val: &str) -> Result<(), Error> {
+        self.tree.insert(key, val)
+    }
+
+    pub fn delete(&mut self, key: &str) -> Result<(), Error> {
+        self.tree.delete(key)
+    }
+
+    fn update_file(&mut self) -> Result<(), Error> {
+        // write new node
+        // sync call
+        // update root
+        // sync call
         todo!()
     }
 
-    fn decode(&self, ptr: Pointer) -> Node {
+    fn update_root(&mut self) -> Result<(), Error> {
         todo!()
     }
+}
 
-    fn delete(&mut self, ptr: Pointer) {
-        todo!()
+fn create_file_sync(file: &str) -> Result<OwnedFd, PagerError> {
+    let path = PathBuf::from_str(file).unwrap();
+    if let None = path.file_name() {
+        error!("invalid file name");
+        return Err(PagerError::FileNameError);
     }
+    if let Some(parent) = path.parent() {
+        debug!("creating parent directory...");
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .create(parent)
+            .expect("error when creating directory");
+    } // none return can panic on dirfd open call
+    debug!("opening directory fd");
+    let flags = OFlags::DIRECTORY | OFlags::RDONLY; // only return directory, read only
+    let mode = Mode::RUSR | Mode::WUSR | Mode::RGRP | Mode::ROTH; // owner read/write, group read, others read.
+    let dirfd = fs::open(path.parent().unwrap(), flags, mode)?;
+    debug!("opening or creating file");
+    let flags = OFlags::RDWR | OFlags::CREATE;
+
+    let fd = fs::openat(&dirfd, path.file_name().unwrap(), flags, mode)?;
+    // fsync directory
+    fs::fsync(dirfd)?;
+    Ok(fd)
 }
 
 // // retrieve page content from page number

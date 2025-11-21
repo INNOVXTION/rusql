@@ -1,5 +1,7 @@
 use std::{fmt::Display, io, num::TryFromIntError, str::Utf8Error};
 
+use rustix::io::Errno;
+
 #[derive(Debug)]
 pub enum Error {
     IndexError,
@@ -52,6 +54,8 @@ pub enum PagerError {
     NoAvailablePage,
     DeallocError(u64),
     CodecError(io::Error),
+    FDError(Errno),
+    FileNameError,
 }
 
 impl Display for PagerError {
@@ -61,6 +65,10 @@ impl Display for PagerError {
             PagerError::NoAvailablePage => write!(f, "No free pages available"),
             PagerError::DeallocError(e) => write!(f, "Deallocation failed for page: {}", e),
             PagerError::CodecError(e) => write!(f, "Error when encoding/decoding node: {}", e),
+            PagerError::FDError(e) => write!(f, "Error when handling file: {}", e),
+            PagerError::FileNameError => {
+                write!(f, "Invalid Filename, make sure it doesnt end with / ")
+            }
         }
     }
 }
@@ -70,5 +78,11 @@ impl std::error::Error for PagerError {}
 impl From<io::Error> for PagerError {
     fn from(value: io::Error) -> Self {
         Self::CodecError(value)
+    }
+}
+
+impl From<rustix::io::Errno> for PagerError {
+    fn from(value: rustix::io::Errno) -> Self {
+        Self::FDError(value)
     }
 }
