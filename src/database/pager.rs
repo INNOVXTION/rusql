@@ -3,9 +3,11 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::fs::File;
+use std::hash::Hash;
 use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::{LazyLock, Mutex, OnceLock, RwLock};
 
 use tracing::{debug, error};
 
@@ -35,9 +37,46 @@ impl Display for Pointer {
     }
 }
 
+pub static GLOBAL_PAGER: LazyLock<Mutex<Box<dyn Pager>>> =
+    LazyLock::new(|| Mutex::new(Box::new(MemoryPager::new())));
+
 thread_local! {
     pub static FREELIST: RefCell<Vec<u64>> = RefCell::new(Vec::from_iter(1..100));
     pub static PAGER: RefCell<HashMap<u64, Node>> = RefCell::new(HashMap::new());
+}
+
+struct MemoryPager {
+    freelist: Vec<u64>,
+    pages: HashMap<u64, Node>,
+}
+
+impl MemoryPager {
+    fn new() -> Self {
+        MemoryPager {
+            freelist: Vec::from_iter(1..100),
+            pages: HashMap::new(),
+        }
+    }
+}
+
+impl Pager for MemoryPager {
+    fn encode(&mut self, node: Node) -> Pointer {
+        if node.get_nkeys() > PAGE_SIZE as u16 {
+            panic!("trying to encode node exceeding page size");
+        }
+        Pointer(self.freelist.pop().expect("no free page available"))
+    }
+
+    fn decode(&self, ptr: Pointer) -> Node {
+        self.pages.get(&ptr.0).expect("couldnt get() page").clone()
+    }
+
+    fn delete(&mut self, ptr: Pointer) {
+        self.freelist.push(ptr.0);
+        self.pages
+            .remove(&ptr.0)
+            .expect("couldnt remove() page number");
+    }
 }
 
 /// loads page into memoory as a node
@@ -63,8 +102,7 @@ pub(crate) fn node_dealloc(ptr: Pointer) {
         .expect("couldnt remove() page number");
 }
 
-pub trait Paging {
-    fn new() -> Self;
+pub trait Pager: Send + Sync {
     fn encode(&mut self, node: Node) -> Pointer;
     fn decode(&self, ptr: Pointer) -> Node;
     fn delete(&mut self, ptr: Pointer);
@@ -73,7 +111,7 @@ pub trait Paging {
 #[allow(dead_code)]
 pub struct KVStore {
     path: &'static str,
-    database: File,
+    database: OwnedFd,
     tree: BTree,
 }
 
@@ -132,6 +170,10 @@ fn create_file_sync(file: &str) -> Result<OwnedFd, PagerError> {
     // fsync directory
     fs::fsync(dirfd)?;
     Ok(fd)
+}
+
+fn mmpa(fs: OwnedFd, offest: i64, length: u32) -> Result<Vec<u8>, PagerError> {
+    todo!()
 }
 
 // // retrieve page content from page number
