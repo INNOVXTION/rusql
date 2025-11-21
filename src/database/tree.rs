@@ -401,7 +401,7 @@ mod test {
     fn random_1k() {
         let mut tree = BTree::new();
         for _ in 1u16..=1000 {
-            tree.insert(&format!("{:?}", rand::rng().random_range(0..1000)), "val")
+            tree.insert(&format!("{:?}", rand::rng().random_range(1..1000)), "val")
                 .unwrap()
         }
     }

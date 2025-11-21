@@ -2,12 +2,11 @@ use rustix::fs::{self, Mode, OFlags};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt::Display;
-use std::fs::File;
 use std::hash::Hash;
 use std::os::fd::OwnedFd;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::str::FromStr;
-use std::sync::{LazyLock, Mutex, OnceLock, RwLock};
+use std::sync::{LazyLock, Mutex};
 
 use tracing::{debug, error};
 
@@ -37,13 +36,9 @@ impl Display for Pointer {
     }
 }
 
+// change the pager with : *GLOBAL_PAGER.lock().unwrap() = Box::new(DiskPager::new());
 pub static GLOBAL_PAGER: LazyLock<Mutex<Box<dyn Pager>>> =
     LazyLock::new(|| Mutex::new(Box::new(MemoryPager::new())));
-
-thread_local! {
-    pub static FREELIST: RefCell<Vec<u64>> = RefCell::new(Vec::from_iter(1..100));
-    pub static PAGER: RefCell<HashMap<u64, Node>> = RefCell::new(HashMap::new());
-}
 
 struct MemoryPager {
     freelist: Vec<u64>,
@@ -53,25 +48,35 @@ struct MemoryPager {
 impl MemoryPager {
     fn new() -> Self {
         MemoryPager {
-            freelist: Vec::from_iter(1..100),
+            freelist: Vec::from_iter((1..=100).rev()),
             pages: HashMap::new(),
         }
     }
 }
 
 impl Pager for MemoryPager {
+    fn decode(&self, ptr: Pointer) -> Node {
+        self.pages
+            .get(&ptr.0)
+            .unwrap_or_else(|| {
+                error!("couldnt retrieve page at ptr {}", ptr);
+                panic!("page decode error")
+            })
+            .clone()
+    }
+
     fn encode(&mut self, node: Node) -> Pointer {
         if node.get_nkeys() > PAGE_SIZE as u16 {
             panic!("trying to encode node exceeding page size");
         }
-        Pointer(self.freelist.pop().expect("no free page available"))
-    }
-
-    fn decode(&self, ptr: Pointer) -> Node {
-        self.pages.get(&ptr.0).expect("couldnt get() page").clone()
+        let free_page = self.freelist.pop().expect("no free page available");
+        debug!("encoding node at ptr {}", free_page);
+        self.pages.insert(free_page, node);
+        Pointer(free_page)
     }
 
     fn delete(&mut self, ptr: Pointer) {
+        debug!("deleting node at ptr {}", ptr.0);
         self.freelist.push(ptr.0);
         self.pages
             .remove(&ptr.0)
@@ -79,28 +84,55 @@ impl Pager for MemoryPager {
     }
 }
 
-/// loads page into memoory as a node
+// wrapper functions for Pager to lock unlock mutexes
 pub(crate) fn node_get(ptr: Pointer) -> Node {
-    PAGER.with_borrow_mut(|x| x.get(&ptr.0).expect("couldnt get() page").clone())
+    GLOBAL_PAGER
+        .lock()
+        .expect("pager decode mutex error")
+        .decode(ptr)
 }
 
-/// finds a free spot to write node to
 pub(crate) fn node_encode(node: Node) -> Pointer {
-    if node.get_nkeys() > PAGE_SIZE as u16 {
-        panic!("trying to encode node exceeding page size");
-    }
-    let free_page = FREELIST.with_borrow_mut(|v| v.pop().expect("no free page available"));
-    PAGER.with_borrow_mut(|p| p.insert(free_page, node));
-    Pointer(free_page)
+    GLOBAL_PAGER
+        .lock()
+        .expect("pager encode mutex error")
+        .encode(node)
 }
 
-/// deallocate page
 pub(crate) fn node_dealloc(ptr: Pointer) {
-    FREELIST.with_borrow_mut(|v| v.push(ptr.0));
-    PAGER
-        .with_borrow_mut(|x| x.remove(&ptr.0))
-        .expect("couldnt remove() page number");
+    GLOBAL_PAGER
+        .lock()
+        .expect("pager delete mutex error")
+        .delete(ptr)
 }
+
+// thread_local! {
+//     pub static FREELIST: RefCell<Vec<u64>> = RefCell::new(Vec::from_iter(1..100));
+//     pub static PAGER: RefCell<HashMap<u64, Node>> = RefCell::new(HashMap::new());
+// }
+
+// /// loads page into memoory as a node
+// pub(crate) fn node_get(ptr: Pointer) -> Node {
+//     PAGER.with_borrow_mut(|x| x.get(&ptr.0).expect("couldnt get() page").clone())
+// }
+
+// /// finds a free spot to write node to
+// pub(crate) fn node_encode(node: Node) -> Pointer {
+//     if node.get_nkeys() > PAGE_SIZE as u16 {
+//         panic!("trying to encode node exceeding page size");
+//     }
+//     let free_page = FREELIST.with_borrow_mut(|v| v.pop().expect("no free page available"));
+//     PAGER.with_borrow_mut(|p| p.insert(free_page, node));
+//     Pointer(free_page)
+// }
+
+// /// deallocate page
+// pub(crate) fn node_dealloc(ptr: Pointer) {
+//     FREELIST.with_borrow_mut(|v| v.push(ptr.0));
+//     PAGER
+//         .with_borrow_mut(|x| x.remove(&ptr.0))
+//         .expect("couldnt remove() page number");
+// }
 
 pub trait Pager: Send + Sync {
     fn encode(&mut self, node: Node) -> Pointer;

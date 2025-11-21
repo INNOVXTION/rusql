@@ -132,12 +132,22 @@ impl Node {
                 })?;
         }
         // copy from range after idx
-        if old_nkeys > idx + new_kids.0 {
+        if old_nkeys > (idx + 1) {
             self.append_from_range(&old_node, idx + new_kids.0, idx + 1, old_nkeys - (idx + 1))
                 .map_err(|e| {
                     error!("append error after idx");
                     e
                 })?;
+        }
+        // debug
+        debug!("nkids after insertion:");
+        for i in 0..self.get_nkeys() {
+            debug!(
+                "idx: {}, key {} ptr {}",
+                i,
+                self.get_key(i).unwrap(),
+                self.get_ptr(i)
+            )
         }
         Ok(())
     }
@@ -488,6 +498,16 @@ impl Node {
 
         assert!(right.fits_page());
         assert!(left.fits_page());
+        debug!("left node first key: {}", left.get_key(0).unwrap());
+        debug!(
+            "left node last key: {}",
+            left.get_key(nkeys_left - 1).unwrap()
+        );
+        debug!("right node first key: {}", right.get_key(0).unwrap());
+        debug!(
+            "right node last key: {}",
+            right.get_key(nkeys_right - 1).unwrap()
+        );
         Ok((left, right))
     }
 
