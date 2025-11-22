@@ -1,8 +1,6 @@
-use std::num::ParseIntError;
-
 use crate::{
     database::{
-        pager::*,
+        pager::{GLOBAL_PAGER, Pointer},
         types::{MERGE_FACTOR, NODE_SIZE, PAGE_SIZE},
     },
     helper::*,
@@ -633,6 +631,28 @@ impl Node {
         }
         Ok(())
     }
+}
+
+// callback functions which the Btree uses to talk to the pager
+pub(crate) fn node_get(ptr: Pointer) -> Node {
+    GLOBAL_PAGER
+        .lock()
+        .expect("pager decode mutex error")
+        .decode(ptr)
+}
+
+pub(crate) fn node_encode(node: Node) -> Pointer {
+    GLOBAL_PAGER
+        .lock()
+        .expect("pager encode mutex error")
+        .encode(node)
+}
+
+pub(crate) fn node_dealloc(ptr: Pointer) {
+    GLOBAL_PAGER
+        .lock()
+        .expect("pager delete mutex error")
+        .delete(ptr)
 }
 
 impl Clone for Node {

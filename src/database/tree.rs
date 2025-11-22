@@ -13,7 +13,6 @@ pub struct BTree {
     root_ptr: Option<Pointer>,
 }
 
-#[allow(dead_code)]
 impl BTree {
     pub fn new() -> Self {
         BTree { root_ptr: None }
@@ -71,8 +70,6 @@ impl BTree {
     }
 
     /// recursive insertion, node = current node, returns updated node
-    ///
-    /// TODO: update height
     fn tree_insert(node: Node, key: &str, val: &str) -> Node {
         let mut new = Node::new();
         let idx = node.lookupidx(key);
@@ -98,6 +95,7 @@ impl BTree {
         }
         new
     }
+
     #[instrument(skip(self), err)]
     pub fn delete(&mut self, key: &str) -> Result<(), Error> {
         info!("deleting kv...");

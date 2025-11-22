@@ -1,12 +1,13 @@
 use rustix::fs::{self, Mode, OFlags};
-use std::cell::RefCell;
+use rustix::mm::{MapFlags, ProtFlags};
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::hash::Hash;
 use std::os::fd::OwnedFd;
+use std::os::raw::c_void;
 use std::path::PathBuf;
 use std::str::FromStr;
-use std::sync::{LazyLock, Mutex};
+use std::sync::{LazyLock, Mutex, RwLock};
 
 use tracing::{debug, error};
 
@@ -16,7 +17,7 @@ use crate::database::types::PAGE_SIZE;
 use crate::errors::{Error, PagerError};
 
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Eq, Hash)]
-pub struct Pointer(u64);
+pub(crate) struct Pointer(u64);
 
 impl From<u64> for Pointer {
     fn from(value: u64) -> Self {
@@ -36,9 +37,16 @@ impl Display for Pointer {
     }
 }
 
+enum PagerType {
+    Memory,
+    Disk,
+}
+
 // change the pager with : *GLOBAL_PAGER.lock().unwrap() = Box::new(DiskPager::new());
 pub static GLOBAL_PAGER: LazyLock<Mutex<Box<dyn Pager>>> =
     LazyLock::new(|| Mutex::new(Box::new(MemoryPager::new())));
+
+pub fn init_pager(mode: PagerType) {}
 
 struct MemoryPager {
     freelist: Vec<u64>,
@@ -84,28 +92,6 @@ impl Pager for MemoryPager {
     }
 }
 
-// wrapper functions for Pager to lock unlock mutexes
-pub(crate) fn node_get(ptr: Pointer) -> Node {
-    GLOBAL_PAGER
-        .lock()
-        .expect("pager decode mutex error")
-        .decode(ptr)
-}
-
-pub(crate) fn node_encode(node: Node) -> Pointer {
-    GLOBAL_PAGER
-        .lock()
-        .expect("pager encode mutex error")
-        .encode(node)
-}
-
-pub(crate) fn node_dealloc(ptr: Pointer) {
-    GLOBAL_PAGER
-        .lock()
-        .expect("pager delete mutex error")
-        .delete(ptr)
-}
-
 // thread_local! {
 //     pub static FREELIST: RefCell<Vec<u64>> = RefCell::new(Vec::from_iter(1..100));
 //     pub static PAGER: RefCell<HashMap<u64, Node>> = RefCell::new(HashMap::new());
@@ -140,14 +126,75 @@ pub trait Pager: Send + Sync {
     fn delete(&mut self, ptr: Pointer);
 }
 
-#[allow(dead_code)]
+struct DiskPager {
+    mmap: Mmap,
+}
+
+impl DiskPager {
+    fn new() -> Self {
+        todo!()
+    }
+}
+
+impl Pager for DiskPager {
+    fn decode(&self, ptr: Pointer) -> Node {
+        let mut start: u64 = 0;
+        for chunk in self.mmap.chunks.read().unwrap().iter() {
+            let end = start + chunk.len as u64 / PAGE_SIZE as u64;
+            if ptr.0 < end {
+                let offset: usize = PAGE_SIZE * (ptr.0 as usize - start as usize);
+                let mut node = Node::new();
+                node.0
+                    .copy_from_slice(&chunk.as_slice()[offset..offset + PAGE_SIZE]);
+                return node;
+            }
+            start = end;
+        }
+        error!("bad pointer: {}", ptr.0);
+        panic!()
+    }
+
+    fn encode(&mut self, node: Node) -> Pointer {
+        todo!()
+    }
+
+    fn delete(&mut self, ptr: Pointer) {
+        todo!()
+    }
+}
+
+struct Mmap {
+    total: u32,
+    chunks: RwLock<Vec<Chunk>>,
+}
+
+struct Chunk {
+    data: *mut u8,
+    len: usize,
+}
+
+unsafe impl Send for Chunk {}
+unsafe impl Sync for Chunk {}
+
+impl Chunk {
+    fn as_slice(&self) -> &mut [u8] {
+        unsafe { std::slice::from_raw_parts_mut(self.data, self.len) }
+    }
+}
+
+impl Drop for Chunk {
+    fn drop(&mut self) {
+        unsafe { rustix::mm::munmap(self.data as *mut c_void, self.len).expect("munmap error") };
+    }
+}
+
 pub struct KVStore {
     path: &'static str,
     database: OwnedFd,
     tree: BTree,
+    pager: DiskPager,
 }
 
-#[allow(dead_code)]
 impl KVStore {
     fn open() -> Self {
         todo!()
@@ -178,23 +225,38 @@ impl KVStore {
     }
 }
 
+fn mmap(fd: &OwnedFd, offset: u64, length: usize) -> Result<*mut u8, PagerError> {
+    let ptr = unsafe {
+        rustix::mm::mmap(
+            std::ptr::null_mut(),
+            length,
+            ProtFlags::READ,
+            MapFlags::SHARED,
+            fd,
+            offset,
+        )?
+    };
+    Ok(ptr as *mut u8)
+}
+
 fn create_file_sync(file: &str) -> Result<OwnedFd, PagerError> {
     let path = PathBuf::from_str(file).unwrap();
     if let None = path.file_name() {
         error!("invalid file name");
         return Err(PagerError::FileNameError);
     }
-    if let Some(parent) = path.parent() {
+    let parent = path.parent();
+    if parent.is_some() && !parent.unwrap().is_dir() {
         debug!("creating parent directory...");
         std::fs::DirBuilder::new()
             .recursive(true)
-            .create(parent)
+            .create(parent.unwrap())
             .expect("error when creating directory");
     } // none return can panic on dirfd open call
     debug!("opening directory fd");
     let flags = OFlags::DIRECTORY | OFlags::RDONLY; // only return directory, read only
     let mode = Mode::RUSR | Mode::WUSR | Mode::RGRP | Mode::ROTH; // owner read/write, group read, others read.
-    let dirfd = fs::open(path.parent().unwrap(), flags, mode)?;
+    let dirfd = fs::open(parent.unwrap(), flags, mode)?;
     debug!("opening or creating file");
     let flags = OFlags::RDWR | OFlags::CREATE;
 
@@ -203,11 +265,6 @@ fn create_file_sync(file: &str) -> Result<OwnedFd, PagerError> {
     fs::fsync(dirfd)?;
     Ok(fd)
 }
-
-fn mmpa(fs: OwnedFd, offest: i64, length: u32) -> Result<Vec<u8>, PagerError> {
-    todo!()
-}
-
 // // retrieve page content from page number
 // pub fn decode(&self, page_number: Pointer) -> Result<Node, PagerError> {
 //     let mut file = std::fs::File::open("database.rdb")?;
