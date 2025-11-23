@@ -50,17 +50,22 @@ impl From<Utf8Error> for Error {
 
 #[derive(Debug)]
 pub enum PagerError {
+    UnkownError,
     PageNotFound(u64),
     NoAvailablePage,
     DeallocError(u64),
     CodecError(io::Error),
     FDError(Errno),
     FileNameError,
+    UnsupportedOS,
+    UnalignedOffset(u64),
+    MMapError(Errno),
 }
 
 impl Display for PagerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            PagerError::UnkownError => write!(f, "an unrecovable error occured"),
             PagerError::PageNotFound(e) => write!(f, "Couldnt retrieve page: {}", e),
             PagerError::NoAvailablePage => write!(f, "No free pages available"),
             PagerError::DeallocError(e) => write!(f, "Deallocation failed for page: {}", e),
@@ -69,6 +74,9 @@ impl Display for PagerError {
             PagerError::FileNameError => {
                 write!(f, "Invalid Filename, make sure it doesnt end with / ")
             }
+            PagerError::UnsupportedOS => write!(f, "Page size but OS is not allowed!"),
+            PagerError::UnalignedOffset(e) => write!(f, "Offset {} is invalid!", e),
+            PagerError::MMapError(e) => write!(f, "Error when calling mmap {}", e),
         }
     }
 }
