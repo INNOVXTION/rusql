@@ -1,6 +1,5 @@
 use crate::database::node::Node;
-use crate::database::pager::Pointer;
-use crate::database::types::NODE_SIZE;
+use crate::database::types::{NODE_SIZE, Pointer};
 use crate::errors::Error;
 use tracing::error;
 

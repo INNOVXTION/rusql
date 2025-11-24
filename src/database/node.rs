@@ -1,7 +1,7 @@
 use crate::{
     database::{
-        pager::{GLOBAL_PAGER, Pointer},
-        types::{MERGE_FACTOR, NODE_SIZE, PAGE_SIZE},
+        pager::GLOBAL_PAGER,
+        types::{MERGE_FACTOR, NODE_SIZE, PAGE_SIZE, Pointer},
     },
     helper::*,
 };
@@ -23,9 +23,6 @@ pub const OFFSETARR_OFFSET: usize = 2;
 |    2B    |    2B    | ... | ... |
 */
 
-#[derive(Debug)]
-pub(crate) struct Node(pub Box<[u8]>);
-
 #[derive(PartialEq, Debug)]
 pub(crate) enum NodeType {
     Node,
@@ -36,6 +33,8 @@ pub enum MergeDirection {
     Left(Node),
     Right(Node),
 }
+#[derive(Debug)]
+pub(crate) struct Node(pub Box<[u8]>);
 
 impl Node {
     /// new empty node
@@ -633,6 +632,12 @@ impl Node {
     }
 }
 
+impl Clone for Node {
+    fn clone(&self) -> Self {
+        Node(self.0.clone())
+    }
+}
+
 // callback functions which the Btree uses to talk to the pager
 pub(crate) fn node_get(ptr: Pointer) -> Node {
     GLOBAL_PAGER
@@ -653,12 +658,6 @@ pub(crate) fn node_dealloc(ptr: Pointer) {
         .lock()
         .expect("pager delete mutex error")
         .delete(ptr)
-}
-
-impl Clone for Node {
-    fn clone(&self) -> Self {
-        Node(self.0.clone())
-    }
 }
 #[cfg(test)]
 mod test {

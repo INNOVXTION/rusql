@@ -2,58 +2,40 @@ use core::ffi::c_void;
 use rustix::fs::{self, Mode, OFlags};
 use rustix::mm::{MapFlags, ProtFlags};
 use std::collections::HashMap;
-use std::fmt::Display;
-use std::hash::Hash;
+use std::io::IoSlice;
 use std::os::fd::OwnedFd;
 use std::path::PathBuf;
-use std::ptr;
 use std::str::FromStr;
-use std::sync::{LazyLock, Mutex, RwLock};
+use std::sync::{LazyLock, Mutex, OnceLock};
 
 use tracing::{debug, error};
 
 use crate::database::node::Node;
 use crate::database::tree::BTree;
-use crate::database::types::PAGE_SIZE;
+use crate::database::types::{PAGE_SIZE, Pager, Pointer};
 use crate::errors::{Error, PagerError};
-
-#[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Eq, Hash)]
-pub(crate) struct Pointer(u64);
-
-impl From<u64> for Pointer {
-    fn from(value: u64) -> Self {
-        Pointer(value)
-    }
-}
-
-impl Pointer {
-    pub fn to_slice(self) -> [u8; 8] {
-        self.0.to_le_bytes()
-    }
-}
-
-impl Display for Pointer {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-enum PagerType {
-    Memory,
-    Disk,
-}
 
 // change the pager with : *GLOBAL_PAGER.lock().unwrap() = Box::new(DiskPager::new());
 pub static GLOBAL_PAGER: LazyLock<Mutex<Box<dyn Pager>>> =
     LazyLock::new(|| Mutex::new(Box::new(MemoryPager::new())));
 
+pub static GLOBAL_PAGERTWO: OnceLock<Mutex<Box<dyn Pager>>> = OnceLock::new();
+
+pub enum PagerType {
+    Memory,
+    Disk,
+}
+
 pub fn init_pager(mode: PagerType) {
     match mode {
         PagerType::Disk => {
-            *GLOBAL_PAGER.lock().unwrap() = Box::new(DiskPager::new());
+            GLOBAL_PAGERTWO.set(Mutex::new(Box::new(DiskPager::open())));
         }
-        _ => (),
-    }
+        PagerType::Memory => {
+            GLOBAL_PAGERTWO.set(Mutex::new(Box::new(MemoryPager::new())));
+        }
+    };
+    ()
 }
 
 struct MemoryPager {
@@ -100,97 +82,30 @@ impl Pager for MemoryPager {
     }
 }
 
-// thread_local! {
-//     pub static FREELIST: RefCell<Vec<u64>> = RefCell::new(Vec::from_iter(1..100));
-//     pub static PAGER: RefCell<HashMap<u64, Node>> = RefCell::new(HashMap::new());
-// }
-
-// /// loads page into memoory as a node
-// pub(crate) fn node_get(ptr: Pointer) -> Node {
-//     PAGER.with_borrow_mut(|x| x.get(&ptr.0).expect("couldnt get() page").clone())
-// }
-
-// /// finds a free spot to write node to
-// pub(crate) fn node_encode(node: Node) -> Pointer {
-//     if node.get_nkeys() > PAGE_SIZE as u16 {
-//         panic!("trying to encode node exceeding page size");
-//     }
-//     let free_page = FREELIST.with_borrow_mut(|v| v.pop().expect("no free page available"));
-//     PAGER.with_borrow_mut(|p| p.insert(free_page, node));
-//     Pointer(free_page)
-// }
-
-// /// deallocate page
-// pub(crate) fn node_dealloc(ptr: Pointer) {
-//     FREELIST.with_borrow_mut(|v| v.push(ptr.0));
-//     PAGER
-//         .with_borrow_mut(|x| x.remove(&ptr.0))
-//         .expect("couldnt remove() page number");
-// }
-
-pub trait Pager: Send + Sync {
-    fn encode(&mut self, node: Node) -> Pointer;
-    fn decode(&self, ptr: Pointer) -> Node;
-    fn delete(&mut self, ptr: Pointer);
-}
-
-struct DiskPager {
-    mmap: Mmap,
+pub struct DiskPager<'a> {
+    path: &'static str,
+    database: OwnedFd,
+    tree: BTree,
+    mmap: Mmap<'a>,
     page: Page,
 }
 
 struct Page {
-    flushed: u64,
-    temp: RwLock<Vec<Chunk>>,
+    flushed: u64,    // database size in number of pages
+    temp: Vec<Node>, // newly allocated pages
 }
 
-struct Mmap {
-    total: u32,
-    chunks: RwLock<Vec<Chunk>>,
+struct Mmap<'a> {
+    total: usize,           // mmap size, can be larger than the file size
+    chunks: Vec<Chunk<'a>>, // multiple mmaps, can be non-continuous
 }
 
-impl DiskPager {
-    fn new() -> Self {
-        todo!()
-    }
+struct Chunk<'a> {
+    data: &'a [u8],
+    len: usize,
 }
 
-impl Pager for DiskPager {
-    fn decode(&self, ptr: Pointer) -> Node {
-        let mut start: u64 = 0;
-        let data = self.mmap.chunks.read().unwrap();
-        for chunk in data.iter() {
-            let end = start + chunk.len as u64 / PAGE_SIZE as u64;
-            if ptr.0 < end {
-                let offset: usize = PAGE_SIZE * (ptr.0 as usize - start as usize);
-                let mut node = Node::new();
-                node.0
-                    .copy_from_slice(&chunk.as_slice()[offset..offset + PAGE_SIZE]);
-                return node;
-            }
-            start = end;
-        }
-        error!("bad pointer: {}", ptr.0);
-        panic!()
-    }
-
-    fn encode(&mut self, node: Node) -> Pointer {
-        todo!()
-    }
-
-    fn delete(&mut self, ptr: Pointer) {
-        todo!()
-    }
-}
-
-pub struct KVStore {
-    path: &'static str,
-    database: OwnedFd,
-    tree: BTree,
-    pager: DiskPager,
-}
-
-impl KVStore {
+impl<'a> DiskPager<'a> {
     fn open() -> Self {
         todo!()
     }
@@ -199,28 +114,100 @@ impl KVStore {
         self.tree.search(key)
     }
 
-    pub fn insert(&mut self, key: &str, val: &str) -> Result<(), Error> {
-        self.tree.insert(key, val)
+    pub fn set(&mut self, key: &str, val: &str) -> Result<(), Error> {
+        self.tree.insert(key, val)?;
+        self.file_update().map_err(|e| {
+            error!("pager error {}", e);
+            Error::PagerError(e)
+        })?;
+        Ok(())
     }
 
     pub fn delete(&mut self, key: &str) -> Result<(), Error> {
-        self.tree.delete(key)
+        self.tree.delete(key)?;
+        self.file_update().map_err(|e| {
+            error!("pager error {}", e);
+            Error::PagerError(e)
+        })?;
+        Ok(())
     }
 
-    fn update_file(&mut self) -> Result<(), Error> {
+    fn file_update(&mut self) -> Result<(), PagerError> {
         // write new node
+        self.page_write()?;
         // sync call
+        rustix::fs::fsync(&self.database)?;
         // update root
+        self.update_root()?;
         // sync call
-        todo!()
+        rustix::fs::fsync(&self.database)?;
+        Ok(())
+    }
+    // writePages
+    fn page_write(&mut self) -> Result<(), PagerError> {
+        // extend the mmap if needed
+        let size = (self.page.flushed as usize + self.page.temp.len()) * PAGE_SIZE;
+        mmap_extend(self, size)
+            .map_err(|e| {
+                error!("Error when extending mmap: {}, error {}", size, e);
+            })
+            .unwrap();
+        // write data pages to the file
+        let offset = self.page.flushed as usize * PAGE_SIZE;
+        let buf: Vec<IoSlice> = self
+            .page
+            .temp
+            .iter()
+            .map(|node| rustix::io::IoSlice::new(&node.0))
+            .collect();
+        rustix::io::pwritev(&self.database, &buf[..], offset as u64)?;
+        //discard in-memory data
+        self.page.flushed += self.page.temp.len() as u64;
+        self.page.temp.clear();
+        Ok(())
     }
 
-    fn update_root(&mut self) -> Result<(), Error> {
+    fn update_root(&mut self) -> Result<(), PagerError> {
         todo!()
     }
 }
 
-fn mmap_new(db: &KVStore, offset: u64, length: usize) -> Result<Chunk, PagerError> {
+impl<'a> Pager for DiskPager<'a> {
+    // page read
+    fn decode(&self, ptr: Pointer) -> Node {
+        let mut start: u64 = 0;
+        for chunk in self.mmap.chunks.iter() {
+            let end = start + chunk.len as u64 / PAGE_SIZE as u64;
+            if ptr.0 < end {
+                let offset: usize = PAGE_SIZE * (ptr.0 as usize - start as usize);
+                let mut node = Node::new();
+                node.0
+                    .copy_from_slice(&chunk.data[offset..offset + PAGE_SIZE]);
+                return node;
+            }
+            start = end;
+        }
+        error!("bad pointer: {}", ptr.0);
+        panic!()
+    }
+
+    // page append
+    fn encode(&mut self, node: Node) -> Pointer {
+        // ptr := db.page.flushed + uint64(len(db.page.temp)) // just append
+        // db.page.temp = append(db.page.temp, node)
+        // return ptr
+        let ptr = Pointer(self.page.flushed + self.page.temp.len() as u64);
+        self.page.temp.push(node);
+        ptr
+    }
+
+    fn delete(&mut self, ptr: Pointer) {
+        todo!()
+    }
+}
+
+/// read-only
+fn mmap_new<'a>(db: &DiskPager, length: usize, offset: u64) -> Result<Chunk<'a>, PagerError> {
     if rustix::param::page_size() != PAGE_SIZE {
         return Err(PagerError::UnsupportedOS);
     };
@@ -239,50 +226,57 @@ fn mmap_new(db: &KVStore, offset: u64, length: usize) -> Result<Chunk, PagerErro
         .map_err(|e| PagerError::MMapError(e))?
     };
     Ok(Chunk {
-        data: ptr as *const u8,
+        // SAFETY: non null, and page aligned pointer from mmap()
+        data: unsafe { std::slice::from_raw_parts(ptr as *const u8, length) },
         len: length,
     })
 }
 
-fn mmap_extend(db: &mut KVStore, size: u32) -> Result<(), PagerError> {
-    if size <= db.pager.mmap.total {
-        return Ok(());
+fn mmap_extend(db: &mut DiskPager, size: usize) -> Result<(), PagerError> {
+    if size <= db.mmap.total {
+        return Ok(()); // enough range
     };
-    let mut alloc = u32::max(db.pager.mmap.total, 64 << 20);
-    while db.pager.mmap.total + alloc < size {
+    let mut alloc = usize::max(db.mmap.total, 64 << 20); // double the current address space
+    while db.mmap.total + alloc < size {
         alloc *= 2;
     }
-    let chunk = mmap_new(db, alloc as u64, db.pager.mmap.total as usize).map_err(|e| {
+    let chunk = mmap_new(db, alloc, db.mmap.total as u64).map_err(|e| {
         error!("error when extending mmap, size: {size}");
         e
     })?;
-    db.pager.mmap.total += alloc;
-    db.pager.mmap.chunks.write().unwrap().push(chunk);
+    db.mmap.total += alloc;
+    db.mmap.chunks.push(chunk);
     Ok(())
 }
 
-struct Chunk {
-    data: *const u8,
-    len: usize,
-}
-impl Chunk {
-    fn as_slice(&self) -> &[u8] {
-        unsafe { std::slice::from_raw_parts(self.data, self.len) }
-    }
-}
+// impl Chunk {
+//     fn as_slice(&self) -> &[u8] {
+//         // SAFETY: non null, and page aligned pointer from mmap()
+//         unsafe { std::slice::from_raw_parts(self.data, self.len) }
+//     }
+// }
 
-impl Drop for Chunk {
+impl<'a> Drop for Chunk<'a> {
     fn drop(&mut self) {
         unsafe {
-            if let Err(e) = rustix::mm::munmap(self.data as *mut c_void, self.len) {
+            if let Err(e) = rustix::mm::munmap(self.data.as_ptr() as *mut c_void, self.len) {
                 error!("error when dropping with mumap {}", e);
             }
         };
     }
 }
+// impl Drop for Chunk {
+//     fn drop(&mut self) {
+//         unsafe {
+//             if let Err(e) = rustix::mm::munmap(self.data as *mut c_void, self.len) {
+//                 error!("error when dropping with mumap {}", e);
+//             }
+//         };
+//     }
+// }
 
-unsafe impl Send for Chunk {}
-unsafe impl Sync for Chunk {}
+unsafe impl<'a> Send for Chunk<'a> {}
+unsafe impl<'a> Sync for Chunk<'a> {}
 
 fn create_file_sync(file: &str) -> Result<OwnedFd, PagerError> {
     let path = PathBuf::from_str(file).unwrap();
