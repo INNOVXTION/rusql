@@ -10,10 +10,12 @@ use std::sync::{LazyLock, Mutex, OnceLock};
 
 use tracing::{debug, error};
 
+use crate::database::errors::{Error, PagerError};
 use crate::database::node::Node;
-use crate::database::tree::BTree;
-use crate::database::types::{PAGE_SIZE, Pager, Pointer};
-use crate::errors::{Error, PagerError};
+use crate::database::{
+    tree::BTree,
+    types::{PAGE_SIZE, Pager, Pointer},
+};
 
 // change the pager with : *GLOBAL_PAGER.lock().unwrap() = Box::new(DiskPager::new());
 pub static GLOBAL_PAGER: LazyLock<Mutex<Box<dyn Pager>>> =

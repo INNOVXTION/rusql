@@ -2,10 +2,7 @@ use tracing::debug;
 use tracing::info;
 use tracing::instrument;
 
-use crate::database::node::*;
-use crate::database::pager::*;
-use crate::database::types::*;
-use crate::errors::Error;
+use crate::database::{errors::Error, node::*, types::*};
 
 // determines when nodes should be merged, higher number = less merges
 

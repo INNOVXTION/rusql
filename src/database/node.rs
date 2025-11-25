@@ -1,15 +1,15 @@
 use std::ops::{Deref, DerefMut};
 
 use crate::{
+    database::helper::*,
     database::{
         pager::GLOBAL_PAGER,
         types::{MERGE_FACTOR, NODE_SIZE, PAGE_SIZE, Pointer},
     },
-    helper::*,
 };
 use tracing::{debug, error, instrument, warn};
 
-use crate::errors::Error;
+use crate::database::errors::Error;
 
 pub const HEADER_OFFSET: usize = 4;
 pub const POINTER_OFFSET: usize = 8;
