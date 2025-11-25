@@ -1,4 +1,4 @@
-use std::ops::Deref;
+use std::ops::{Deref, DerefMut};
 
 use crate::{
     database::{
@@ -645,6 +645,12 @@ impl Deref for Node {
 
     fn deref(&self) -> &Self::Target {
         &self.0[..]
+    }
+}
+
+impl DerefMut for Node {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0[..]
     }
 }
 
