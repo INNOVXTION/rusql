@@ -87,11 +87,7 @@ pub struct DiskPager<'a> {
     database: OwnedFd,
     tree: BTree,
     mmap: Mmap<'a>,
-    page: Page,
-}
-
-struct Page {
-    flushed: u64,    // database size in number of pages
+    n_pages: u64,    // database size in number of pages
     temp: Vec<Node>, // newly allocated pages
 }
 
@@ -143,27 +139,26 @@ impl<'a> DiskPager<'a> {
         rustix::fs::fsync(&self.database)?;
         Ok(())
     }
-    // writePages
+    // writePages, flushes the buffer
     fn page_write(&mut self) -> Result<(), PagerError> {
         // extend the mmap if needed
-        let size = (self.page.flushed as usize + self.page.temp.len()) * PAGE_SIZE;
+        let size = (self.n_pages as usize + self.temp.len()) * PAGE_SIZE; // amount of pages in bytes
         mmap_extend(self, size)
             .map_err(|e| {
                 error!("Error when extending mmap: {}, error {}", size, e);
             })
             .unwrap();
         // write data pages to the file
-        let offset = self.page.flushed as usize * PAGE_SIZE;
+        let offset = self.n_pages as usize * PAGE_SIZE;
         let buf: Vec<IoSlice> = self
-            .page
             .temp
             .iter()
             .map(|node| rustix::io::IoSlice::new(&node.0))
             .collect();
         rustix::io::pwritev(&self.database, &buf[..], offset as u64)?;
         //discard in-memory data
-        self.page.flushed += self.page.temp.len() as u64;
-        self.page.temp.clear();
+        self.n_pages += self.temp.len() as u64;
+        self.temp.clear();
         Ok(())
     }
 
@@ -193,11 +188,8 @@ impl<'a> Pager for DiskPager<'a> {
 
     // page append
     fn encode(&mut self, node: Node) -> Pointer {
-        // ptr := db.page.flushed + uint64(len(db.page.temp)) // just append
-        // db.page.temp = append(db.page.temp, node)
-        // return ptr
-        let ptr = Pointer(self.page.flushed + self.page.temp.len() as u64);
-        self.page.temp.push(node);
+        let ptr = Pointer(self.n_pages + self.temp.len() as u64);
+        self.temp.push(node);
         ptr
     }
 
@@ -208,6 +200,7 @@ impl<'a> Pager for DiskPager<'a> {
 
 /// read-only
 fn mmap_new<'a>(db: &DiskPager, length: usize, offset: u64) -> Result<Chunk<'a>, PagerError> {
+    debug!("new mmap: length {length}, offset {offset}");
     if rustix::param::page_size() != PAGE_SIZE {
         return Err(PagerError::UnsupportedOS);
     };
@@ -232,7 +225,9 @@ fn mmap_new<'a>(db: &DiskPager, length: usize, offset: u64) -> Result<Chunk<'a>,
     })
 }
 
+/// exponentially extends the mmap
 fn mmap_extend(db: &mut DiskPager, size: usize) -> Result<(), PagerError> {
+    debug!("extending mmap: size {size}");
     if size <= db.mmap.total {
         return Ok(()); // enough range
     };
@@ -249,13 +244,6 @@ fn mmap_extend(db: &mut DiskPager, size: usize) -> Result<(), PagerError> {
     Ok(())
 }
 
-// impl Chunk {
-//     fn as_slice(&self) -> &[u8] {
-//         // SAFETY: non null, and page aligned pointer from mmap()
-//         unsafe { std::slice::from_raw_parts(self.data, self.len) }
-//     }
-// }
-
 impl<'a> Drop for Chunk<'a> {
     fn drop(&mut self) {
         unsafe {
@@ -265,15 +253,6 @@ impl<'a> Drop for Chunk<'a> {
         };
     }
 }
-// impl Drop for Chunk {
-//     fn drop(&mut self) {
-//         unsafe {
-//             if let Err(e) = rustix::mm::munmap(self.data as *mut c_void, self.len) {
-//                 error!("error when dropping with mumap {}", e);
-//             }
-//         };
-//     }
-// }
 
 unsafe impl<'a> Send for Chunk<'a> {}
 unsafe impl<'a> Sync for Chunk<'a> {}
@@ -286,11 +265,8 @@ fn create_file_sync(file: &str) -> Result<OwnedFd, PagerError> {
     }
     let parent = path.parent();
     if parent.is_some() && !parent.unwrap().is_dir() {
-        debug!("creating parent directory...");
-        std::fs::DirBuilder::new()
-            .recursive(true)
-            .create(parent.unwrap())
-            .expect("error when creating directory");
+        debug!("creating parent directory {:?}", parent.unwrap());
+        std::fs::create_dir_all(parent.unwrap()).expect("error when creating directory");
     } // none return can panic on dirfd open call
     debug!("opening directory fd");
     let dirfd = fs::open(
@@ -310,11 +286,19 @@ fn create_file_sync(file: &str) -> Result<OwnedFd, PagerError> {
     Ok(fd)
 }
 
-// // retrieve page content from page number
-// pub fn decode(&self, page_number: Pointer) -> Result<Node, PagerError> {
-//     let mut file = std::fs::File::open("database.rdb")?;
-//     let mut new_page = Node::new();
-//     file.seek(io::SeekFrom::Start(PAGE_SIZE as u64 * page_number.0))?;
-//     file.read_exact(&mut *new_page.0)?;
-//     Ok(new_page)
-// }
+#[cfg(test)]
+mod test {
+    use std::error::Error;
+
+    use super::*;
+    use test_log::test;
+
+    #[test]
+    fn create_file() -> Result<(), Box<dyn Error>> {
+        let path = PathBuf::from("./test-files/database.rdb");
+        create_file_sync(path.to_str().unwrap())?;
+        assert!(path.is_file());
+        assert!(path.parent().unwrap().is_dir());
+        Ok(())
+    }
+}
