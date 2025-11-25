@@ -11,6 +11,7 @@ use std::sync::{LazyLock, Mutex, OnceLock};
 use tracing::{debug, error};
 
 use crate::database::errors::{Error, PagerError};
+use crate::database::helper::write_pointer;
 use crate::database::node::Node;
 use crate::database::{
     tree::BTree,
@@ -258,6 +259,23 @@ impl<'a> Drop for Chunk<'a> {
 
 unsafe impl<'a> Send for Chunk<'a> {}
 unsafe impl<'a> Sync for Chunk<'a> {}
+
+const DB_SIG: &'static str = "BuildYourOwnDB06";
+const METAPAGE_SIZE: usize = 32; // 32 Bytes
+
+// | sig | root_ptr | page_used |
+// | 16B |    8B    |     8B    |
+
+fn set_metapage(pager: &mut DiskPager) -> [u8; METAPAGE_SIZE] {
+    let mut data = [0u8; METAPAGE_SIZE];
+    // write sig
+    data[..16].copy_from_slice(DB_SIG.as_bytes());
+    // write root ptr
+    write_pointer(&mut data, 16, pager.tree.root_ptr.unwrap()).unwrap();
+    // write n pages
+    data[24..].copy_from_slice(&pager.n_pages.to_le_bytes());
+    data
+}
 
 fn create_file_sync(file: &str) -> Result<OwnedFd, PagerError> {
     let path = PathBuf::from_str(file).unwrap();

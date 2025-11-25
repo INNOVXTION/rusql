@@ -7,7 +7,7 @@ use crate::database::{errors::Error, node::*, types::*};
 // determines when nodes should be merged, higher number = less merges
 
 pub struct BTree {
-    root_ptr: Option<Pointer>,
+    pub(crate) root_ptr: Option<Pointer>,
 }
 
 impl BTree {

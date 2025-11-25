@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_variables)]
 use std::convert::TryInto;
 use std::error::Error;
 use std::fs::{DirBuilder, File, OpenOptions, rename};
