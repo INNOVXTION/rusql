@@ -11,9 +11,9 @@ use tracing::{debug, error, instrument, warn};
 
 use crate::database::errors::Error;
 
-pub const HEADER_OFFSET: usize = 4;
-pub const POINTER_OFFSET: usize = 8;
-pub const OFFSETARR_OFFSET: usize = 2;
+const HEADER_OFFSET: usize = 4;
+const POINTER_OFFSET: usize = 8;
+const OFFSETARR_OFFSET: usize = 2;
 
 /*
 -----------------------------------Node Layout----------------------------------

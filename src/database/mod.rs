@@ -1,6 +1,9 @@
-pub mod errors;
-pub mod helper;
-pub mod node;
-pub mod pager;
-pub mod tree;
-pub mod types;
+mod errors;
+mod helper;
+mod node;
+mod pager;
+mod tree;
+mod types;
+
+// example of reexport
+pub use helper::create_file_sync;

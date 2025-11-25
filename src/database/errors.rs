@@ -13,6 +13,7 @@ pub enum Error {
     InsertError(String),
     DeleteError(String),
     PagerError(PagerError),
+    PagerSetError,
 }
 
 impl Display for Error {
@@ -28,6 +29,7 @@ impl Display for Error {
             Error::MergeError(e) => write!(f, "Error when merging, {e}"),
             Error::DeleteError(e) => write!(f, "Error when deleting {e}"),
             Error::PagerError(e) => write!(f, "Error when calling pager {e}"),
+            Error::PagerSetError => write!(f, "Attempting to set global pager again!"),
         }
     }
 }

@@ -8,6 +8,12 @@ pub const MERGE_FACTOR: usize = PAGE_SIZE / 4;
 pub const PAGE_SIZE: usize = 4096; // 4096 bytes
 pub const NODE_SIZE: usize = PAGE_SIZE * 2; // in memory buffer
 
+pub const DB_SIG: &'static str = "BuildYourOwnDB06";
+pub const METAPAGE_SIZE: usize = 32;
+pub const SIG_SIZE: usize = 16;
+pub const PTR_SIZE: usize = 8;
+pub const U16_SIZE: usize = 2;
+
 pub trait Pager: Send + Sync {
     fn encode(&mut self, node: Node) -> Pointer;
     fn decode(&self, ptr: Pointer) -> Node;

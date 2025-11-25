@@ -1,22 +1,17 @@
 use core::ffi::c_void;
-use rustix::fs::{self, Mode, OFlags};
 use rustix::mm::{MapFlags, ProtFlags};
 use std::collections::HashMap;
 use std::io::IoSlice;
 use std::os::fd::OwnedFd;
-use std::path::PathBuf;
-use std::str::FromStr;
 use std::sync::{LazyLock, Mutex, OnceLock};
 
 use tracing::{debug, error};
 
-use crate::database::errors::{Error, PagerError};
+use crate::database::errors::Error;
+use crate::database::errors::PagerError;
 use crate::database::helper::write_pointer;
 use crate::database::node::Node;
-use crate::database::{
-    tree::BTree,
-    types::{PAGE_SIZE, Pager, Pointer},
-};
+use crate::database::{tree::BTree, types::*};
 
 // change the pager with : *GLOBAL_PAGER.lock().unwrap() = Box::new(DiskPager::new());
 pub static GLOBAL_PAGER: LazyLock<Mutex<Box<dyn Pager>>> =
@@ -29,16 +24,20 @@ pub enum PagerType {
     Disk,
 }
 
-pub fn init_pager(mode: PagerType) {
+pub fn init_pager(mode: PagerType) -> Result<(), Error> {
     match mode {
         PagerType::Disk => {
-            GLOBAL_PAGERTWO.set(Mutex::new(Box::new(DiskPager::open())));
+            GLOBAL_PAGERTWO
+                .set(Mutex::new(Box::new(DiskPager::open())))
+                .map_err(|_| Error::PagerSetError)?;
         }
         PagerType::Memory => {
-            GLOBAL_PAGERTWO.set(Mutex::new(Box::new(MemoryPager::new())));
+            GLOBAL_PAGERTWO
+                .set(Mutex::new(Box::new(MemoryPager::new())))
+                .map_err(|_| Error::PagerSetError)?;
         }
     };
-    ()
+    Ok(())
 }
 
 struct MemoryPager {
@@ -142,7 +141,8 @@ impl<'a> DiskPager<'a> {
         rustix::fs::fsync(&self.database)?;
         Ok(())
     }
-    // writePages, flushes the buffer
+
+    /// writePages, flushes the buffer
     fn page_write(&mut self) -> Result<(), PagerError> {
         // extend the mmap if needed
         let size = (self.n_pages as usize + self.temp.len()) * PAGE_SIZE; // amount of pages in bytes
@@ -260,65 +260,23 @@ impl<'a> Drop for Chunk<'a> {
 unsafe impl<'a> Send for Chunk<'a> {}
 unsafe impl<'a> Sync for Chunk<'a> {}
 
-const DB_SIG: &'static str = "BuildYourOwnDB06";
-const METAPAGE_SIZE: usize = 32; // 32 Bytes
-
 // | sig | root_ptr | page_used |
 // | 16B |    8B    |     8B    |
 
 fn set_metapage(pager: &mut DiskPager) -> [u8; METAPAGE_SIZE] {
     let mut data = [0u8; METAPAGE_SIZE];
     // write sig
-    data[..16].copy_from_slice(DB_SIG.as_bytes());
+    data[..SIG_SIZE].copy_from_slice(DB_SIG.as_bytes());
     // write root ptr
-    write_pointer(&mut data, 16, pager.tree.root_ptr.unwrap()).unwrap();
+    write_pointer(&mut data, SIG_SIZE, pager.tree.root_ptr.unwrap()).unwrap();
     // write n pages
-    data[24..].copy_from_slice(&pager.n_pages.to_le_bytes());
+    data[SIG_SIZE + PTR_SIZE..].copy_from_slice(&pager.n_pages.to_le_bytes());
     data
-}
-
-fn create_file_sync(file: &str) -> Result<OwnedFd, PagerError> {
-    let path = PathBuf::from_str(file).unwrap();
-    if let None = path.file_name() {
-        error!("invalid file name");
-        return Err(PagerError::FileNameError);
-    }
-    let parent = path.parent();
-    if parent.is_some() && !parent.unwrap().is_dir() {
-        debug!("creating parent directory {:?}", parent.unwrap());
-        std::fs::create_dir_all(parent.unwrap()).expect("error when creating directory");
-    } // none return can panic on dirfd open call
-    debug!("opening directory fd");
-    let dirfd = fs::open(
-        parent.unwrap(),
-        OFlags::DIRECTORY | OFlags::RDONLY,
-        Mode::RUSR | Mode::WUSR | Mode::RGRP | Mode::ROTH,
-    )?;
-    debug!("opening or creating file");
-    let fd = fs::openat(
-        &dirfd,
-        path.file_name().unwrap(),
-        OFlags::RDWR | OFlags::CREATE,
-        Mode::RUSR | Mode::WUSR | Mode::RGRP | Mode::ROTH,
-    )?;
-    // fsync directory
-    fs::fsync(dirfd)?;
-    Ok(fd)
 }
 
 #[cfg(test)]
 mod test {
-    use std::error::Error;
-
     use super::*;
+    use std::error::Error;
     use test_log::test;
-
-    #[test]
-    fn create_file() -> Result<(), Box<dyn Error>> {
-        let path = PathBuf::from("./test-files/database.rdb");
-        create_file_sync(path.to_str().unwrap())?;
-        assert!(path.is_file());
-        assert!(path.parent().unwrap().is_dir());
-        Ok(())
-    }
 }
