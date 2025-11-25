@@ -88,7 +88,7 @@ pub struct DiskPager<'a> {
     tree: BTree,
     mmap: Mmap<'a>,
     n_pages: u64,    // database size in number of pages
-    temp: Vec<Node>, // newly allocated pages
+    temp: Vec<Node>, // newly allocated pages to be flushed
 }
 
 struct Mmap<'a> {
@@ -153,9 +153,9 @@ impl<'a> DiskPager<'a> {
         let buf: Vec<IoSlice> = self
             .temp
             .iter()
-            .map(|node| rustix::io::IoSlice::new(&node.0))
+            .map(|node| rustix::io::IoSlice::new(&node))
             .collect();
-        rustix::io::pwritev(&self.database, &buf[..], offset as u64)?;
+        rustix::io::pwritev(&self.database, &buf, offset as u64)?;
         //discard in-memory data
         self.n_pages += self.temp.len() as u64;
         self.temp.clear();

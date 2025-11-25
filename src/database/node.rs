@@ -1,3 +1,5 @@
+use std::ops::Deref;
+
 use crate::{
     database::{
         pager::GLOBAL_PAGER,
@@ -34,12 +36,12 @@ pub enum MergeDirection {
     Right(Node),
 }
 #[derive(Debug)]
-pub(crate) struct Node(pub Box<[u8]>);
+pub(crate) struct Node(pub Box<[u8; NODE_SIZE]>);
 
 impl Node {
     /// new empty node
     pub fn new() -> Self {
-        Node(Box::new([0u8; NODE_SIZE]))
+        Node(Box::new([0; NODE_SIZE]))
     }
 
     /// receive the total node size
@@ -635,6 +637,14 @@ impl Node {
 impl Clone for Node {
     fn clone(&self) -> Self {
         Node(self.0.clone())
+    }
+}
+
+impl Deref for Node {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        &self.0[..]
     }
 }
 
