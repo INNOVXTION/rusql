@@ -19,6 +19,7 @@ pub(crate) fn slice_to_u16(data: &[u8], pos: usize) -> Result<u16, Error> {
         .map(|buf: [u8; U16_SIZE]| u16::from_le_bytes(buf))
         .ok_or(Error::IntCastError(None))
 }
+
 /// assumes little endian
 ///
 /// reads a [u8] slice to u64

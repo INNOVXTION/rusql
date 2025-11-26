@@ -2,14 +2,15 @@ use core::ffi::c_void;
 use rustix::mm::{MapFlags, ProtFlags};
 use std::collections::HashMap;
 use std::io::IoSlice;
+use std::ops::{Deref, DerefMut};
 use std::os::fd::OwnedFd;
 use std::sync::{LazyLock, Mutex, OnceLock};
 
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 
 use crate::database::errors::Error;
 use crate::database::errors::PagerError;
-use crate::database::helper::write_pointer;
+use crate::database::helper::{slice_to_pointer, write_pointer};
 use crate::database::node::Node;
 use crate::database::{tree::BTree, types::*};
 
@@ -165,8 +166,21 @@ impl<'a> DiskPager<'a> {
         Ok(())
     }
 
-    fn update_root(&mut self) -> Result<(), PagerError> {
-        todo!()
+    /// updates meta page with settings set at call time
+    fn root_update(&self) -> Result<(), PagerError> {
+        let r = rustix::io::pwrite(&self.database, &metapage_save(&self), 0)?;
+        Ok(())
+    }
+
+    /// reads chunk and loads its data into memory, sets root_ptr and n_pages
+    fn root_read(&mut self, file_size: u64) {
+        if file_size == 0 {
+            // empty file
+            self.n_pages = 1;
+            return;
+        }
+        let data = self.mmap.chunks[0].data;
+        metapage_load(self, data);
     }
 }
 
@@ -260,11 +274,33 @@ impl<'a> Drop for Chunk<'a> {
 unsafe impl<'a> Send for Chunk<'a> {}
 unsafe impl<'a> Sync for Chunk<'a> {}
 
+struct MetaPage(Box<[u8; METAPAGE_SIZE]>);
+
+impl MetaPage {
+    fn new() -> Self {
+        MetaPage(Box::new([0u8; METAPAGE_SIZE]))
+    }
+}
+
+impl Deref for MetaPage {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        &*self.0
+    }
+}
+impl DerefMut for MetaPage {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut *self.0
+    }
+}
+
 // | sig | root_ptr | page_used |
 // | 16B |    8B    |     8B    |
 
-fn set_metapage(pager: &mut DiskPager) -> [u8; METAPAGE_SIZE] {
-    let mut data = [0u8; METAPAGE_SIZE];
+/// returns the metapage configured on current disk pager
+fn metapage_save(pager: &DiskPager) -> MetaPage {
+    let mut data = MetaPage::new();
     // write sig
     data[..SIG_SIZE].copy_from_slice(DB_SIG.as_bytes());
     // write root ptr
@@ -272,6 +308,14 @@ fn set_metapage(pager: &mut DiskPager) -> [u8; METAPAGE_SIZE] {
     // write n pages
     data[SIG_SIZE + PTR_SIZE..].copy_from_slice(&pager.n_pages.to_le_bytes());
     data
+}
+
+/// reads chunk and sets diskpager root ptr and npages
+fn metapage_load(pager: &mut DiskPager, data: &[u8]) {
+    let sig = str::from_utf8(&data[..SIG_SIZE]).unwrap();
+    info!("opening database: {sig}");
+    pager.n_pages = u64::from_le_bytes(data[SIG_SIZE..SIG_SIZE + PTR_SIZE].try_into().unwrap());
+    pager.tree.root_ptr = Some(slice_to_pointer(&data, SIG_SIZE + PTR_SIZE).unwrap());
 }
 
 #[cfg(test)]
