@@ -63,6 +63,7 @@ pub enum PagerError {
     FileNameError,
     UnsupportedOS,
     UnalignedOffset(u64),
+    UnalignedLength(usize),
     MMapError(Errno),
 }
 
@@ -80,6 +81,7 @@ impl Display for PagerError {
             }
             PagerError::UnsupportedOS => write!(f, "Page size but OS is not allowed!"),
             PagerError::UnalignedOffset(e) => write!(f, "Offset {} is invalid!", e),
+            PagerError::UnalignedLength(e) => write!(f, "Length {} is invalid!", e),
             PagerError::MMapError(e) => write!(f, "Error when calling mmap {}", e),
         }
     }

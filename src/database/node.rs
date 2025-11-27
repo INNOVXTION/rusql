@@ -657,6 +657,8 @@ impl DerefMut for Node {
 // callback functions which the Btree uses to talk to the pager
 pub(crate) fn node_get(ptr: Pointer) -> Node {
     GLOBAL_PAGER
+        .get()
+        .unwrap()
         .lock()
         .expect("pager decode mutex error")
         .decode(ptr)
@@ -664,6 +666,8 @@ pub(crate) fn node_get(ptr: Pointer) -> Node {
 
 pub(crate) fn node_encode(node: Node) -> Pointer {
     GLOBAL_PAGER
+        .get()
+        .unwrap()
         .lock()
         .expect("pager encode mutex error")
         .encode(node)
@@ -671,6 +675,8 @@ pub(crate) fn node_encode(node: Node) -> Pointer {
 
 pub(crate) fn node_dealloc(ptr: Pointer) {
     GLOBAL_PAGER
+        .get()
+        .unwrap()
         .lock()
         .expect("pager delete mutex error")
         .delete(ptr)

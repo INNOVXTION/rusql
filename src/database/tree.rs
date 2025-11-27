@@ -264,10 +264,17 @@ impl BTree {
 
 #[cfg(test)]
 mod test {
+    use crate::database::pager::{PagerType, init_pager};
+
     use super::*;
     use rand::Rng;
     use test_log::test;
     use tracing::info;
+
+    #[test]
+    fn initiliaze_pager() {
+        init_pager(PagerType::Memory).unwrap();
+    }
 
     #[test]
     fn simple_insert() {

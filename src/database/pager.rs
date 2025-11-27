@@ -8,32 +8,33 @@ use std::sync::{LazyLock, Mutex, OnceLock};
 
 use tracing::{debug, error, info};
 
+use crate::create_file_sync;
 use crate::database::errors::Error;
 use crate::database::errors::PagerError;
 use crate::database::helper::{slice_to_pointer, write_pointer};
 use crate::database::node::Node;
 use crate::database::{tree::BTree, types::*};
 
-// change the pager with : *GLOBAL_PAGER.lock().unwrap() = Box::new(DiskPager::new());
-pub static GLOBAL_PAGER: LazyLock<Mutex<Box<dyn Pager>>> =
-    LazyLock::new(|| Mutex::new(Box::new(MemoryPager::new())));
+// // change the pager with : *GLOBAL_PAGER.lock().unwrap() = Box::new(DiskPager::new());
+// pub static GLOBAL_PAGER: LazyLock<Mutex<Box<dyn Pager>>> =
+//     LazyLock::new(|| Mutex::new(Box::new(MemoryPager::new())));
 
-pub static GLOBAL_PAGERTWO: OnceLock<Mutex<Box<dyn Pager>>> = OnceLock::new();
+pub static GLOBAL_PAGER: OnceLock<Mutex<Box<dyn Pager>>> = OnceLock::new();
 
 pub enum PagerType {
     Memory,
-    Disk,
+    Disk { path: &'static str },
 }
 
 pub fn init_pager(mode: PagerType) -> Result<(), Error> {
     match mode {
-        PagerType::Disk => {
-            GLOBAL_PAGERTWO
-                .set(Mutex::new(Box::new(DiskPager::open())))
+        PagerType::Disk { path } => {
+            GLOBAL_PAGER
+                .set(Mutex::new(Box::new(DiskPager::open(path)?)))
                 .map_err(|_| Error::PagerSetError)?;
         }
         PagerType::Memory => {
-            GLOBAL_PAGERTWO
+            GLOBAL_PAGER
                 .set(Mutex::new(Box::new(MemoryPager::new())))
                 .map_err(|_| Error::PagerSetError)?;
         }
@@ -105,8 +106,38 @@ struct Chunk<'a> {
 }
 
 impl<'a> DiskPager<'a> {
-    fn open() -> Self {
-        todo!()
+    fn open(path: &'static str) -> Result<Self, Error> {
+        let mut pager = DiskPager {
+            path,
+            database: create_file_sync(path).map_err(|e| {
+                error!("Error when opening database");
+                Error::PagerError(e)
+            })?,
+            tree: BTree { root_ptr: None },
+            mmap: Mmap {
+                total: 0,
+                chunks: vec![],
+            },
+            n_pages: 0,
+            temp: vec![],
+        };
+        let fd_size = rustix::fs::fstat(&pager.database)
+            .map_err(|e| {
+                error!("Error when getting file size");
+                Error::PagerError(PagerError::FDError(e))
+            })?
+            .st_size as u64;
+        pager
+            .mmap
+            .chunks
+            // initializing mmap with double the file size
+            .push(mmap_new(&pager, (fd_size * 2) as usize, 0).map_err(|e| {
+                error!("Error when initalizing mmap");
+                Error::PagerError(e)
+            })?);
+        pager.mmap.total = (fd_size * 2) as usize;
+        pager.root_read(fd_size);
+        Ok(pager)
     }
 
     pub fn get(&self, key: &str) -> Option<String> {
@@ -137,7 +168,7 @@ impl<'a> DiskPager<'a> {
         // sync call
         rustix::fs::fsync(&self.database)?;
         // update root
-        self.update_root()?;
+        self.root_update()?;
         // sync call
         rustix::fs::fsync(&self.database)?;
         Ok(())
@@ -146,10 +177,11 @@ impl<'a> DiskPager<'a> {
     /// writePages, flushes the buffer
     fn page_write(&mut self) -> Result<(), PagerError> {
         // extend the mmap if needed
-        let size = (self.n_pages as usize + self.temp.len()) * PAGE_SIZE; // amount of pages in bytes
-        mmap_extend(self, size)
+        // number of page plus current buffer
+        let new_size = (self.n_pages as usize + self.temp.len()) * PAGE_SIZE; // amount of pages in bytes
+        mmap_extend(self, new_size)
             .map_err(|e| {
-                error!("Error when extending mmap: {}, error {}", size, e);
+                error!("Error when extending mmap: {}, error {}", new_size, e);
             })
             .unwrap();
         // write data pages to the file
@@ -179,11 +211,11 @@ impl<'a> DiskPager<'a> {
             self.n_pages = 1;
             return;
         }
-        let data = self.mmap.chunks[0].data;
-        metapage_load(self, data);
+        metapage_load(self);
     }
 }
 
+// callbacks
 impl<'a> Pager for DiskPager<'a> {
     // page read
     fn decode(&self, ptr: Pointer) -> Node {
@@ -203,7 +235,7 @@ impl<'a> Pager for DiskPager<'a> {
         panic!()
     }
 
-    // page append
+    // page append, loads node into buffer to be flushed later
     fn encode(&mut self, node: Node) -> Pointer {
         let ptr = Pointer(self.n_pages + self.temp.len() as u64);
         self.temp.push(node);
@@ -219,9 +251,15 @@ impl<'a> Pager for DiskPager<'a> {
 fn mmap_new<'a>(db: &DiskPager, length: usize, offset: u64) -> Result<Chunk<'a>, PagerError> {
     debug!("new mmap: length {length}, offset {offset}");
     if rustix::param::page_size() != PAGE_SIZE {
+        error!("OS page size doesnt work!");
         return Err(PagerError::UnsupportedOS);
     };
+    // if length % PAGE_SIZE != 0 {
+    //     error!("Invalid length!");
+    //     return Err(PagerError::UnalignedLength(length));
+    // };
     if offset % PAGE_SIZE as u64 != 0 {
+        error!("Invalid offset!");
         return Err(PagerError::UnalignedOffset(offset));
     };
     let ptr = unsafe {
@@ -233,7 +271,10 @@ fn mmap_new<'a>(db: &DiskPager, length: usize, offset: u64) -> Result<Chunk<'a>,
             &db.database,
             offset,
         )
-        .map_err(|e| PagerError::MMapError(e))?
+        .map_err(|e| {
+            error!("Error when calling mmap");
+            PagerError::MMapError(e)
+        })?
     };
     Ok(Chunk {
         // SAFETY: non null, and page aligned pointer from mmap()
@@ -242,7 +283,7 @@ fn mmap_new<'a>(db: &DiskPager, length: usize, offset: u64) -> Result<Chunk<'a>,
     })
 }
 
-/// exponentially extends the mmap
+/// checks for sufficient space, exponentially extends the mmap
 fn mmap_extend(db: &mut DiskPager, size: usize) -> Result<(), PagerError> {
     debug!("extending mmap: size {size}");
     if size <= db.mmap.total {
@@ -306,21 +347,23 @@ fn metapage_save(pager: &DiskPager) -> MetaPage {
     // write root ptr
     write_pointer(&mut data, SIG_SIZE, pager.tree.root_ptr.unwrap()).unwrap();
     // write n pages
-    data[SIG_SIZE + PTR_SIZE..].copy_from_slice(&pager.n_pages.to_le_bytes());
+    data[SIG_SIZE + PTR_SIZE..SIG_SIZE + (PTR_SIZE * 2)]
+        .copy_from_slice(&pager.n_pages.to_le_bytes());
     data
 }
 
 /// reads chunk and sets diskpager root ptr and npages
-fn metapage_load(pager: &mut DiskPager, data: &[u8]) {
+fn metapage_load(pager: &mut DiskPager) {
+    let data = pager.mmap.chunks[0].data;
+    pager.n_pages = u64::from_le_bytes(data[SIG_SIZE..SIG_SIZE + PTR_SIZE].try_into().unwrap());
+    pager.tree.root_ptr = Some(slice_to_pointer(data, SIG_SIZE + PTR_SIZE).unwrap());
     let sig = str::from_utf8(&data[..SIG_SIZE]).unwrap();
     info!("opening database: {sig}");
-    pager.n_pages = u64::from_le_bytes(data[SIG_SIZE..SIG_SIZE + PTR_SIZE].try_into().unwrap());
-    pager.tree.root_ptr = Some(slice_to_pointer(&data, SIG_SIZE + PTR_SIZE).unwrap());
 }
 
 #[cfg(test)]
 mod test {
-    use super::*;
-    use std::error::Error;
-    use test_log::test;
+    // use super::*;
+    // use std::error::Error;
+    // use test_log::test;
 }
