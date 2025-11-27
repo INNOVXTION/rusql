@@ -4,9 +4,14 @@ use crate::database::node::Node;
 
 pub const BTREE_MAX_KEY_SIZE: usize = 1000;
 pub const BTREE_MAX_VAL_SIZE: usize = 3000;
+/// determines when nodes should be merged, higher number = less merges
 pub const MERGE_FACTOR: usize = PAGE_SIZE / 4;
+
+/// size of one page on disk
 pub const PAGE_SIZE: usize = 4096; // 4096 bytes
-pub const NODE_SIZE: usize = PAGE_SIZE * 2; // in memory buffer
+
+/// maximum size for nodes inside memory
+pub const NODE_SIZE: usize = PAGE_SIZE * 2;
 
 pub const DB_SIG: &'static str = "BuildYourOwnDB06";
 pub const METAPAGE_SIZE: usize = 32;

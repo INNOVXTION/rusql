@@ -22,7 +22,7 @@ pub(crate) fn slice_to_u16(data: &[u8], pos: usize) -> Result<u16, Error> {
 
 /// assumes little endian
 ///
-/// reads a [u8] slice to u64
+/// reads a [u8] slice to u64 starting at offset (pos)
 pub(crate) fn slice_to_pointer(data: &[u8], pos: usize) -> Result<Pointer, Error> {
     if pos > NODE_SIZE {
         error!("slice_to_u64: pos idx {} exceeded node size", pos);

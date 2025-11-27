@@ -1,11 +1,12 @@
+use std::sync::Once;
+
 use tracing::debug;
 use tracing::info;
 use tracing::instrument;
 
 use crate::database::{errors::Error, node::*, types::*};
 
-// determines when nodes should be merged, higher number = less merges
-
+#[derive(Debug)]
 pub struct BTree {
     pub(crate) root_ptr: Option<Pointer>,
 }
@@ -271,13 +272,17 @@ mod test {
     use test_log::test;
     use tracing::info;
 
-    #[test]
-    fn initiliaze_pager() {
-        init_pager(PagerType::Memory).unwrap();
+    static INIT: Once = Once::new();
+
+    fn setup() {
+        INIT.call_once(|| {
+            init_pager(PagerType::Memory).unwrap();
+        });
     }
 
     #[test]
     fn simple_insert() {
+        setup();
         info!("help i just want to log :(");
         let mut tree = BTree::new();
         tree.insert("1", "hello").unwrap();
@@ -291,6 +296,7 @@ mod test {
 
     #[test]
     fn simple_delete() {
+        setup();
         let mut tree = BTree::new();
         tree.insert("1", "hello").unwrap();
         tree.insert("2", "world").unwrap();
@@ -307,6 +313,7 @@ mod test {
 
     #[test]
     fn insert_split1() {
+        setup();
         let mut tree = BTree::new();
         for i in 1u16..=200u16 {
             tree.insert(&format!("{i}"), "value").unwrap()
@@ -321,6 +328,7 @@ mod test {
 
     #[test]
     fn insert_split2() {
+        setup();
         let mut tree = BTree::new();
         for i in 1u16..=400u16 {
             tree.insert(&format!("{i}"), "value").unwrap()
@@ -337,6 +345,7 @@ mod test {
 
     #[test]
     fn merge_delete1() {
+        setup();
         let mut tree = BTree::new();
         for i in 1u16..=200u16 {
             tree.insert(&format!("{i}"), "value").unwrap()
@@ -350,6 +359,7 @@ mod test {
 
     #[test]
     fn merge_delete_left_right() {
+        setup();
         let mut tree = BTree::new();
         for i in 1u16..=400u16 {
             tree.insert(&format!("{i}"), "value").unwrap()
@@ -363,6 +373,7 @@ mod test {
 
     #[test]
     fn merge_delete_right_left() {
+        setup();
         let mut tree = BTree::new();
         for i in 1u16..=400u16 {
             tree.insert(&format!("{i}"), "value").unwrap()
@@ -376,6 +387,7 @@ mod test {
 
     #[test]
     fn merge_delete3() {
+        setup();
         let mut tree = BTree::new();
         for i in 1u16..=400u16 {
             tree.insert(&format!("{i}"), "value").unwrap()
@@ -389,6 +401,7 @@ mod test {
 
     #[test]
     fn insert_big() {
+        setup();
         let mut tree = BTree::new();
         for i in 1u16..=1000u16 {
             tree.insert(&format!("{i}"), "value").unwrap()
@@ -401,6 +414,7 @@ mod test {
 
     #[test]
     fn random_1k() {
+        setup();
         let mut tree = BTree::new();
         for _ in 1u16..=1000 {
             tree.insert(&format!("{:?}", rand::rng().random_range(1..1000)), "val")
