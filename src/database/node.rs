@@ -1,11 +1,10 @@
 use std::ops::{Deref, DerefMut};
 
-use crate::{
-    database::helper::*,
-    database::{
-        pager::GLOBAL_PAGER,
-        types::{MERGE_FACTOR, NODE_SIZE, PAGE_SIZE, Pointer},
-    },
+use crate::database::{
+    helper::*,
+    pager::GLOBAL_PAGER,
+    tree::BTree,
+    types::{MERGE_FACTOR, NODE_SIZE, PAGE_SIZE, Pointer},
 };
 use tracing::{debug, error, instrument, warn};
 
@@ -104,6 +103,7 @@ impl Node {
     /// updates nkeys and header
     pub fn insert_nkids(
         &mut self,
+        tree: &mut BTree,
         old_node: Node,
         idx: u16,
         new_kids: (u16, Vec<Node>),
@@ -119,7 +119,7 @@ impl Node {
         // insert new ptr at idx, consuming the split array
         for (i, node) in new_kids.1.into_iter().enumerate() {
             let key = node.get_key(0)?.to_string();
-            let ptr = node_encode(node);
+            let ptr = (tree.encode)(node);
             debug!(
                 "appending new ptr: {ptr} with {key} at idx {}",
                 idx + i as u16
@@ -581,14 +581,14 @@ impl Node {
     /// checks if new node needs merging
     ///
     /// returns sibling node to merge with
-    pub fn merge_check(&self, new: &Node, idx: u16) -> Option<MergeDirection> {
+    pub fn merge_check(&self, tree: &BTree, new: &Node, idx: u16) -> Option<MergeDirection> {
         if new.nbytes() > MERGE_FACTOR as u16 {
             return None; // no merge necessary
         }
         let new_size = new.nbytes() - crate::database::node::HEADER_OFFSET as u16;
         // check left
         if idx > 0 {
-            let sibling = node_get(self.get_ptr(idx - 1));
+            let sibling = (tree.decode)(&self.get_ptr(idx - 1));
             let sibling_size = sibling.nbytes();
             if sibling_size + new_size < PAGE_SIZE as u16 {
                 return Some(MergeDirection::Left(sibling));
@@ -596,7 +596,7 @@ impl Node {
         }
         // check right
         if idx + 1 < self.get_nkeys() {
-            let sibling = node_get(self.get_ptr(idx + 1));
+            let sibling = (tree.decode)(&self.get_ptr(idx + 1));
             let sibling_size = sibling.nbytes();
             if sibling_size + new_size < PAGE_SIZE as u16 {
                 return Some(MergeDirection::Right(sibling));
@@ -608,6 +608,7 @@ impl Node {
 
     pub fn merge_setptr(
         &mut self,
+        tree: &mut BTree,
         src: Node,
         merged_node: Node,
         idx: u16, // idx of node that got merged away
@@ -616,7 +617,7 @@ impl Node {
         self.set_header(NodeType::Node, src_nkeys - 1);
 
         let merge_ptr_key = merged_node.get_key(0).unwrap().to_string();
-        let merge_node_ptr = node_encode(merged_node);
+        let merge_node_ptr = (tree.encode)(merged_node);
 
         self.append_from_range(&src, 0, 0, idx).map_err(|err| {
             error!("merge error when appending before idx");
@@ -654,33 +655,6 @@ impl DerefMut for Node {
     }
 }
 
-// callback functions which the Btree uses to talk to the pager
-pub(crate) fn node_get(ptr: Pointer) -> Node {
-    GLOBAL_PAGER
-        .get()
-        .unwrap()
-        .lock()
-        .expect("pager decode mutex error")
-        .decode(ptr)
-}
-
-pub(crate) fn node_encode(node: Node) -> Pointer {
-    GLOBAL_PAGER
-        .get()
-        .unwrap()
-        .lock()
-        .expect("pager encode mutex error")
-        .encode(node)
-}
-
-pub(crate) fn node_dealloc(ptr: Pointer) {
-    GLOBAL_PAGER
-        .get()
-        .unwrap()
-        .lock()
-        .expect("pager delete mutex error")
-        .delete(ptr)
-}
 #[cfg(test)]
 mod test {
     use super::*;

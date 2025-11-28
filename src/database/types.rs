@@ -19,12 +19,6 @@ pub const SIG_SIZE: usize = 16;
 pub const PTR_SIZE: usize = 8;
 pub const U16_SIZE: usize = 2;
 
-pub trait Pager: Send + Sync {
-    fn encode(&mut self, node: Node) -> Pointer;
-    fn decode(&self, ptr: Pointer) -> Node;
-    fn delete(&mut self, ptr: Pointer);
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Eq, Hash)]
 pub(crate) struct Pointer(pub u64);
 

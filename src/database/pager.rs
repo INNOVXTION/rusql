@@ -1,9 +1,11 @@
 use core::ffi::c_void;
 use rustix::mm::{MapFlags, ProtFlags};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::IoSlice;
 use std::ops::{Deref, DerefMut};
 use std::os::fd::OwnedFd;
+use std::rc::{Rc, Weak};
 use std::sync::{Mutex, OnceLock};
 
 use tracing::{debug, error, info, instrument};
@@ -16,40 +18,15 @@ use crate::database::{
     types::*,
 };
 
-// // change the pager with : *GLOBAL_PAGER.lock().unwrap() = Box::new(DiskPager::new());
-// pub static GLOBAL_PAGER: LazyLock<Mutex<Box<dyn Pager>>> =
-//     LazyLock::new(|| Mutex::new(Box::new(MemoryPager::new())));
+pub static GLOBAL_PAGER: OnceLock<Mutex<MemoryPager>> = OnceLock::new();
 
-pub static GLOBAL_PAGER: OnceLock<Mutex<Box<dyn Pager>>> = OnceLock::new();
-
-pub enum PagerType {
-    Memory,
-    Disk { path: &'static str },
-}
-
-pub fn init_pager(mode: PagerType) -> Result<(), Error> {
-    match mode {
-        PagerType::Disk { path } => {
-            GLOBAL_PAGER
-                .set(Mutex::new(Box::new(DiskPager::open(path)?)))
-                .map_err(|_| Error::PagerSetError)?;
-        }
-        PagerType::Memory => {
-            GLOBAL_PAGER
-                .set(Mutex::new(Box::new(MemoryPager::new())))
-                .map_err(|_| Error::PagerSetError)?;
-        }
-    };
-    Ok(())
-}
-
-struct MemoryPager {
+pub struct MemoryPager {
     freelist: Vec<u64>,
     pages: HashMap<u64, Node>,
 }
 
 impl MemoryPager {
-    fn new() -> Self {
+    pub fn new() -> Self {
         MemoryPager {
             freelist: Vec::from_iter((1..=100).rev()),
             pages: HashMap::new(),
@@ -57,41 +34,55 @@ impl MemoryPager {
     }
 }
 
-impl Pager for MemoryPager {
-    fn decode(&self, ptr: Pointer) -> Node {
-        self.pages
-            .get(&ptr.0)
-            .unwrap_or_else(|| {
-                error!("couldnt retrieve page at ptr {}", ptr);
-                panic!("page decode error")
-            })
-            .clone()
+pub fn mempage_tree<'a>() -> BTree<'a> {
+    GLOBAL_PAGER.set(Mutex::new(MemoryPager::new()));
+    BTree {
+        root_ptr: None,
+        decode: Box::new(decode),
+        encode: Box::new(encode),
+        dealloc: Box::new(dealloc),
     }
+}
 
-    fn encode(&mut self, node: Node) -> Pointer {
-        if node.get_nkeys() > PAGE_SIZE as u16 {
-            panic!("trying to encode node exceeding page size");
-        }
-        let free_page = self.freelist.pop().expect("no free page available");
-        debug!("encoding node at ptr {}", free_page);
-        self.pages.insert(free_page, node);
-        Pointer(free_page)
-    }
+/// callbacks for memory pager
+fn decode(ptr: &Pointer) -> Node {
+    let pager = GLOBAL_PAGER.get().unwrap().lock().unwrap();
+    pager
+        .pages
+        .get(&ptr.0)
+        .unwrap_or_else(|| {
+            error!("couldnt retrieve page at ptr {}", ptr);
+            panic!("page decode error")
+        })
+        .clone()
+}
 
-    fn delete(&mut self, ptr: Pointer) {
-        debug!("deleting node at ptr {}", ptr.0);
-        self.freelist.push(ptr.0);
-        self.pages
-            .remove(&ptr.0)
-            .expect("couldnt remove() page number");
+fn encode(node: Node) -> Pointer {
+    if node.get_nkeys() > PAGE_SIZE as u16 {
+        panic!("trying to encode node exceeding page size");
     }
+    let mut pager = GLOBAL_PAGER.get().unwrap().lock().unwrap();
+    let free_page = pager.freelist.pop().expect("no free page available");
+    debug!("encoding node at ptr {}", free_page);
+    pager.pages.insert(free_page, node);
+    Pointer(free_page)
+}
+
+fn dealloc(ptr: Pointer) {
+    debug!("deleting node at ptr {}", ptr.0);
+    let mut pager = GLOBAL_PAGER.get().unwrap().lock().unwrap();
+    pager.freelist.push(ptr.0);
+    pager
+        .pages
+        .remove(&ptr.0)
+        .expect("couldnt remove() page number");
 }
 
 #[derive(Debug)]
 pub struct DiskPager<'a> {
     path: &'static str,
     database: OwnedFd,
-    tree: BTree,
+    tree: BTree<'a>,
     mmap: Mmap<'a>,
     n_pages: u64,    // database size in number of pages
     temp: Vec<Node>, // newly allocated pages to be flushed
@@ -110,38 +101,73 @@ struct Chunk<'a> {
 }
 
 impl<'a> DiskPager<'a> {
-    fn open(path: &'static str) -> Result<Self, Error> {
-        let mut pager = DiskPager {
+    fn open(path: &'static str) -> Result<Rc<RefCell<DiskPager>>, Error> {
+        let pager = Rc::new(RefCell::new(DiskPager {
             path,
             database: create_file_sync(path).map_err(|e| {
                 error!("Error when opening database");
                 Error::PagerError(e)
             })?,
-            tree: BTree { root_ptr: None },
+            tree: BTree {
+                root_ptr: None,
+                decode: Box::new(|_| panic!("not initialized")),
+                encode: Box::new(|_| panic!("not initialized")),
+                dealloc: Box::new(|_| panic!("not initialized")),
+            },
             mmap: Mmap {
                 total: 0,
                 chunks: vec![],
             },
             n_pages: 0,
             temp: vec![],
+        }));
+        let weak = Rc::downgrade(&pager);
+        let decode = {
+            let weak = Weak::clone(&weak);
+            Box::new(move |ptr: &Pointer| {
+                weak.upgrade().expect("pager dropped").borrow().decode(*ptr)
+            })
         };
-        let fd_size = rustix::fs::fstat(&pager.database)
+        let encode = {
+            let weak = Weak::clone(&weak);
+            Box::new(move |node: Node| {
+                weak.upgrade()
+                    .expect("pager dropped")
+                    .borrow_mut()
+                    .encode(node)
+            })
+        };
+        let dealloc = {
+            let weak = Weak::clone(&weak);
+            Box::new(move |ptr: Pointer| {
+                weak.upgrade()
+                    .expect("pager dropped")
+                    .borrow_mut()
+                    .dealloc(ptr)
+            })
+        };
+        pager.borrow_mut().tree.decode = decode;
+        pager.borrow_mut().tree.encode = encode;
+        pager.borrow_mut().tree.dealloc = dealloc;
+
+        let fd_size = rustix::fs::fstat(&pager.borrow().database)
             .map_err(|e| {
                 error!("Error when getting file size");
                 Error::PagerError(PagerError::FDError(e))
             })?
             .st_size as u64;
+
         // initialize mmap
         let map_size = (fd_size * 2) as usize + PAGE_SIZE;
-        pager
-            .mmap
-            .chunks
-            .push(mmap_new(&pager.database, map_size, 0).map_err(|e| {
+        pager.borrow_mut().mmap.chunks.push(
+            mmap_new(&pager.borrow().database, map_size, 0).map_err(|e| {
                 error!("Error when initalizing mmap");
                 Error::PagerError(e)
-            })?);
-        pager.mmap.total = map_size;
-        pager.root_read(fd_size);
+            })?,
+        );
+        pager.borrow_mut().mmap.total = map_size;
+        pager.borrow_mut().root_read(fd_size);
+
         Ok(pager)
     }
 
@@ -221,10 +247,7 @@ impl<'a> DiskPager<'a> {
         }
         metapage_load(self);
     }
-}
-
-// callbacks
-impl<'a> Pager for DiskPager<'a> {
+    // callbacks
     // page read
     fn decode(&self, ptr: Pointer) -> Node {
         let mut start: u64 = 0;
@@ -250,7 +273,7 @@ impl<'a> Pager for DiskPager<'a> {
         ptr
     }
 
-    fn delete(&mut self, ptr: Pointer) {
+    fn dealloc(&mut self, ptr: Pointer) {
         todo!()
     }
 }
@@ -392,39 +415,32 @@ mod test {
 
     static INIT: Once = Once::new();
 
-    fn setup() {
-        INIT.call_once(|| {
-            init_pager(PagerType::Disk {
-                path: "test-files/database.rdb",
-            })
-            .unwrap();
-        });
-    }
+    // fn setup() {
+    //     INIT.call_once(|| {
+    //         init_pager(PagerType::Disk {
+    //             path: "test-files/database.rdb",
+    //         })
+    //         .unwrap();
+    //     });
+    // }
 
     #[test]
     fn open_pager() {
         let pager = DiskPager::open("test-files/test-open.rdb").unwrap();
-        assert_eq!(pager.n_pages, 1);
+        assert_eq!(pager.borrow().n_pages, 1);
     }
 
     #[test]
     fn meta_page1() {
         let mut pager = DiskPager::open("test-files/metapage-test.rdb").unwrap();
-        assert_eq!(pager.n_pages, 1);
-        pager.root_update().unwrap();
-        metapage_load(&mut pager);
+        assert_eq!(pager.borrow().n_pages, 1);
+        pager.borrow().root_update().unwrap();
+        metapage_load(&mut *pager.borrow_mut());
 
-        assert_eq!(pager.tree.root_ptr, None);
+        assert_eq!(pager.borrow().tree.root_ptr, None);
         assert_eq!(
-            str::from_utf8(&pager.mmap.chunks[0].data[..SIG_SIZE]).unwrap(),
+            str::from_utf8(&pager.borrow().mmap.chunks[0].data[..SIG_SIZE]).unwrap(),
             DB_SIG
         );
-    }
-
-    #[test]
-    fn insert_get() {
-        let mut pager = DiskPager::open("test-files/insert_test.rdb").unwrap();
-        GLOBAL_PAGER.set(Mutex::new(Box::new(pager)));
-        GLOBAL_PAGER.get_mut().unwrap().lock().;
     }
 }
