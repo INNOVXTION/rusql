@@ -479,8 +479,8 @@ mod test {
     }
 
     #[test]
-    fn disk_insert() {
-        let path = "test-files/disk_insert.rdb";
+    fn disk_insert1() {
+        let path = "test-files/disk_insert1.rdb";
         let pager = DiskPager::open(path).unwrap();
         pager.set("1", "val").unwrap();
         assert_eq!(pager.get("1").unwrap(), "val".to_string());
