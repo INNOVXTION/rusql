@@ -2,7 +2,6 @@ use std::ops::{Deref, DerefMut};
 
 use crate::database::{
     helper::*,
-    pager::GLOBAL_PAGER,
     tree::BTree,
     types::{MERGE_FACTOR, NODE_SIZE, PAGE_SIZE, Pointer},
 };

@@ -8,6 +8,7 @@ tracing = { version = "0.1", features = ["log"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"] }
 thiserror = { version = "2.0" }
 rustix = {version = "1.1.0", features = ["fs", "mm", "param"]}
+parking_lot = "0.12"
 
 [dev-dependencies]
 test-log = {version = "0.2", default-features = false, features = ["trace"]}

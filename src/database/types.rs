@@ -1,7 +1,5 @@
 use std::fmt::Display;
 
-use crate::database::node::Node;
-
 pub const BTREE_MAX_KEY_SIZE: usize = 1000;
 pub const BTREE_MAX_VAL_SIZE: usize = 3000;
 /// determines when nodes should be merged, higher number = less merges

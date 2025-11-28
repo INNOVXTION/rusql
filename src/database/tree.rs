@@ -243,6 +243,7 @@ impl<'a> BTree<'a> {
 
     #[instrument(skip(self))]
     pub fn search(&self, key: &str) -> Option<String> {
+        info!("searching for {key}...");
         BTree::tree_search(self, (self.decode)(&self.root_ptr?), key)
     }
 
