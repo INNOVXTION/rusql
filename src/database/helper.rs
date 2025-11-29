@@ -5,6 +5,7 @@ use std::os::fd::OwnedFd;
 use std::path::PathBuf;
 use std::str::FromStr;
 use tracing::{debug, error};
+use tracing_subscriber::fmt::format::Format;
 
 /// assumes little endian
 ///
@@ -62,6 +63,22 @@ pub(crate) fn from_usize(n: usize) -> u16 {
     n as u16
 }
 
+/// converting byte size to megabyte
+pub(crate) fn as_mb(bytes: usize) -> String {
+    format!("{} MB", bytes / 2usize.pow(10))
+}
+
+/// converting page offset to page number
+pub(crate) fn as_page(offset: usize) -> String {
+    format!("page {}", offset / PAGE_SIZE)
+}
+
+/// validating key
+pub(crate) fn key_validator() {}
+
+/// validating value
+pub(crate) fn value_validator() {}
+
 /// creates or opens a .rdb file
 pub fn create_file_sync(file: &str) -> Result<OwnedFd, PagerError> {
     let path = PathBuf::from_str(file).unwrap();
@@ -81,7 +98,7 @@ pub fn create_file_sync(file: &str) -> Result<OwnedFd, PagerError> {
         OFlags::DIRECTORY | OFlags::RDONLY,
         Mode::RUSR | Mode::WUSR | Mode::RGRP | Mode::ROTH,
     )?;
-    debug!("opening or creating file");
+    debug!("opening file");
     let fd = fs::openat(
         &dirfd,
         path.file_name().unwrap(),
