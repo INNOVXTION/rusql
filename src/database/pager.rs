@@ -314,6 +314,7 @@ impl<'a> DiskPager<'a> {
     // page append, loads node into buffer to be flushed later
     fn encode(&self, state: &mut State, node: Node) -> Pointer {
         // empty db has n_pages = 1 (meta page)
+        assert!(node.fits_page());
         let ptr = Pointer(state.n_pages + state.temp.len() as u64);
         debug!(
             "encode: adding {:?} at page: {} to buffer",
@@ -434,7 +435,7 @@ fn metapage_save(pager: &DiskPager) -> MetaPage {
     // write root ptr
     debug!(
         "metapage: writing root ptr: {} to meta page",
-        pager.tree.borrow().root_ptr.unwrap()
+        pager.tree.borrow().root_ptr.or(Some(Pointer(0))).unwrap()
     );
     write_pointer(
         &mut data,
@@ -453,10 +454,15 @@ fn metapage_save(pager: &DiskPager) -> MetaPage {
 }
 
 /// reads chunk and sets diskpager root ptr and npages
+///
+/// panics when called without initialized mmap
 fn metapage_load(pager: &DiskPager) {
+    if pager.state.borrow().mmap.chunks.len() == 0 {
+        mmap_extend(pager, PAGE_SIZE).expect("mmap extend error");
+    };
     let mut pager_ref = pager.state.borrow_mut();
     let data = pager_ref.mmap.chunks[0].data;
-    assert!(data.len() == PAGE_SIZE);
+    assert!(data.len() >= PAGE_SIZE);
     pager.tree.borrow_mut().root_ptr = match slice_to_pointer(data, SIG_SIZE) {
         Ok(Pointer(0)) => None,
         Ok(n) => Some(n),
@@ -492,14 +498,15 @@ mod test {
     #[test]
     fn open_pager() {
         let path = "test-files/open_pager.rdb";
+        cleanup_file(path);
         let pager = DiskPager::open(path).unwrap();
         assert_eq!(pager.state.borrow().n_pages, 1);
-        cleanup_file(path);
     }
 
     #[test]
     fn meta_page1() {
         let path = "test-files/meta_page1.rdb";
+        cleanup_file(path);
         let pager = DiskPager::open(path).unwrap();
         assert_eq!(pager.state.borrow().n_pages, 1);
         pager.root_update().unwrap();
@@ -510,16 +517,15 @@ mod test {
             str::from_utf8(&pager.state.borrow().mmap.chunks[0].data[..SIG_SIZE]).unwrap(),
             DB_SIG
         );
-        cleanup_file(path);
     }
 
     #[test]
     fn disk_insert1() {
         let path = "test-files/disk_insert1.rdb";
+        cleanup_file(path);
         let pager = DiskPager::open(path).unwrap();
         pager.set("1", "val").unwrap();
         assert_eq!(pager.get("1").unwrap(), "val".to_string());
-        cleanup_file(path);
     }
 
     #[test]
