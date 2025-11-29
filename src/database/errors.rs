@@ -14,6 +14,7 @@ pub enum Error {
     DeleteError(String),
     PagerError(PagerError),
     PagerSetError,
+    InvalidInput(&'static str),
 }
 
 impl Display for Error {
@@ -30,6 +31,7 @@ impl Display for Error {
             Error::DeleteError(e) => write!(f, "Error when deleting {e}"),
             Error::PagerError(e) => write!(f, "Error when calling pager {e}"),
             Error::PagerSetError => write!(f, "Attempting to set global pager again!"),
+            Error::InvalidInput(e) => write!(f, "invalid input!, {e}"),
         }
     }
 }

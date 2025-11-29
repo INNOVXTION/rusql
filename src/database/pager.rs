@@ -11,7 +11,7 @@ use std::sync::OnceLock;
 
 use tracing::{debug, error, info, instrument};
 
-use crate::database::helper::{as_mb, as_page};
+use crate::database::helper::{as_mb, as_page, input_valid};
 use crate::database::{
     errors::{Error, PagerError},
     helper::{create_file_sync, slice_to_pointer, write_pointer},
@@ -108,6 +108,9 @@ struct Chunk<'a> {
 }
 
 impl<'a> DiskPager<'a> {
+    /// initializes pager
+    ///
+    /// opens file, and sets up callbacks for the tree
     #[instrument]
     fn open(path: &'static str) -> Result<Rc<Self>, Error> {
         let pager = Rc::new(DiskPager {
@@ -181,12 +184,14 @@ impl<'a> DiskPager<'a> {
     }
 
     #[instrument(skip(self))]
-    pub fn get(&self, key: &str) -> Option<String> {
-        self.tree.borrow().search(key)
+    pub fn get(&self, key: &str) -> Result<Option<String>, Error> {
+        input_valid(key, " ")?;
+        Ok(self.tree.borrow().search(key))
     }
 
     // #[instrument(skip(self))]
     pub fn set(&self, key: &str, val: &str) -> Result<(), Error> {
+        input_valid(key, val)?;
         info!("inserting {key}, {val}");
         self.tree.borrow_mut().insert(key, val)?;
         debug!("updating file with: key {key}, val {val}");
@@ -199,6 +204,7 @@ impl<'a> DiskPager<'a> {
 
     #[instrument(skip(self))]
     pub fn delete(&mut self, key: &str) -> Result<(), Error> {
+        input_valid(key, " ")?;
         self.tree.borrow_mut().delete(key)?;
         self.file_update().map_err(|e| {
             error!("pager error {}", e);
@@ -512,7 +518,7 @@ mod test {
         cleanup_file(path);
         let pager = DiskPager::open(path).unwrap();
         pager.set("1", "val").unwrap();
-        assert_eq!(pager.get("1").unwrap(), "val".to_string());
+        assert_eq!(pager.get("1").unwrap().unwrap(), "val".to_string());
         cleanup_file(path);
     }
 
@@ -526,7 +532,7 @@ mod test {
             pager.set(&format!("{i}"), "value").unwrap()
         }
         for i in 1u16..=300u16 {
-            assert_eq!(pager.get(&format!("{i}")).unwrap(), "value")
+            assert_eq!(pager.get(&format!("{i}")).unwrap().unwrap(), "value")
         }
         cleanup_file(path);
     }
