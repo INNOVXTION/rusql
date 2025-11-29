@@ -158,40 +158,25 @@ impl<'a> DiskPager<'a> {
                 strong.dealloc(&mut *mut_ref, ptr)
             })
         };
-
-        {
-            let mut ref_mut = pager.tree.borrow_mut();
-            ref_mut.decode = decode;
-            ref_mut.encode = encode;
-            ref_mut.dealloc = dealloc;
-        }
-        {
-            let mut pager_mut = pager.state.borrow_mut();
-            let fd_size = rustix::fs::fstat(&pager.database)
-                .map_err(|e| {
-                    error!("Error when getting file size");
-                    Error::PagerError(PagerError::FDError(e))
-                })
-                .unwrap()
-                .st_size as u64;
-            // // initialize mmap
-            // let map_size = (fd_size * 2) as usize + PAGE_SIZE;
-            // let map = mmap_new(&pager.database, 0, map_size).map_err(|e| {
-            //     error!("Error when initalizing mmap");
-            //     Error::PagerError(e)
-            // })?;
-            // pager_mut.mmap.chunks.push(map);
-            // pager_mut.mmap.total = map_size;
-
-            drop(pager_mut);
-            pager.root_read(fd_size);
-            debug!(
-                "\npager initialized:\nmmap.total {}\nn_pages {}\nchunks.len {}",
-                pager.state.borrow().mmap.total,
-                pager.state.borrow().n_pages,
-                pager.state.borrow().mmap.chunks.len(),
-            );
-        }
+        let mut ref_mut = pager.tree.borrow_mut();
+        ref_mut.decode = decode;
+        ref_mut.encode = encode;
+        ref_mut.dealloc = dealloc;
+        let fd_size = rustix::fs::fstat(&pager.database)
+            .map_err(|e| {
+                error!("Error when getting file size");
+                Error::PagerError(PagerError::FDError(e))
+            })
+            .unwrap()
+            .st_size as u64;
+        drop(ref_mut);
+        pager.root_read(fd_size);
+        debug!(
+            "\npager initialized:\nmmap.total {}\nn_pages {}\nchunks.len {}",
+            pager.state.borrow().mmap.total,
+            pager.state.borrow().n_pages,
+            pager.state.borrow().mmap.chunks.len(),
+        );
         Ok(pager)
     }
 
@@ -501,6 +486,7 @@ mod test {
         cleanup_file(path);
         let pager = DiskPager::open(path).unwrap();
         assert_eq!(pager.state.borrow().n_pages, 1);
+        cleanup_file(path);
     }
 
     #[test]
@@ -517,6 +503,7 @@ mod test {
             str::from_utf8(&pager.state.borrow().mmap.chunks[0].data[..SIG_SIZE]).unwrap(),
             DB_SIG
         );
+        cleanup_file(path);
     }
 
     #[test]
@@ -526,6 +513,7 @@ mod test {
         let pager = DiskPager::open(path).unwrap();
         pager.set("1", "val").unwrap();
         assert_eq!(pager.get("1").unwrap(), "val".to_string());
+        cleanup_file(path);
     }
 
     #[test]
@@ -540,5 +528,6 @@ mod test {
         for i in 1u16..=300u16 {
             assert_eq!(pager.get(&format!("{i}")).unwrap(), "value")
         }
+        cleanup_file(path);
     }
 }
