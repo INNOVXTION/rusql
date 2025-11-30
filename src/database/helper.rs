@@ -112,19 +112,27 @@ pub fn create_file_sync(file: &str) -> Result<OwnedFd, PagerError> {
 /// input validator, panics on invalid input
 pub(crate) fn input_valid(key: &str, value: &str) -> Result<(), Error> {
     if key.len() > BTREE_MAX_KEY_SIZE {
-        error!("key size exceeds maximum!");
+        error!(
+            key.len = key.len(),
+            max = BTREE_MAX_KEY_SIZE,
+            "key size exceeds maximum!"
+        );
         return Err(Error::InvalidInput("key size exceeds maximum!"));
     };
     if value.len() > BTREE_MAX_VAL_SIZE {
-        error!("value size exceeds maximum!");
+        error!(
+            val.len = value.len(),
+            max = BTREE_MAX_VAL_SIZE,
+            "value size exceeds maximum!"
+        );
         return Err(Error::InvalidInput("value size exceeds maximum!"));
     };
     if key.is_empty() {
         error!("key cant be empty");
         return Err(Error::InvalidInput("key cant be empty"));
     }
-    let key_num = key.parse::<u64>().map_err(|_| {
-        error!("key parse error {key}");
+    let key_num = key.parse::<u64>().map_err(|e| {
+        error!(%e, key, "key parse error");
         Error::InvalidInput("key parse error {key}")
     })?;
     if key_num <= 0 {

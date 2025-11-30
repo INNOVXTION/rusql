@@ -1,5 +1,4 @@
 use std::fmt::Debug;
-use std::u64;
 
 use tracing::debug;
 use tracing::info;
@@ -9,6 +8,7 @@ use crate::database::{errors::Error, node::*, types::*};
 
 pub struct BTree<'a> {
     pub root_ptr: Option<Pointer>,
+    // callbacks
     pub decode: Box<dyn Fn(&Pointer) -> Node + 'a>, // get
     pub encode: Box<dyn FnMut(Node) -> Pointer + 'a>, // set
     pub dealloc: Box<dyn FnMut(Pointer) + 'a>,      // del
@@ -23,13 +23,8 @@ impl<'a> Debug for BTree<'a> {
 }
 
 impl<'a> BTree<'a> {
-    #[instrument(skip(self), err)]
     pub fn insert(&mut self, key: &str, val: &str) -> Result<(), Error> {
         info!("inserting new kv...");
-        // check size limit
-        if key.len() > BTREE_MAX_KEY_SIZE || val.len() > BTREE_MAX_VAL_SIZE {
-            return Err(Error::InsertError("invalid key value size".to_string()));
-        }
         // get root node
         let root = match self.root_ptr {
             Some(n) => (self.decode)(&n),
@@ -101,7 +96,6 @@ impl<'a> BTree<'a> {
         new
     }
 
-    #[instrument(skip(self), err)]
     pub fn delete(&mut self, key: &str) -> Result<(), Error> {
         info!("deleting kv...");
         let root_ptr = match self.root_ptr {
@@ -146,8 +140,7 @@ impl<'a> BTree<'a> {
     ///
     /// TODO: update height
     fn tree_delete(tree: &mut BTree, mut node: Node, key: &str) -> Option<Node> {
-        // del(key = 5)
-        let idx = node.lookupidx(key); // 1
+        let idx = node.lookupidx(key);
         match node.get_type() {
             NodeType::Leaf => {
                 if let Some(i) = node.searchidx(key) {
@@ -165,7 +158,7 @@ impl<'a> BTree<'a> {
                     "traversing through node, at idx: {idx} key: {}",
                     node.get_key(idx).unwrap()
                 );
-                let kptr = node.get_ptr(idx); // child 2 ptr
+                let kptr = node.get_ptr(idx);
                 // in case leaf node was updated below us
                 // updated chlild 2 comes back
                 match BTree::tree_delete(tree, (tree.decode)(&kptr), key) {
@@ -242,7 +235,6 @@ impl<'a> BTree<'a> {
         }
     }
 
-    #[instrument(skip(self))]
     pub fn search(&self, key: &str) -> Option<String> {
         info!("searching for {key}...");
         BTree::tree_search(self, (self.decode)(&self.root_ptr?), key)
