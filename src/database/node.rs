@@ -297,8 +297,6 @@ impl Node {
         Ok(())
     }
     /// linear searching for key, for indexing use "lookupidx"
-    ///
-    /// TODO: binary search
     pub fn searchidx(&self, key: &str) -> Option<u16> {
         debug!("searching for key in leaf...");
         // (0..self.get_nkeys()).find(|i| key == self.get_key(*i).unwrap())
@@ -314,11 +312,7 @@ impl Node {
             let v = match self.get_key(m as u16).unwrap().is_empty() {
                 // handling edge case for empty key
                 true => 0,
-                false => self
-                    .get_key(m as u16)
-                    .unwrap()
-                    .parse()
-                    .expect("cur key parse error"),
+                false => self.get_key(m as u16).unwrap().parse().unwrap(),
             };
             if v == n {
                 return Some(m as u16);
@@ -342,40 +336,79 @@ impl Node {
         if nkeys == 0 | 1 {
             return 0;
         }
-        let key: u32 = key.parse().unwrap();
-        let mut idx: u16 = 0;
-        while idx < nkeys {
-            let cur_key = self.get_key(idx).unwrap();
-            let cur_as_num = match cur_key.is_empty() {
+
+        // let key: u32 = key.parse().unwrap();
+        // let mut idx: u16 = 0;
+        // while idx < nkeys {
+        //     let cur_key = self.get_key(idx).unwrap();
+        //     let cur_as_num = match cur_key.is_empty() {
+        //         // handling edge case for empty key
+        //         true => 0,
+        //         false => cur_key.parse().expect("cur key parse error"),
+        //     };
+        //     // debug!("checking {key} against {cuGr_as_num} at idx {idx}");
+        //     if cur_as_num == key {
+        //         debug!(
+        //             "key found, returning idx {} for key {}, cur_as_num {}",
+        //             idx, key, cur_as_num,
+        //         );
+        //         return idx;
+        //     }
+        //     if cur_as_num > key {
+        //         debug!(
+        //             "larger than key found, returning idx {} for key {}, cur_as_num {}, ",
+        //             idx - 1,
+        //             key,
+        //             cur_as_num,
+        //         );
+        //         return idx - 1;
+        //     }
+        //     idx += 1;
+        // }
+        // debug!(
+        //     "neither larger nor matching key found, returning idx {} for key {}",
+        //     idx - 1,
+        //     key,
+        // );
+        // idx - 1;
+
+        // converts idx to key as usize
+        let key_num = |idx| {
+            let key = self.get_key(idx as u16).unwrap();
+            match key.is_empty() {
                 // handling edge case for empty key
                 true => 0,
-                false => cur_key.parse().expect("cur key parse error"),
-            };
-            // debug!("checking {key} against {cuGr_as_num} at idx {idx}");
-            if cur_as_num == key {
-                debug!(
-                    "key found, returning idx {} for key {}, cur_as_num {}",
-                    idx, key, cur_as_num,
-                );
-                return idx;
+                false => key.parse().unwrap(),
             }
-            if cur_as_num > key {
-                debug!(
-                    "larger than key found, returning idx {} for key {}, cur_as_num {}, ",
-                    idx - 1,
-                    key,
-                    cur_as_num,
-                );
+        };
+        let n: usize = match key.is_empty() {
+            true => 0,
+            false => key.parse().unwrap(),
+        };
+        let nkeys = self.get_nkeys();
+        let mut lo: usize = 0;
+        let mut hi = nkeys as usize;
+        while hi > lo {
+            let m = (hi + lo) / 2;
+            let v = key_num(m);
+            debug!(key, lo, hi, v = key_num(m), m);
+            if v == n {
+                return m as u16;
+            };
+            if v > n {
+                hi = m;
+            } else {
+                lo = m + 1;
+            }
+        }
+        // linear search for first key larger
+        for idx in 0..nkeys {
+            if key_num(idx as usize) > n {
                 return idx - 1;
             }
-            idx += 1;
         }
-        debug!(
-            "neither larger nor matching key found, returning idx {} for key {}",
-            idx - 1,
-            key,
-        );
-        idx - 1
+        // no matching or larger key found
+        nkeys - 1
     }
 
     /// abstracted API over leaf_kvinsert and leaf_kvupdate
