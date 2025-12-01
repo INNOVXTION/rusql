@@ -1,7 +1,7 @@
 use core::ffi::c_void;
 use parking_lot::Mutex;
 use rustix::mm::{MapFlags, ProtFlags};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::io::IoSlice;
 use std::ops::{Deref, DerefMut};
@@ -88,6 +88,7 @@ pub struct DiskPager<'a> {
     database: OwnedFd,
     tree: RefCell<BTree<'a>>,
     state: Rc<RefCell<State<'a>>>, // newly allocated pages to be flushed
+    failed: Cell<bool>,
 }
 
 #[derive(Debug)]
@@ -135,6 +136,7 @@ impl<'a> DiskPager<'a> {
                 n_pages: 0,
                 temp: vec![],
             })),
+            failed: Cell::new(false),
         });
 
         // master weak pointer pointing to the owning struct
@@ -195,13 +197,12 @@ impl<'a> DiskPager<'a> {
     pub fn set(&self, key: &str, val: &str) -> Result<(), Error> {
         input_valid(key, val)?;
         info!(key = key, value = val, "inserting");
-        self.tree.borrow_mut().insert(key, val)?;
-        debug!("updating file");
-        let meta = metapage_save(self);
-        self.file_update().map_err(|e| {
-            error!("pager error {}", e);
-            Error::PagerError(e)
+        self.tree.borrow_mut().insert(key, val).map_err(|e| {
+            error!(%e, "tree error");
+            e
         })?;
+        debug!("updating file");
+        self.update_or_revert()?;
         // update or revert
         Ok(())
     }
@@ -210,36 +211,39 @@ impl<'a> DiskPager<'a> {
     pub fn delete(&mut self, key: &str) -> Result<(), Error> {
         input_valid(key, " ")?;
         self.tree.borrow_mut().delete(key)?;
-        self.file_update().map_err(|e| {
-            error!(Error = %e, "pager error");
-            Error::PagerError(e)
-        })?;
+        self.update_or_revert()?;
         Ok(())
     }
 
-    fn update_or_revert(&self, meta: MetaPage) -> Result<(), Error> {
+    fn update_or_revert(&self) -> Result<(), Error> {
+        if self.failed.get() {
+            //
+            self.failed.set(false);
+            todo!()
+        };
         let meta = metapage_save(self); // saving current metapage
         if let Err(e) = self.file_update() {
+            error!(%e, "file update failed! Reverting meta page...");
             metapage_load(self, meta); // in case the file writing fails, we revert back to the old meta page
-            error!(%e, "file update failed!");
+            self.state.borrow_mut().temp.clear(); // discard buffer
+            self.failed.set(true);
             return Err(Error::PagerError(e));
         }
         Ok(())
     }
 
+    /// write sequence, first nodes in buffer then root
     fn file_update(&self) -> Result<(), PagerError> {
-        // write new node
+        // flush buffer to disk
         self.page_write()?;
-        // sync call
         rustix::fs::fsync(&self.database)?;
         // updates root and writes new metapage to disk
-        self.metapage_write()?;
-        // sync call
+        metapage_write(self)?;
         rustix::fs::fsync(&self.database)?;
         Ok(())
     }
 
-    /// writePages, flushes the buffer
+    /// helper function: writePages, flushes the buffer
     fn page_write(&self) -> Result<(), PagerError> {
         debug!("writing page...");
         // extend the mmap if needed
@@ -273,14 +277,7 @@ impl<'a> DiskPager<'a> {
         Ok(())
     }
 
-    /// updates meta page with settings set at call time
-    fn metapage_write(&self) -> Result<(), PagerError> {
-        debug!("updating root...");
-        let r = rustix::io::pwrite(&self.database, &metapage_save(&self), 0)?;
-        Ok(())
-    }
-
-    /// reads chunk and loads its data into memory, sets root_ptr and n_pages
+    /// reads mmap chunk and loads its data into memory, sets root_ptr and n_pages
     fn root_read(&self, file_size: u64) {
         if file_size == 0 {
             // empty file
@@ -297,6 +294,7 @@ impl<'a> DiskPager<'a> {
         metapage_load(self, meta);
         assert!(self.state.borrow().n_pages != 0);
     }
+
     // callbacks
     /// page read
     fn decode(&self, state: &State, ptr: Pointer) -> Node {
@@ -438,7 +436,7 @@ impl DerefMut for MetaPage {
 // | sig | root_ptr | page_used |
 // | 16B |    8B    |     8B    |
 
-/// returns the metapage configured on current disk pager
+/// returns metapage object of current pager state
 fn metapage_save(pager: &DiskPager) -> MetaPage {
     let mut data = MetaPage::new();
     // write sig
@@ -464,7 +462,7 @@ fn metapage_save(pager: &DiskPager) -> MetaPage {
     data
 }
 
-/// take meta page and loads it into pager
+/// loads meta page object into pager
 ///
 /// panics when called without initialized mmap
 fn metapage_load(pager: &DiskPager, data: MetaPage) {
@@ -486,6 +484,13 @@ fn metapage_load(pager: &DiskPager, data: MetaPage) {
         "opening database: {}",
         str::from_utf8(&data[..SIG_SIZE]).unwrap()
     );
+}
+
+/// writes meta page to disk
+fn metapage_write(pager: &DiskPager) -> Result<(), PagerError> {
+    debug!("updating root...");
+    let r = rustix::io::pwrite(&pager.database, &metapage_save(pager), 0)?;
+    Ok(())
 }
 
 #[cfg(test)]

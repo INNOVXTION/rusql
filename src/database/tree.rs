@@ -158,9 +158,10 @@ impl<'a> BTree<'a> {
                     node.get_key(idx).unwrap()
                 );
                 let kptr = node.get_ptr(idx);
-                // in case leaf node was updated below us
                 match BTree::tree_delete(tree, (tree.decode)(&kptr), key) {
-                    None => return None, // no update below us
+                    // no update below us
+                    None => return None,
+                    // node was updated below us, checking for merge...
                     Some(updated_child) => {
                         let mut new = Node::new();
                         let cur_nkeys = node.get_nkeys();

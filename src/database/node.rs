@@ -19,6 +19,7 @@ const OFFSETARR_OFFSET: usize = 2;
 |   2  |   2   | nil nil  |  8 19   | 2 2 "k1" "hi"  2 5 "k3" "hello" |        |
 |  2B  |  2B   |   2×8B   |  2×2B   | 4B + 2B + 2B + 4B + 2B + 5B     |        |
 
+----------Key-Value Layout---------
 | key_size | val_size | key | val |
 |    2B    |    2B    | ... | ... |
 */
@@ -97,7 +98,7 @@ impl Node {
         write_pointer(self, pos, ptr).expect("error when setting pointer")
     }
 
-    /// inserts pointer when splitting or adding new leaf nodes, encodes nodes
+    /// inserts pointer when splitting or adding new child nodes, encodes nodes
     ///
     /// updates nkeys and header
     pub fn insert_nkids(
