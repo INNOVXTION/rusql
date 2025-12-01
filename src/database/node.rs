@@ -385,7 +385,6 @@ impl Node {
             true => 0,
             false => key.parse().unwrap(),
         };
-        let nkeys = self.get_nkeys();
         let mut lo: usize = 0;
         let mut hi = nkeys as usize;
         while hi > lo {

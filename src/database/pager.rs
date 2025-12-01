@@ -208,7 +208,7 @@ impl<'a> DiskPager<'a> {
     }
 
     #[instrument(skip(self))]
-    pub fn delete(&mut self, key: &str) -> Result<(), Error> {
+    pub fn delete(&self, key: &str) -> Result<(), Error> {
         input_valid(key, " ")?;
         self.tree.borrow_mut().delete(key)?;
         self.update_or_revert()?;
@@ -502,6 +502,7 @@ mod test {
     use std::path::Path;
 
     use super::*;
+    use rand::Rng;
     use test_log::test;
 
     fn cleanup_file(path: &str) {
@@ -557,6 +558,35 @@ mod test {
         }
         for i in 1u16..=300u16 {
             assert_eq!(pager.get(&format!("{i}")).unwrap().unwrap(), "value")
+        }
+        cleanup_file(path);
+    }
+
+    #[test]
+    fn disk_delete() {
+        let path = "test-files/disk_insert2.rdb";
+        cleanup_file(path);
+        let pager = DiskPager::open(path).unwrap();
+
+        for i in 1u16..=300u16 {
+            pager.set(&format!("{i}"), "value").unwrap()
+        }
+        for i in 1u16..=300u16 {
+            pager.delete(&format!("{i}")).unwrap();
+        }
+        cleanup_file(path);
+    }
+
+    #[test]
+    fn disk_random1() {
+        let path = "test-files/disk_random1.rdb";
+        cleanup_file(path);
+        let pager = DiskPager::open(path).unwrap();
+
+        for _ in 1u16..=1000 {
+            pager
+                .set(&format!("{:?}", rand::rng().random_range(1..1000)), "val")
+                .unwrap()
         }
         cleanup_file(path);
     }
