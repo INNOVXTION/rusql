@@ -333,7 +333,7 @@ impl Node {
     pub fn lookupidx(&self, key: &str) -> u16 {
         let nkeys = self.get_nkeys();
         debug!("lookupidx in {:?} nkeys {}", self.get_type(), nkeys);
-        if nkeys == 0 | 1 {
+        if nkeys == 0 || nkeys == 1 {
             return 0;
         }
 
