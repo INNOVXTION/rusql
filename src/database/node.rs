@@ -87,7 +87,7 @@ impl Node {
         let pos: usize = HEADER_OFFSET + 8 * idx as usize;
         slice_to_pointer(self, pos).expect("error when getting pointer")
     }
-    /// sets points in array, does not increase nkeys!
+    /// sets pointer at index in pointer array, does not increase nkeys!
     pub fn set_ptr(&mut self, idx: u16, ptr: Pointer) {
         if idx >= self.get_nkeys() {
             error!("invalid index");
@@ -97,7 +97,7 @@ impl Node {
         write_pointer(self, pos, ptr).expect("error when setting pointer")
     }
 
-    /// inserts ptr when splitting or adding new leaf nodes, encodes nodes
+    /// inserts pointer when splitting or adding new leaf nodes, encodes nodes
     ///
     /// updates nkeys and header
     pub fn insert_nkids(

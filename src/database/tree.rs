@@ -2,7 +2,6 @@ use std::fmt::Debug;
 
 use tracing::debug;
 use tracing::info;
-use tracing::instrument;
 
 use crate::database::{errors::Error, node::*, types::*};
 
@@ -151,7 +150,7 @@ impl<'a> BTree<'a> {
                     return Some(new);
                 }
                 debug!("key not found!");
-                None // key not found
+                None
             }
             NodeType::Node => {
                 debug!(
@@ -160,7 +159,6 @@ impl<'a> BTree<'a> {
                 );
                 let kptr = node.get_ptr(idx);
                 // in case leaf node was updated below us
-                // updated chlild 2 comes back
                 match BTree::tree_delete(tree, (tree.decode)(&kptr), key) {
                     None => return None, // no update below us
                     Some(updated_child) => {
@@ -220,10 +218,26 @@ impl<'a> BTree<'a> {
                                 // empty child without siblings
                                 if updated_child.get_nkeys() == 0 && cur_nkeys == 1 {
                                     assert!(idx == 0);
+                                    // bubble up to be merged later
                                     new.set_header(NodeType::Node, 0);
                                     return Some(new);
                                 }
                                 // no merge, update new child
+                                //
+                                // updating key of node in case the 0th key in child got deleted
+                                if key != updated_child.get_key(0).unwrap() {
+                                    let cur_type = node.get_type();
+                                    new.leaf_kvupdate(
+                                        node,
+                                        idx,
+                                        updated_child.get_key(0).unwrap(),
+                                        " ",
+                                    )
+                                    .unwrap();
+                                    new.set_header(cur_type, cur_nkeys);
+                                    new.set_ptr(idx, (tree.encode)(updated_child));
+                                    return Some(new);
+                                };
                                 node.set_ptr(idx, (tree.encode)(updated_child));
                                 debug!("key deleted without merge");
                                 Some(node)
