@@ -216,16 +216,20 @@ impl<'a> DiskPager<'a> {
     }
 
     fn update_or_revert(&self) -> Result<(), Error> {
-        if self.failed.get() {
-            //
-            self.failed.set(false);
-            todo!()
-        };
         let meta = metapage_save(self); // saving current metapage
+        if self.failed.get() {
+            if self.state.borrow().mmap.chunks[0].data[..METAPAGE_SIZE] == *meta.0 {
+                self.failed.set(false);
+            } else {
+                metapage_write(self).unwrap();
+                rustix::fs::fsync(&self.database).unwrap();
+                self.failed.set(false);
+            }
+        };
         if let Err(e) = self.file_update() {
             error!(%e, "file update failed! Reverting meta page...");
-            metapage_load(self, meta); // in case the file writing fails, we revert back to the old meta page
             self.state.borrow_mut().temp.clear(); // discard buffer
+            metapage_load(self, meta); // in case the file writing fails, we revert back to the old meta page
             self.failed.set(true);
             return Err(Error::PagerError(e));
         }
@@ -486,7 +490,7 @@ fn metapage_load(pager: &DiskPager, data: MetaPage) {
     );
 }
 
-/// writes meta page to disk
+/// writes currently loaded meta data to disk
 fn metapage_write(pager: &DiskPager) -> Result<(), PagerError> {
     debug!("updating root...");
     let r = rustix::io::pwrite(&pager.database, &metapage_save(pager), 0)?;
