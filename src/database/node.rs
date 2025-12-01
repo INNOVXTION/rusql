@@ -300,13 +300,36 @@ impl Node {
     ///
     /// TODO: binary search
     pub fn searchidx(&self, key: &str) -> Option<u16> {
-        // for i in 0..self.get_nkeys() {
-        //     if key == str::from_utf8(self.get_key(i).unwrap()).unwrap() {
-        //         return Some(i);
-        //     }
-        // }
         debug!("searching for key in leaf...");
-        (0..self.get_nkeys()).find(|i| key == self.get_key(*i).unwrap())
+        // (0..self.get_nkeys()).find(|i| key == self.get_key(*i).unwrap())
+        let n: usize = match key.is_empty() {
+            true => 0,
+            false => key.parse().unwrap(),
+        };
+        let mut lo: usize = 0;
+        let mut hi = self.get_nkeys() as usize;
+        while hi > lo {
+            let m = (hi + lo) / 2;
+            // let v: usize = self.get_key(m as u16).unwrap().parse().unwrap();
+            let v = match self.get_key(m as u16).unwrap().is_empty() {
+                // handling edge case for empty key
+                true => 0,
+                false => self
+                    .get_key(m as u16)
+                    .unwrap()
+                    .parse()
+                    .expect("cur key parse error"),
+            };
+            if v == n {
+                return Some(m as u16);
+            };
+            if v > n {
+                hi = m;
+            } else {
+                lo = m + 1;
+            }
+        }
+        None
     }
 
     /// find the last index that is less than or equal to the key
@@ -319,7 +342,7 @@ impl Node {
         if nkeys == 0 | 1 {
             return 0;
         }
-        let key: u32 = key.parse().expect("key parse error lookupidx");
+        let key: u32 = key.parse().unwrap();
         let mut idx: u16 = 0;
         while idx < nkeys {
             let cur_key = self.get_key(idx).unwrap();
