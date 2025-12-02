@@ -9,30 +9,51 @@ use crate::database::{
 };
 
 struct FreeList {
-    head_page: Option<FLNode>,
-    tail_page: Option<FLNode>,
-    head_seq: u64,
-    tail_seq: u64,
-    max_seq: u64,
+    head_page: Option<Pointer>,
+    head_seq: usize,
+    tail_page: Option<Pointer>,
+    tail_seq: usize,
+    max_seq: usize,                              // maximum amount of items in the list
+    pub decode: Box<dyn Fn(&Pointer) -> FLNode>, // reads page, get
+    pub encode: Box<dyn FnMut(FLNode) -> Pointer>, // appends page, set
+    pub update: Box<dyn Fn(&Pointer) -> FLNode>, // reads page, new
 }
 
 impl FreeList {
     // removes a page from the head, decrement head seq
-    fn pop_head(&self) -> Option<Pointer> {
+    // PopHead
+    pub fn get(&mut self) -> Option<Pointer> {
+        let (ptr, head) = self.pop().unwrap();
         todo!()
     }
+
+    fn pop(&mut self) -> Option<(Pointer, Option<Pointer>)> {
+        if self.head_seq == self.max_seq {
+            return None;
+        }
+        let node = (self.decode)(&self.head_page.unwrap());
+        self.head_seq += 1;
+        if seq_to_idx(self.head_seq) == 0 {
+            let next = node.get_next();
+        }
+        let ptr = read_pointer(&node, seq_to_idx(self.head_seq)).unwrap();
+    }
+
     // add a page to the tail increment tail seq
-    fn push_tail(ptr: Pointer) -> Result<(), FLError> {
+    // PushTail
+    pub fn set(ptr: Pointer) -> Result<(), FLError> {
         todo!()
     }
+
+    fn push() {}
     fn set_max_seq(&mut self) {
         self.max_seq = self.tail_seq
     }
 }
 
 // converts seq to idx
-fn seq_to_idx(seq: u64) -> u32 {
-    (seq as usize % FREE_LIST_CAP) as u32
+fn seq_to_idx(seq: usize) -> usize {
+    seq as usize % FREE_LIST_CAP
 }
 
 const FREE_LIST_NEXT: usize = 8;
