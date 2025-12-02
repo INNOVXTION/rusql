@@ -15,6 +15,7 @@ pub enum Error {
     PagerError(PagerError),
     PagerSetError,
     InvalidInput(&'static str),
+    FreeListError(FLError),
 }
 
 impl Display for Error {
@@ -32,6 +33,7 @@ impl Display for Error {
             Error::PagerError(e) => write!(f, "Error when calling pager {e}"),
             Error::PagerSetError => write!(f, "Attempting to set global pager again!"),
             Error::InvalidInput(e) => write!(f, "invalid input!, {e}"),
+            Error::FreeListError(e) => write!(f, "Free List Error {e}"),
         }
     }
 }
@@ -102,3 +104,18 @@ impl From<rustix::io::Errno> for PagerError {
         Self::FDError(value)
     }
 }
+
+#[derive(Debug)]
+pub enum FLError {
+    UnknownError,
+}
+
+impl Display for FLError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FLError::UnknownError => write!(f, "an unkown error occured"),
+        }
+    }
+}
+
+impl std::error::Error for FLError {}

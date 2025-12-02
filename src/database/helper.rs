@@ -9,7 +9,7 @@ use tracing::{debug, error};
 /// assumes little endian
 ///
 /// reads a [u8] slice to u16 starting at offset
-pub(crate) fn slice_to_u16(data: &[u8], offset: usize) -> Result<u16, Error> {
+pub(crate) fn read_u16(data: &[u8], offset: usize) -> Result<u16, Error> {
     if offset > NODE_SIZE {
         error!("slice_to_u16: offset idx {} exceeded node size", offset);
         return Err(Error::IndexError);
@@ -23,7 +23,7 @@ pub(crate) fn slice_to_u16(data: &[u8], offset: usize) -> Result<u16, Error> {
 /// assumes little endian
 ///
 /// reads a [u8] slice to Pointer starting at offset
-pub(crate) fn slice_to_pointer(data: &[u8], offset: usize) -> Result<Pointer, Error> {
+pub(crate) fn read_pointer(data: &[u8], offset: usize) -> Result<Pointer, Error> {
     if offset > NODE_SIZE {
         error!("slice_to_u64: offset idx {} exceeded node size", offset);
         return Err(Error::IndexError);

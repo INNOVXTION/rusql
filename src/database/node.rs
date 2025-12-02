@@ -56,7 +56,7 @@ impl Node {
     }
 
     pub fn get_type(&self) -> NodeType {
-        match slice_to_u16(self, 0).expect("error when reading node type") {
+        match read_u16(self, 0).expect("error when reading node type") {
             1 => NodeType::Node,
             2 => NodeType::Leaf,
             _ => {
@@ -67,7 +67,7 @@ impl Node {
     }
     /// receive number of keys, this function doesnt check if KV amount aligns with nkeys!
     pub fn get_nkeys(&self) -> u16 {
-        slice_to_u16(self, 2).unwrap()
+        read_u16(self, 2).unwrap()
     }
 
     pub fn set_header(&mut self, nodetype: NodeType, nkeys: u16) {
@@ -86,7 +86,7 @@ impl Node {
             panic!("invalid index")
         };
         let pos: usize = HEADER_OFFSET + 8 * idx as usize;
-        slice_to_pointer(self, pos).expect("error when getting pointer")
+        read_pointer(self, pos).expect("error when getting pointer")
     }
     /// sets pointer at index in pointer array, does not increase nkeys!
     pub fn set_ptr(&mut self, idx: u16, ptr: Pointer) {
@@ -166,7 +166,7 @@ impl Node {
             return Err(Error::IndexError);
         }
         let pos = HEADER_OFFSET + (8 * self.get_nkeys() as usize) + 2 * (idx as usize - 1);
-        slice_to_u16(self, pos)
+        read_u16(self, pos)
     }
 
     /// writes a new offset into the array 2 Bytes
@@ -202,7 +202,7 @@ impl Node {
             return Err(Error::IndexError);
         };
         let kvpos = self.kv_pos(idx)?;
-        let key_len = slice_to_u16(self, kvpos)? as usize;
+        let key_len = read_u16(self, kvpos)? as usize;
 
         Ok(
             str::from_utf8(&self.0[kvpos + 4..kvpos + 4 + key_len]).map_err(|e| {
@@ -222,8 +222,8 @@ impl Node {
             return Err(Error::IndexError);
         };
         let kvpos = self.kv_pos(idx)?;
-        let key_len = slice_to_u16(self, kvpos)? as usize;
-        let val_len = slice_to_u16(self, kvpos + 2)? as usize;
+        let key_len = read_u16(self, kvpos)? as usize;
+        let val_len = read_u16(self, kvpos + 2)? as usize;
 
         Ok(
             str::from_utf8(&self.0[kvpos + 4 + key_len..kvpos + 4 + key_len + val_len]).map_err(
@@ -396,18 +396,20 @@ impl Node {
             };
             if v > n {
                 hi = m;
+            } else if m + 1 < nkeys as usize && key_num(m + 1) > n {
+                return m as u16;
             } else {
                 lo = m + 1;
             }
         }
-        // linear search for first key larger
-        for idx in 0..nkeys {
-            if key_num(idx as usize) > n {
-                return idx - 1;
-            }
-        }
-        // no matching or larger key found
         nkeys - 1
+        // // linear search for first larger key
+        // for idx in hi as u16..nkeys {
+        //     if key_num(idx as usize) > n {
+        //         return idx - 1;
+        //     }
+        // }
+        // no matching or larger key found, returning idx of last element
     }
 
     /// abstracted API over leaf_kvinsert and leaf_kvupdate

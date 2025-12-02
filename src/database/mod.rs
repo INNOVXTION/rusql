@@ -1,4 +1,5 @@
 mod errors;
+mod freelist;
 mod helper;
 mod node;
 mod pager;

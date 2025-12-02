@@ -14,7 +14,7 @@ use tracing::{debug, error, info, instrument};
 use crate::database::helper::{as_mb, as_page, input_valid};
 use crate::database::{
     errors::{Error, PagerError},
-    helper::{create_file_sync, slice_to_pointer, write_pointer},
+    helper::{create_file_sync, read_pointer, write_pointer},
     node::Node,
     tree::BTree,
     types::*,
@@ -471,7 +471,7 @@ fn metapage_save(pager: &DiskPager) -> MetaPage {
 /// panics when called without initialized mmap
 fn metapage_load(pager: &DiskPager, data: MetaPage) {
     let mut pager_ref = pager.state.borrow_mut();
-    pager.tree.borrow_mut().root_ptr = match slice_to_pointer(&data, SIG_SIZE) {
+    pager.tree.borrow_mut().root_ptr = match read_pointer(&data, SIG_SIZE) {
         Ok(Pointer(0)) => None,
         Ok(n) => Some(n),
         Err(e) => {
@@ -519,23 +519,6 @@ mod test {
         assert_eq!(pager.state.borrow().n_pages, 1);
         cleanup_file(path);
     }
-
-    // #[test]
-    // fn meta_page1() {
-    //     let path = "test-files/meta_page1.rdb";
-    //     cleanup_file(path);
-    //     let pager = DiskPager::open(path).unwrap();
-    //     assert_eq!(pager.state.borrow().n_pages, 1);
-    //     pager.metapage_write().unwrap();
-    //     metapage_load(&pager);
-
-    //     assert_eq!(pager.tree.borrow().root_ptr, None);
-    //     assert_eq!(
-    //         str::from_utf8(&pager.state.borrow().mmap.chunks[0].data[..SIG_SIZE]).unwrap(),
-    //         DB_SIG
-    //     );
-    //     cleanup_file(path);
-    // }
 
     #[test]
     fn disk_insert1() {
