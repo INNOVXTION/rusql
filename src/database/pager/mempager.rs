@@ -27,7 +27,7 @@ impl MemoryPager {
 }
 
 #[allow(unused)]
-pub fn mempage_tree<'a>() -> BTree<'a> {
+pub fn mempage_tree() -> BTree {
     GLOBAL_PAGER.set(Mutex::new(MemoryPager::new()));
     BTree {
         root_ptr: None,

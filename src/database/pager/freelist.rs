@@ -1,3 +1,4 @@
+use std::fmt::Debug;
 use std::ops::{Deref, DerefMut};
 
 use tracing::debug;
@@ -9,7 +10,7 @@ use crate::database::{
     types::{PAGE_SIZE, PTR_SIZE, Pointer},
 };
 
-struct FreeList<'a> {
+pub(crate) struct FreeList {
     head_page: Option<Pointer>,
     head_seq: usize,
     tail_page: Option<Pointer>,
@@ -23,10 +24,23 @@ struct FreeList<'a> {
     // appends page, set
     pub encode: Box<dyn FnMut(FLNode) -> Pointer>,
     // returns a reference to a node in updates buffer
-    pub update: Box<dyn Fn(Pointer) -> &'a mut FLNode>,
+    pub update: Box<dyn Fn(Pointer) -> FLNode>,
 }
 
-impl<'a> FreeList<'a> {
+impl FreeList {
+    // new uninitialized
+    pub fn new() -> Self {
+        FreeList {
+            head_page: None,
+            head_seq: 0,
+            tail_page: None,
+            tail_seq: 0,
+            max_seq: 0,
+            decode: Box::new(|_| panic!("not initialized")),
+            encode: Box::new(|_| panic!("not initialized")),
+            update: Box::new(|_| panic!("not initialized")),
+        }
+    }
     // removes a page from the head, decrement head seq
     // PopHead
     pub fn get(&mut self) -> Option<Pointer> {
@@ -64,7 +78,7 @@ impl<'a> FreeList<'a> {
     pub fn append(&mut self, ptr: Pointer) -> Result<(), FLError> {
         // updates tail page, by getting a reference to the buffer if its already in there
         // updating appending the pointer
-        let cur_tail = (self.update)(self.tail_page.unwrap());
+        let mut cur_tail = (self.update)(self.tail_page.unwrap());
         cur_tail.set_ptr(seq_to_idx(self.tail_seq) as u16, ptr);
         self.tail_seq += 1;
         // allocating new node if the the node is full
@@ -85,13 +99,16 @@ impl<'a> FreeList<'a> {
                 // appending the empty head as well
                 (Some(next), Some(head)) => {
                     cur_tail.set_next(next);
-                    (self.update)(next).set_ptr(0, head);
+                    let mut node = (self.update)(next);
+                    node.set_ptr(0, head);
+                    (self.encode)(node);
                     self.tail_page = Some(next);
                     self.tail_seq += 1; // accounting for re-added head
                 }
                 _ => unreachable!(),
             }
         }
+        (self.encode)(cur_tail);
         Ok(())
     }
 
@@ -167,5 +184,16 @@ impl Deref for FLNode {
 impl DerefMut for FLNode {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0[..]
+    }
+}
+
+impl Debug for FreeList {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FreeList")
+            .field("head page", &self.head_page)
+            .field("head seq", &self.head_seq)
+            .field("tail page", &self.tail_page)
+            .field("tail seq", &self.tail_seq)
+            .finish()
     }
 }

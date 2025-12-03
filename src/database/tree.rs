@@ -5,15 +5,15 @@ use tracing::info;
 
 use crate::database::{errors::Error, node::*, types::*};
 
-pub struct BTree<'a> {
+pub struct BTree {
     pub root_ptr: Option<Pointer>,
     // callbacks
-    pub decode: Box<dyn Fn(&Pointer) -> Node + 'a>, // get
-    pub encode: Box<dyn FnMut(Node) -> Pointer + 'a>, // set
-    pub dealloc: Box<dyn FnMut(Pointer) + 'a>,      // del
+    pub decode: Box<dyn Fn(&Pointer) -> Node>,   // get
+    pub encode: Box<dyn FnMut(Node) -> Pointer>, // set
+    pub dealloc: Box<dyn FnMut(Pointer)>,        // del
 }
 
-impl<'a> Debug for BTree<'a> {
+impl Debug for BTree {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BTree")
             .field("root_ptr", &self.root_ptr)
@@ -21,7 +21,7 @@ impl<'a> Debug for BTree<'a> {
     }
 }
 
-impl<'a> BTree<'a> {
+impl BTree {
     pub fn insert(&mut self, key: &str, val: &str) -> Result<(), Error> {
         info!("inserting new kv...");
         // get root node
