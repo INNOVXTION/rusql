@@ -235,7 +235,7 @@ impl<'a> DiskPager<'a> {
     }
 
     // callbacks
-    /// page read
+    /// kv.pageRead, db.pageRead
     fn decode(&self, state: &State, ptr: Pointer) -> Node {
         debug!(
             "decoding ptr: {}, amount of chunks {}, chunk 0 size {}",

@@ -2,4 +2,4 @@ mod diskpager;
 mod freelist;
 mod mempager;
 
-pub use mempager::mempage_tree;
+pub(crate) use mempager::mempage_tree;

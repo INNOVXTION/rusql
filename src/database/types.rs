@@ -17,6 +17,10 @@ pub const SIG_SIZE: usize = 16;
 pub const PTR_SIZE: usize = 8;
 pub const U16_SIZE: usize = 2;
 
+trait Node {
+    type Array;
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Eq, Hash)]
 pub(crate) struct Pointer(pub u64);
 
