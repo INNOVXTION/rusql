@@ -91,6 +91,12 @@ impl Display for PagerError {
     }
 }
 
+impl From<FLError> for Error {
+    fn from(value: FLError) -> Self {
+        Error::FreeListError(value)
+    }
+}
+
 impl std::error::Error for PagerError {}
 
 impl From<io::Error> for PagerError {

@@ -72,12 +72,6 @@ pub(crate) fn as_page(offset: usize) -> String {
     format!("page {}", offset / PAGE_SIZE)
 }
 
-/// validating key
-pub(crate) fn key_validator() {}
-
-/// validating value
-pub(crate) fn value_validator() {}
-
 /// creates or opens a .rdb file
 pub fn create_file_sync(file: &str) -> Result<OwnedFd, PagerError> {
     let path = PathBuf::from_str(file).unwrap();

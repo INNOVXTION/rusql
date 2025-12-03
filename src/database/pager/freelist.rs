@@ -5,6 +5,7 @@ use tracing::debug;
 use crate::database::{
     errors::FLError,
     helper::{read_pointer, write_pointer, write_u16},
+    node::Node,
     types::{PAGE_SIZE, PTR_SIZE, Pointer},
 };
 
@@ -16,36 +17,76 @@ struct FreeList {
     max_seq: usize,                              // maximum amount of items in the list
     pub decode: Box<dyn Fn(&Pointer) -> FLNode>, // reads page, get
     pub encode: Box<dyn FnMut(FLNode) -> Pointer>, // appends page, set
-    pub update: Box<dyn Fn(&Pointer) -> FLNode>, // reads page, new
+    pub update: Box<dyn FnMut(&Pointer) -> FLNode>, // update an existing page in place
 }
 
 impl FreeList {
     // removes a page from the head, decrement head seq
     // PopHead
     pub fn get(&mut self) -> Option<Pointer> {
-        let (ptr, head) = self.pop().unwrap();
-        todo!()
+        match self.pop_head() {
+            (Some(ptr), Some(head)) => {
+                self.append(head).unwrap();
+                Some(ptr)
+            }
+            (Some(ptr), None) => Some(ptr),
+            (None, None) => None,
+            _ => unreachable!(),
+        }
     }
 
-    fn pop(&mut self) -> Option<(Pointer, Option<Pointer>)> {
+    // flPop
+    fn pop_head(&mut self) -> (Option<Pointer>, Option<Pointer>) {
         if self.head_seq == self.max_seq {
-            return None;
+            // no free page available
+            return (None, None);
         }
         let node = (self.decode)(&self.head_page.unwrap());
-        self.head_seq += 1;
-        if seq_to_idx(self.head_seq) == 0 {
-            let next = node.get_next();
-        }
         let ptr = read_pointer(&node, seq_to_idx(self.head_seq)).unwrap();
+        self.head_seq += 1;
+        // in case the head page is empty we reuse it
+        if seq_to_idx(self.head_seq) == 0 {
+            let head = self.head_page.unwrap();
+            self.head_page = Some(node.get_next());
+            return (Some(ptr), Some(head));
+        }
+        (Some(ptr), None)
     }
 
     // add a page to the tail increment tail seq
     // PushTail
-    pub fn set(ptr: Pointer) -> Result<(), FLError> {
+    pub fn append(&mut self, ptr: Pointer) -> Result<(), FLError> {
+        write_pointer(
+            &mut (self.update)(&self.tail_page.unwrap()),
+            seq_to_idx(self.tail_seq),
+            ptr,
+        )
+        .unwrap();
+        self.tail_seq += 1;
+        if seq_to_idx(self.tail_seq) == 0 {
+            match self.pop_head() {
+                (None, None) => {
+                    let next = (self.encode)(FLNode::new());
+                    let mut node = (self.update)(&next);
+                    node.set_next(next);
+                    self.tail_page = Some(next);
+                }
+                (Some(next), Some(head)) => {
+                    self.tail_page = Some(next);
+                    write_pointer(&mut (self.update)(&self.tail_page.unwrap()), 0, head);
+                    self.tail_seq += 1;
+                }
+                (Some(next), None) => {
+                    self.tail_page = Some(next);
+                }
+                _ => unreachable!(),
+            }
+        }
         todo!()
     }
 
-    fn push() {}
+    fn push_tail() {}
+
     fn set_max_seq(&mut self) {
         self.max_seq = self.tail_seq
     }
@@ -68,6 +109,12 @@ pub struct FLNode(Box<[u8; PAGE_SIZE]>);
 impl FLNode {
     fn new() -> Self {
         FLNode(Box::new([0u8; PAGE_SIZE]))
+    }
+
+    fn from_node(node: Node) -> Self {
+        let mut n = FLNode::new();
+        n.copy_from_slice(&node[..PAGE_SIZE]);
+        n
     }
 
     fn get_next(&self) -> Pointer {
