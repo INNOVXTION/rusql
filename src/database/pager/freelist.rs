@@ -28,7 +28,7 @@ pub(crate) struct FreeList {
 }
 
 impl FreeList {
-    // new uninitialized
+    /// new uninitialized
     pub fn new() -> Self {
         FreeList {
             head_page: None,
@@ -41,8 +41,8 @@ impl FreeList {
             update: Box::new(|_| panic!("not initialized")),
         }
     }
-    // removes a page from the head, decrement head seq
-    // PopHead
+    /// removes a page from the head, decrement head seq
+    /// PopHead
     pub fn get(&mut self) -> Option<Pointer> {
         match self.pop_head() {
             (Some(ptr), Some(head)) => {
@@ -55,7 +55,7 @@ impl FreeList {
         }
     }
 
-    // flPop
+    /// flPop
     fn pop_head(&mut self) -> (Option<Pointer>, Option<Pointer>) {
         if self.head_seq == self.max_seq {
             // no free page available
@@ -73,8 +73,8 @@ impl FreeList {
         (Some(ptr), None)
     }
 
-    // add a page to the tail increment tail seq
-    // PushTail
+    /// add a page to the tail increment tail seq
+    /// PushTail
     pub fn append(&mut self, ptr: Pointer) -> Result<(), FLError> {
         // updates tail page, by getting a reference to the buffer if its already in there
         // updating appending the pointer

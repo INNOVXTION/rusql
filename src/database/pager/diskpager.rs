@@ -2,6 +2,7 @@ use core::ffi::c_void;
 use rustix::mm::{MapFlags, ProtFlags};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::hash::Hash;
 use std::io::IoSlice;
 use std::ops::{Deref, DerefMut};
 use std::os::fd::OwnedFd;
@@ -10,7 +11,7 @@ use std::rc::{Rc, Weak};
 use tracing::{debug, error, info, instrument};
 
 use crate::database::helper::{as_mb, as_page, input_valid};
-use crate::database::pager::freelist::FreeList;
+use crate::database::pager::freelist::{FLNode, FreeList};
 use crate::database::{
     errors::{Error, PagerError},
     helper::{create_file_sync, read_pointer, write_pointer},
@@ -105,8 +106,7 @@ impl DiskPager {
             let weak = Weak::clone(&weak);
             Box::new(move |ptr: Pointer| {
                 let strong = weak.upgrade().expect("pager dropped");
-                let mut mut_ref = strong.state.borrow_mut();
-                strong.dealloc(&mut *mut_ref, ptr)
+                strong.dealloc(ptr)
             })
         };
         let mut ref_mut = pager.tree.borrow_mut();
@@ -114,32 +114,31 @@ impl DiskPager {
         ref_mut.encode = encode;
         ref_mut.dealloc = dealloc;
 
-        // TODO:
-        // // initializing freelist callbacks
-        // let decode = {
-        //     let weak = Weak::clone(&weak);
-        //     Box::new(move |ptr: &Pointer| {
-        //         let strong = weak.upgrade().expect("pager dropped");
-        //         let imm_ref = strong.state.borrow();
-        //         strong.decode(&*imm_ref, *ptr)
-        //     })
-        // };
-        // let encode = {
-        //     let weak = Weak::clone(&weak);
-        //     Box::new(move |node: Node| {
-        //         let strong = weak.upgrade().expect("pager dropped");
-        //         let mut mut_ref = strong.state.borrow_mut();
-        //         strong.encode(&mut *mut_ref, node)
-        //     })
-        // };
-        // let update = {
-        //     let weak = Weak::clone(&weak);
-        //     Box::new(move |ptr: Pointer| {
-        //         let strong = weak.upgrade().expect("pager dropped");
-        //         let mut mut_ref = strong.state.borrow_mut();
-        //         strong.dealloc(&mut *mut_ref, ptr)
-        //     })
-        // };
+        // initializing freelist callbacks
+        let decode = {
+            let weak = Weak::clone(&weak);
+            Box::new(move |ptr: &Pointer| {
+                let strong = weak.upgrade().expect("pager dropped");
+                let imm_ref = strong.state.borrow();
+                FLNode::from(strong.decode(&*imm_ref, *ptr))
+            })
+        };
+        let encode = {
+            let weak = Weak::clone(&weak);
+            Box::new(move |node: Node| {
+                let strong = weak.upgrade().expect("pager dropped");
+                let mut mut_ref = strong.state.borrow_mut();
+                strong.encode(&mut *mut_ref, node)
+            })
+        };
+        let update = {
+            let weak = Weak::clone(&weak);
+            Box::new(move |ptr: Pointer| {
+                let strong = weak.upgrade().expect("pager dropped");
+                let mut buf_ref = strong.buffer.borrow_mut();
+                strong.update(&mut *buf_ref, ptr)
+            })
+        };
 
         let fd_size = rustix::fs::fstat(&pager.database)
             .map_err(|e| {
@@ -296,7 +295,9 @@ impl DiskPager {
         panic!()
     }
 
-    /// page append, loads node into buffer to be flushed later
+    /// loads node into buffer to be flushed late
+    ///
+    /// pageAppend
     fn encode(&self, state: &mut State, node: Node) -> Pointer {
         // empty db has n_pages = 1 (meta page)
         assert!(node.fits_page());
@@ -311,8 +312,33 @@ impl DiskPager {
         ptr
     }
 
-    fn dealloc(&self, state: &mut State, ptr: Pointer) {
-        debug!("deallocating ptr {}", ptr.0)
+    /// PushTail
+    fn dealloc(&self, ptr: Pointer) {
+        debug!("deallocating ptr {}", ptr.0);
+        self.freelist.borrow_mut().append(ptr);
+        ()
+    }
+
+    /// allocates a new page from the free list
+    ///
+    /// pageAlloc
+    fn alloc(&self, buf: &mut HashMap<Pointer, Node>) -> Pointer {
+        // check freelist first
+        if let Some(ptr) = self.freelist.borrow_mut().get() {
+            self.decode(state, ptr)
+        } else {
+            self.encode(state, Node::new())
+        }
+    }
+
+    /// freelist callback
+    ///
+    /// pageWrite
+    fn update(&self, buf: &mut HashMap<Pointer, Node>, ptr: Pointer) -> Node {
+        if let Some(n) = buf.remove(&ptr) {
+            return n;
+        }
+        Node::new()
     }
 }
 
