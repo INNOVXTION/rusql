@@ -337,7 +337,7 @@ impl DiskPager {
             self.buffer.borrow_mut().insert(ptr, node);
             ptr
         } else {
-            self.encode(node)
+            self.encode(node.as_tree())
         }
     }
 
@@ -346,9 +346,9 @@ impl DiskPager {
     /// pageWrite
     fn update(&self, ptr: Pointer) -> FLNode {
         if let Some(n) = self.buffer.borrow_mut().remove(&ptr) {
-            n
+            n.as_fl()
         } else {
-            self.decode(ptr, NodeFlag::Freelist)
+            self.decode(ptr, NodeFlag::Freelist).as_fl()
         }
     }
 }

@@ -3,7 +3,8 @@ use std::{
     ops::{Deref, DerefMut},
 };
 
-use crate::database::{node::TreeNode, pager::freelist::FLNode, tree};
+use crate::database::{node::TreeNode, pager::freelist::FLNode};
+use tracing::error;
 
 pub const BTREE_MAX_KEY_SIZE: usize = 1000;
 pub const BTREE_MAX_VAL_SIZE: usize = 3000;
@@ -26,6 +27,25 @@ pub const U16_SIZE: usize = 2;
 pub enum Node {
     Tree(TreeNode),
     Freelist(FLNode),
+}
+
+impl Node {
+    /// deconstructs node to tree node, will panic if used on a FL node!
+    pub fn as_tree(self) -> TreeNode {
+        let Node::Tree(n) = self else {
+            error!("Tree node deconstructor used on FL node!");
+            panic!("Tree node deconstructor used on FL node!")
+        };
+        n
+    }
+    /// deconstructs node to FL node, will panic if used on a tree node!
+    pub fn as_fl(self) -> FLNode {
+        let Node::Freelist(n) = self else {
+            error!("FL node deconstructor used on tree node!");
+            panic!("FL node deconstructor used on tree node!")
+        };
+        n
+    }
 }
 
 impl Deref for Node {
@@ -58,7 +78,7 @@ impl From<u64> for Pointer {
 }
 
 impl Pointer {
-    pub fn to_slice(self) -> [u8; 8] {
+    pub fn as_slice(self) -> [u8; 8] {
         self.0.to_le_bytes()
     }
 }

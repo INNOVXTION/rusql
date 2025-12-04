@@ -45,7 +45,7 @@ impl TreeNode {
 
     /// receive the total node size
     pub fn nbytes(&self) -> u16 {
-        from_usize(self.kv_pos(self.get_nkeys()).unwrap())
+        as_usize(self.kv_pos(self.get_nkeys()).unwrap())
     }
 
     pub fn fits_page(&self) -> bool {
@@ -525,7 +525,7 @@ impl TreeNode {
             HEADER_OFFSET
                 + POINTER_OFFSET * n
                 + OFFSETARR_OFFSET * n
-                + self.get_offset(from_usize(n)).unwrap() as usize
+                + self.get_offset(as_usize(n)).unwrap() as usize
         };
         // incremently decreasing amount of keys for new node until it fits
         while left_bytes(nkeys_left) > PAGE_SIZE && nkeys_left > 1 {
@@ -542,7 +542,7 @@ impl TreeNode {
         assert!(nkeys_left < nkeys as usize);
 
         // config new nodes
-        let nkeys_left = from_usize(nkeys_left);
+        let nkeys_left = as_usize(nkeys_left);
         left.set_header(self.get_type(), nkeys_left);
         left.append_from_range(&self, 0, 0, nkeys_left)
             .map_err(|err| Error::SplitError(format!("append error during left split, {err}")))?;

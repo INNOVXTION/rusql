@@ -49,12 +49,12 @@ pub(crate) fn write_pointer(data: &mut [u8], offset: usize, ptr: Pointer) -> Res
         error!("offset idx {} exceeded node size", offset);
         return Err(Error::IndexError);
     }
-    data[offset..offset + PTR_SIZE].copy_from_slice(&ptr.to_slice());
+    data[offset..offset + PTR_SIZE].copy_from_slice(&ptr.as_slice());
     Ok(())
 }
 
 /// casts usize to u16
-pub(crate) fn from_usize(n: usize) -> u16 {
+pub(crate) fn as_usize(n: usize) -> u16 {
     if n > u16::MAX as usize {
         error!("casting error");
         panic!();
