@@ -69,6 +69,7 @@ pub enum PagerError {
     UnalignedOffset(u64),
     UnalignedLength(usize),
     MMapError(Errno),
+    WriteFileError(Errno),
 }
 
 impl Display for PagerError {
@@ -87,6 +88,7 @@ impl Display for PagerError {
             PagerError::UnalignedOffset(e) => write!(f, "Offset {} is invalid!", e),
             PagerError::UnalignedLength(e) => write!(f, "Length {} is invalid!", e),
             PagerError::MMapError(e) => write!(f, "Error when calling mmap {}", e),
+            PagerError::WriteFileError(e) => write!(f, "Error when calling pwrite {}", e),
         }
     }
 }

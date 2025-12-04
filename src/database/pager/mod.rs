@@ -1,5 +1,6 @@
-mod diskpager;
+pub mod diskpager;
 pub mod freelist;
-mod mempager;
+pub mod mempager;
 
+// exporting to database module
 pub(crate) use mempager::mempage_tree;

@@ -38,7 +38,7 @@ pub fn mempage_tree() -> BTree {
 }
 
 /// callbacks for memory pager
-fn decode(ptr: &Pointer) -> TreeNode {
+fn decode(ptr: Pointer) -> TreeNode {
     let pager = GLOBAL_PAGER.get().unwrap().lock();
     pager
         .pages

@@ -1,20 +1,18 @@
 use std::fmt::Debug;
 use std::ops::{Deref, DerefMut};
 
-use tracing::debug;
-
-use crate::database::types::Node;
 use crate::database::{
     errors::FLError,
     helper::{read_pointer, write_pointer},
     node::TreeNode,
     types::{PAGE_SIZE, PTR_SIZE, Pointer},
 };
+use tracing::debug;
 
 pub(crate) struct FreeList {
-    head_page: Option<Pointer>,
+    pub head_page: Option<Pointer>,
     head_seq: usize,
-    tail_page: Option<Pointer>,
+    pub tail_page: Option<Pointer>,
     tail_seq: usize,
     // maximum amount of items in the list
     max_seq: usize,
@@ -25,6 +23,7 @@ pub(crate) struct FreeList {
     // appends page, set
     pub encode: Box<dyn FnMut(FLNode) -> Pointer>,
     // returns a reference to a node in updates buffer
+    // remove after test
     pub update: Box<dyn Fn(Pointer) -> FLNode>,
 }
 

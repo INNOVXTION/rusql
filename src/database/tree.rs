@@ -8,9 +8,9 @@ use crate::database::{errors::Error, node::*, types::*};
 pub struct BTree {
     pub root_ptr: Option<Pointer>,
     // callbacks
-    pub decode: Box<dyn Fn(&Pointer) -> TreeNode>, // get
+    pub decode: Box<dyn Fn(Pointer) -> TreeNode>, // get
     pub encode: Box<dyn FnMut(TreeNode) -> Pointer>, // set
-    pub dealloc: Box<dyn FnMut(Pointer)>,          // del
+    pub dealloc: Box<dyn FnMut(Pointer)>,         // del
 }
 
 impl Debug for BTree {
@@ -26,7 +26,7 @@ impl BTree {
         info!("inserting new kv...");
         // get root node
         let root = match self.root_ptr {
-            Some(n) => (self.decode)(&n),
+            Some(ptr) => (self.decode)(ptr),
             None => {
                 debug!("no root found, creating new root");
                 let mut new_root = TreeNode::new();
@@ -84,7 +84,7 @@ impl BTree {
                     node.get_key(idx).unwrap()
                 );
                 let kptr = node.get_ptr(idx); // ptr of child below us
-                let knode = BTree::tree_insert(tree, (tree.decode)(&kptr), key, val); // node below us
+                let knode = BTree::tree_insert(tree, (tree.decode)(kptr), key, val); // node below us
                 let split = knode.split().unwrap(); // potential split
                 // delete old child
                 (tree.dealloc)(kptr);
@@ -105,7 +105,7 @@ impl BTree {
                 ));
             }
         };
-        let updated = BTree::tree_delete(self, (self.decode)(&root_ptr), key)
+        let updated = BTree::tree_delete(self, (self.decode)(root_ptr), key)
             .ok_or(Error::DeleteError("key not found!".to_string()))?;
         (self.dealloc)(root_ptr);
         match updated.get_nkeys() {
@@ -158,7 +158,7 @@ impl BTree {
                     node.get_key(idx).unwrap()
                 );
                 let kptr = node.get_ptr(idx);
-                match BTree::tree_delete(tree, (tree.decode)(&kptr), key) {
+                match BTree::tree_delete(tree, (tree.decode)(kptr), key) {
                     // no update below us
                     None => return None,
                     // node was updated below us, checking for merge...
@@ -252,7 +252,7 @@ impl BTree {
 
     pub fn search(&self, key: &str) -> Option<String> {
         info!("searching for {key}...");
-        BTree::tree_search(self, (self.decode)(&self.root_ptr?), key)
+        BTree::tree_search(self, (self.decode)(self.root_ptr?), key)
     }
 
     fn tree_search(tree: &BTree, node: TreeNode, key: &str) -> Option<String> {
@@ -269,7 +269,7 @@ impl BTree {
             NodeType::Node => {
                 debug!("traversing through node, at idx: {idx} key: {}", key);
                 let kptr = node.get_ptr(idx);
-                BTree::tree_search(tree, (tree.decode)(&kptr), key)
+                BTree::tree_search(tree, (tree.decode)(kptr), key)
             }
         }
     }
@@ -294,9 +294,9 @@ mod test {
 
         assert_eq!(tree.search("1").unwrap(), "hello");
         assert_eq!(tree.search("2").unwrap(), "world");
-        assert_eq!((tree.decode)(&tree.root_ptr.unwrap()).get_nkeys(), 3);
+        assert_eq!((tree.decode)(tree.root_ptr.unwrap()).get_nkeys(), 3);
         assert_eq!(
-            (tree.decode)(&tree.root_ptr.unwrap()).get_type(),
+            (tree.decode)(tree.root_ptr.unwrap()).get_type(),
             NodeType::Leaf
         );
     }
@@ -309,16 +309,16 @@ mod test {
         tree.insert("2", "world").unwrap();
         tree.insert("3", "bonjour").unwrap();
         assert_eq!(
-            (tree.decode)(&tree.root_ptr.unwrap()).get_type(),
+            (tree.decode)(tree.root_ptr.unwrap()).get_type(),
             NodeType::Leaf
         );
 
-        assert_eq!((tree.decode)(&tree.root_ptr.unwrap()).get_nkeys(), 4);
+        assert_eq!((tree.decode)(tree.root_ptr.unwrap()).get_nkeys(), 4);
         tree.delete("2").unwrap();
 
         assert_eq!(tree.search("1").unwrap(), "hello");
         assert_eq!(tree.search("3").unwrap(), "bonjour");
-        assert_eq!((tree.decode)(&tree.root_ptr.unwrap()).get_nkeys(), 3);
+        assert_eq!((tree.decode)(tree.root_ptr.unwrap()).get_nkeys(), 3);
     }
 
     #[test]
@@ -329,7 +329,7 @@ mod test {
             tree.insert(&format!("{i}"), "value").unwrap()
         }
         assert_eq!(
-            (tree.decode)(&tree.root_ptr.unwrap()).get_type(),
+            (tree.decode)(tree.root_ptr.unwrap()).get_type(),
             NodeType::Node
         );
         assert_eq!(tree.search("40").unwrap(), "value");
@@ -347,7 +347,7 @@ mod test {
             tree.insert(&format!("{i}"), "value").unwrap()
         }
         assert_eq!(
-            (tree.decode)(&tree.root_ptr.unwrap()).get_type(),
+            (tree.decode)(tree.root_ptr.unwrap()).get_type(),
             NodeType::Node
         );
         assert_eq!(tree.search("50").unwrap(), "value");
@@ -370,10 +370,10 @@ mod test {
             tree.delete(&format!("{i}")).unwrap()
         }
         assert_eq!(
-            (tree.decode)(&tree.root_ptr.unwrap()).get_type(),
+            (tree.decode)(tree.root_ptr.unwrap()).get_type(),
             NodeType::Leaf
         );
-        assert_eq!((tree.decode)(&tree.root_ptr.unwrap()).get_nkeys(), 1)
+        assert_eq!((tree.decode)(tree.root_ptr.unwrap()).get_nkeys(), 1)
     }
 
     #[test]
@@ -387,10 +387,10 @@ mod test {
             tree.delete(&format!("{i}")).unwrap()
         }
         assert_eq!(
-            (tree.decode)(&tree.root_ptr.unwrap()).get_type(),
+            (tree.decode)(tree.root_ptr.unwrap()).get_type(),
             NodeType::Leaf
         );
-        assert_eq!((tree.decode)(&tree.root_ptr.unwrap()).get_nkeys(), 1)
+        assert_eq!((tree.decode)(tree.root_ptr.unwrap()).get_nkeys(), 1)
     }
 
     #[test]
@@ -404,10 +404,10 @@ mod test {
             tree.delete(&format!("{i}")).unwrap()
         }
         assert_eq!(
-            (tree.decode)(&tree.root_ptr.unwrap()).get_type(),
+            (tree.decode)(tree.root_ptr.unwrap()).get_type(),
             NodeType::Leaf
         );
-        assert_eq!((tree.decode)(&tree.root_ptr.unwrap()).get_nkeys(), 1);
+        assert_eq!((tree.decode)(tree.root_ptr.unwrap()).get_nkeys(), 1);
     }
 
     #[test]
@@ -432,7 +432,7 @@ mod test {
             tree.insert(&format!("{i}"), "value").unwrap()
         }
         assert_eq!(
-            (tree.decode)(&tree.root_ptr.unwrap()).get_type(),
+            (tree.decode)(tree.root_ptr.unwrap()).get_type(),
             NodeType::Node
         );
         for i in 1u16..=1000u16 {

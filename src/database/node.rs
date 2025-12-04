@@ -645,7 +645,7 @@ impl TreeNode {
         let new_size = new.nbytes() - crate::database::node::HEADER_OFFSET as u16;
         // check left
         if idx > 0 {
-            let sibling = (tree.decode)(&self.get_ptr(idx - 1));
+            let sibling = (tree.decode)(self.get_ptr(idx - 1));
             let sibling_size = sibling.nbytes();
             if sibling_size + new_size < PAGE_SIZE as u16 {
                 return Some(MergeDirection::Left(sibling));
@@ -653,7 +653,7 @@ impl TreeNode {
         }
         // check right
         if idx + 1 < self.get_nkeys() {
-            let sibling = (tree.decode)(&self.get_ptr(idx + 1));
+            let sibling = (tree.decode)(self.get_ptr(idx + 1));
             let sibling_size = sibling.nbytes();
             if sibling_size + new_size < PAGE_SIZE as u16 {
                 return Some(MergeDirection::Right(sibling));
