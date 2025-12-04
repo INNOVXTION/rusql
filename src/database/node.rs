@@ -25,22 +25,22 @@ const OFFSETARR_OFFSET: usize = 2;
 */
 
 #[derive(PartialEq, Debug)]
-pub(crate) enum NodeType {
+pub enum NodeType {
     Node,
     Leaf,
 }
 /// which sibling we need to merge with
 pub enum MergeDirection {
-    Left(Node),
-    Right(Node),
+    Left(TreeNode),
+    Right(TreeNode),
 }
 #[derive(Debug)]
-pub(crate) struct Node(pub Box<[u8; NODE_SIZE]>);
+pub(crate) struct TreeNode(pub Box<[u8; NODE_SIZE]>);
 
-impl Node {
+impl TreeNode {
     /// new empty node
     pub fn new() -> Self {
-        Node(Box::new([0; NODE_SIZE]))
+        TreeNode(Box::new([0; NODE_SIZE]))
     }
 
     /// receive the total node size
@@ -104,9 +104,9 @@ impl Node {
     pub fn insert_nkids(
         &mut self,
         tree: &mut BTree,
-        old_node: Node,
+        old_node: TreeNode,
         idx: u16,
-        new_kids: (u16, Vec<Node>),
+        new_kids: (u16, Vec<TreeNode>),
     ) -> Result<(), Error> {
         debug!("inserting new kids...");
         let old_nkeys = old_node.get_nkeys();
@@ -272,7 +272,7 @@ impl Node {
     #[instrument(skip(self, src))]
     pub fn append_from_range(
         &mut self,
-        src: &Node,
+        src: &TreeNode,
         dst_idx: u16,
         src_idx: u16,
         n: u16,
@@ -413,7 +413,7 @@ impl Node {
     }
 
     /// abstracted API over leaf_kvinsert and leaf_kvupdate
-    pub fn insert(&mut self, node: Node, key: &str, val: &str, idx: u16) {
+    pub fn insert(&mut self, node: TreeNode, key: &str, val: &str, idx: u16) {
         if node.get_key(idx).unwrap() == key {
             debug!("upating in leaf at idx: {}", idx);
             self.leaf_kvupdate(node, idx, key, val).unwrap();
@@ -429,7 +429,7 @@ impl Node {
     #[instrument(skip(self, src))]
     pub fn leaf_kvinsert(
         &mut self,
-        src: Node,
+        src: TreeNode,
         idx: u16,
         key: &str,
         val: &str,
@@ -461,7 +461,7 @@ impl Node {
     #[instrument(skip(self, src))]
     pub fn leaf_kvupdate(
         &mut self,
-        src: Node,
+        src: TreeNode,
         idx: u16,
         key: &str,
         val: &str,
@@ -489,7 +489,7 @@ impl Node {
     /// updates node with source node with kv at idx omitted
     ///
     /// updates nkeys, sets node to leaf
-    pub fn leaf_kvdelete(&mut self, src: &Node, idx: u16) -> Result<(), Error> {
+    pub fn leaf_kvdelete(&mut self, src: &TreeNode, idx: u16) -> Result<(), Error> {
         let src_nkeys = src.get_nkeys();
         if (src_nkeys - 1) == 0 {
             return Ok(());
@@ -511,9 +511,9 @@ impl Node {
 
     /// helper function: consumes node and splits it in two
     #[instrument(skip(self))]
-    pub fn split_node(self) -> Result<(Node, Node), Error> {
-        let mut left = Node::new();
-        let mut right = Node::new();
+    pub fn split_node(self) -> Result<(TreeNode, TreeNode), Error> {
+        let mut left = TreeNode::new();
+        let mut right = TreeNode::new();
         // splitting node in the middle as first guess
         let nkeys = self.get_nkeys();
         if nkeys < 2 {
@@ -568,7 +568,7 @@ impl Node {
     }
 
     /// consumes node and splits it potentially three ways, returns number of splits and array of split off nodes
-    pub fn split(self) -> Result<(u16, Vec<Node>), Error> {
+    pub fn split(self) -> Result<(u16, Vec<TreeNode>), Error> {
         // no split
         let mut arr = Vec::with_capacity(3);
         if self.fits_page() {
@@ -615,7 +615,7 @@ impl Node {
     /// consumes two nodes and returns merged node
     ///
     /// updates nkeys
-    pub fn merge(&mut self, left: Node, right: Node, ntype: NodeType) -> Result<(), Error> {
+    pub fn merge(&mut self, left: TreeNode, right: TreeNode, ntype: NodeType) -> Result<(), Error> {
         let left_nkeys = left.get_nkeys();
         let right_nkeys = right.get_nkeys();
         self.set_header(ntype, left_nkeys + right_nkeys);
@@ -638,7 +638,7 @@ impl Node {
     /// checks if new node needs merging
     ///
     /// returns sibling node to merge with
-    pub fn merge_check(&self, tree: &BTree, new: &Node, idx: u16) -> Option<MergeDirection> {
+    pub fn merge_check(&self, tree: &BTree, new: &TreeNode, idx: u16) -> Option<MergeDirection> {
         if new.nbytes() > MERGE_FACTOR as u16 {
             return None; // no merge necessary
         }
@@ -666,8 +666,8 @@ impl Node {
     pub fn merge_setptr(
         &mut self,
         tree: &mut BTree,
-        src: Node,
-        merged_node: Node,
+        src: TreeNode,
+        merged_node: TreeNode,
         idx: u16, // idx of node that got merged away
     ) -> Result<(), Error> {
         let src_nkeys = src.get_nkeys();
@@ -692,13 +692,13 @@ impl Node {
     }
 }
 
-impl Clone for Node {
+impl Clone for TreeNode {
     fn clone(&self) -> Self {
-        Node(self.0.clone())
+        TreeNode(self.0.clone())
     }
 }
 
-impl Deref for Node {
+impl Deref for TreeNode {
     type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
@@ -706,7 +706,7 @@ impl Deref for Node {
     }
 }
 
-impl DerefMut for Node {
+impl DerefMut for TreeNode {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0[..]
     }
@@ -719,7 +719,7 @@ mod test {
 
     #[test]
     fn setting_header() {
-        let mut page = Node::new();
+        let mut page = TreeNode::new();
         page.set_header(NodeType::Node, 5);
 
         assert_eq!(page.get_type(), NodeType::Node);
@@ -728,7 +728,7 @@ mod test {
 
     #[test]
     fn setting_ptr() {
-        let mut page = Node::new();
+        let mut page = TreeNode::new();
         page.set_header(NodeType::Node, 5);
 
         page.set_ptr(1, Pointer::from(10));
@@ -739,7 +739,7 @@ mod test {
 
     #[test]
     fn kv_append() -> Result<(), Error> {
-        let mut node = Node::new();
+        let mut node = TreeNode::new();
         node.set_header(NodeType::Leaf, 2);
         node.kvptr_append(0, Pointer::from(0), "k1", "hi")?;
         node.kvptr_append(1, Pointer::from(0), "k3", "hello")?;
@@ -753,8 +753,8 @@ mod test {
 
     #[test]
     fn kv_append_range() -> Result<(), Error> {
-        let mut n1 = Node::new();
-        let mut n2 = Node::new();
+        let mut n1 = TreeNode::new();
+        let mut n2 = TreeNode::new();
 
         n2.set_header(NodeType::Leaf, 2);
         n1.set_header(NodeType::Leaf, 2);
@@ -771,8 +771,8 @@ mod test {
 
     #[test]
     fn kv_delete() -> Result<(), Error> {
-        let mut n1 = Node::new();
-        let mut n2 = Node::new();
+        let mut n1 = TreeNode::new();
+        let mut n2 = TreeNode::new();
 
         n1.set_header(NodeType::Leaf, 3);
         n1.kvptr_append(0, Pointer::from(0), "k1", "hi")?;
@@ -791,7 +791,7 @@ mod test {
     #[test]
     #[should_panic]
     fn kv_delete_panic() -> () {
-        let mut n1 = Node::new();
+        let mut n1 = TreeNode::new();
         n1.set_header(NodeType::Leaf, 3);
         n1.kvptr_append(0, Pointer::from(0), "k1", "hi")
             .map_err(|_| ())
@@ -803,7 +803,7 @@ mod test {
             .map_err(|_| ())
             .expect("unexpected panic");
 
-        let mut n2 = Node::new();
+        let mut n2 = TreeNode::new();
 
         n2.leaf_kvdelete(&n1, 3).expect("index error");
         ()

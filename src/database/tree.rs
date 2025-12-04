@@ -8,9 +8,9 @@ use crate::database::{errors::Error, node::*, types::*};
 pub struct BTree {
     pub root_ptr: Option<Pointer>,
     // callbacks
-    pub decode: Box<dyn Fn(&Pointer) -> Node>,   // get
-    pub encode: Box<dyn FnMut(Node) -> Pointer>, // set
-    pub dealloc: Box<dyn FnMut(Pointer)>,        // del
+    pub decode: Box<dyn Fn(&Pointer) -> TreeNode>, // get
+    pub encode: Box<dyn FnMut(TreeNode) -> Pointer>, // set
+    pub dealloc: Box<dyn FnMut(Pointer)>,          // del
 }
 
 impl Debug for BTree {
@@ -29,7 +29,7 @@ impl BTree {
             Some(n) => (self.decode)(&n),
             None => {
                 debug!("no root found, creating new root");
-                let mut new_root = Node::new();
+                let mut new_root = TreeNode::new();
                 new_root.set_header(NodeType::Leaf, 2);
                 new_root.kvptr_append(0, Pointer::from(0), "", "")?; // empty key to remove edge case
                 new_root.kvptr_append(1, Pointer::from(0), key, val)?;
@@ -52,7 +52,7 @@ impl BTree {
             return Ok(());
         }
         // in case of split tree grows in height
-        let mut new_root = Node::new();
+        let mut new_root = TreeNode::new();
         new_root.set_header(NodeType::Node, split.0);
         // iterate through node array from split to create new root node
         for (i, node) in split.1.into_iter().enumerate() {
@@ -69,8 +69,8 @@ impl BTree {
     }
 
     /// recursive insertion, node = current node, returns updated node
-    fn tree_insert(tree: &mut BTree, node: Node, key: &str, val: &str) -> Node {
-        let mut new = Node::new();
+    fn tree_insert(tree: &mut BTree, node: TreeNode, key: &str, val: &str) -> TreeNode {
+        let mut new = TreeNode::new();
         let idx = node.lookupidx(key);
         match node.get_type() {
             NodeType::Leaf => {
@@ -138,13 +138,13 @@ impl BTree {
     /// recursive deletion, node = current node, returns updated node in case a deletion happened
     ///
     /// TODO: update height
-    fn tree_delete(tree: &mut BTree, mut node: Node, key: &str) -> Option<Node> {
+    fn tree_delete(tree: &mut BTree, mut node: TreeNode, key: &str) -> Option<TreeNode> {
         let idx = node.lookupidx(key);
         match node.get_type() {
             NodeType::Leaf => {
                 if let Some(i) = node.searchidx(key) {
                     debug!("deleting key {key} at idx {idx}");
-                    let mut new = Node::new();
+                    let mut new = TreeNode::new();
                     new.leaf_kvdelete(&node, i).unwrap();
                     new.set_header(NodeType::Leaf, node.get_nkeys() - 1);
                     return Some(new);
@@ -163,14 +163,14 @@ impl BTree {
                     None => return None,
                     // node was updated below us, checking for merge...
                     Some(updated_child) => {
-                        let mut new = Node::new();
+                        let mut new = TreeNode::new();
                         let cur_nkeys = node.get_nkeys();
                         match node.merge_check(tree, &updated_child, idx) {
                             // we need to merge
                             Some(dir) => {
                                 let left: Pointer;
                                 let right: Pointer;
-                                let mut merged_node = Node::new();
+                                let mut merged_node = TreeNode::new();
                                 let merge_type = updated_child.get_type();
                                 match dir {
                                     MergeDirection::Left(sibling) => {
@@ -255,7 +255,7 @@ impl BTree {
         BTree::tree_search(self, (self.decode)(&self.root_ptr?), key)
     }
 
-    fn tree_search(tree: &BTree, node: Node, key: &str) -> Option<String> {
+    fn tree_search(tree: &BTree, node: TreeNode, key: &str) -> Option<String> {
         let idx = node.lookupidx(key);
         match node.get_type() {
             NodeType::Leaf => {

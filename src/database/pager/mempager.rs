@@ -4,7 +4,7 @@ use parking_lot::Mutex;
 use tracing::{debug, error};
 
 use crate::database::{
-    node::Node,
+    node::TreeNode,
     tree::BTree,
     types::{PAGE_SIZE, Pointer},
 };
@@ -14,7 +14,7 @@ pub static GLOBAL_PAGER: OnceLock<Mutex<MemoryPager>> = OnceLock::new();
 #[derive(Debug)]
 pub struct MemoryPager {
     freelist: Vec<u64>,
-    pages: HashMap<u64, Node>,
+    pages: HashMap<u64, TreeNode>,
 }
 
 impl MemoryPager {
@@ -38,7 +38,7 @@ pub fn mempage_tree() -> BTree {
 }
 
 /// callbacks for memory pager
-fn decode(ptr: &Pointer) -> Node {
+fn decode(ptr: &Pointer) -> TreeNode {
     let pager = GLOBAL_PAGER.get().unwrap().lock();
     pager
         .pages
@@ -50,7 +50,7 @@ fn decode(ptr: &Pointer) -> Node {
         .clone()
 }
 
-fn encode(node: Node) -> Pointer {
+fn encode(node: TreeNode) -> Pointer {
     if node.get_nkeys() > PAGE_SIZE as u16 {
         panic!("trying to encode node exceeding page size");
     }

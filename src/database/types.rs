@@ -1,4 +1,9 @@
-use std::fmt::Display;
+use std::{
+    fmt::Display,
+    ops::{Deref, DerefMut},
+};
+
+use crate::database::{node::TreeNode, pager::freelist::FLNode, tree};
 
 pub const BTREE_MAX_KEY_SIZE: usize = 1000;
 pub const BTREE_MAX_VAL_SIZE: usize = 3000;
@@ -17,8 +22,30 @@ pub const SIG_SIZE: usize = 16;
 pub const PTR_SIZE: usize = 8;
 pub const U16_SIZE: usize = 2;
 
-trait Node {
-    type Array;
+#[derive(Debug)]
+pub enum Node {
+    Tree(TreeNode),
+    Freelist(FLNode),
+}
+
+impl Deref for Node {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Node::Tree(tree_node) => tree_node,
+            Node::Freelist(flnode) => flnode,
+        }
+    }
+}
+
+impl DerefMut for Node {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        match self {
+            Node::Tree(tree_node) => tree_node,
+            Node::Freelist(flnode) => flnode,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Eq, Hash)]

@@ -2,7 +2,6 @@ use core::ffi::c_void;
 use rustix::mm::{MapFlags, ProtFlags};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::hash::Hash;
 use std::io::IoSlice;
 use std::ops::{Deref, DerefMut};
 use std::os::fd::OwnedFd;
@@ -15,10 +14,16 @@ use crate::database::pager::freelist::{FLNode, FreeList};
 use crate::database::{
     errors::{Error, PagerError},
     helper::{create_file_sync, read_pointer, write_pointer},
-    node::Node,
+    node::TreeNode,
     tree::BTree,
     types::*,
 };
+
+/// indicates the encoding/decodin style of a node
+enum NodeFlag {
+    Tree,
+    Freelist,
+}
 
 #[derive(Debug)]
 pub struct DiskPager {
@@ -35,8 +40,8 @@ pub struct DiskPager {
 #[derive(Debug)]
 struct State {
     mmap: Mmap,
-    n_pages: u64,    // database size in number of pages
-    temp: Vec<Node>, // nodes to be appended
+    n_pages: u64,        // database size in number of pages
+    temp: Vec<TreeNode>, // nodes to be appended
 }
 
 #[derive(Debug)]
@@ -90,11 +95,20 @@ impl DiskPager {
             // initializing BTree callbacks
             let decode = {
                 let weak = Weak::clone(&weak);
-                Box::new(move |ptr: &Pointer| weak.upgrade().expect("pager dropped").decode(*ptr))
+                Box::new(move |ptr: &Pointer| {
+                    let Node::Tree(n) = weak
+                        .upgrade()
+                        .expect("pager dropped")
+                        .decode(*ptr, NodeFlag::Tree)
+                    else {
+                        unreachable!()
+                    };
+                    n
+                })
             };
             let encode = {
                 let weak = Weak::clone(&weak);
-                Box::new(move |node: Node| weak.upgrade().expect("pager dropped").encode(node))
+                Box::new(move |node: TreeNode| weak.upgrade().expect("pager dropped").encode(node))
             };
             let dealloc = {
                 let weak = Weak::clone(&weak);
@@ -261,7 +275,7 @@ impl DiskPager {
 
     /// callbacks
     /// kv.pageRead, db.pageRead
-    fn decode(&self, ptr: Pointer) -> Node {
+    fn decode(&self, ptr: Pointer, node_type: NodeFlag) -> Node {
         let state = self.state.borrow();
         debug!(
             "decoding ptr: {}, amount of chunks {}, chunk 0 size {}",
@@ -275,8 +289,11 @@ impl DiskPager {
             let end = start + chunk.len() / PAGE_SIZE;
             if ptr.0 < end as u64 {
                 let offset: usize = PAGE_SIZE * (ptr.0 as usize - start);
-                let mut node = Node::new();
-                node.0[..PAGE_SIZE].copy_from_slice(&chunk[offset..offset + PAGE_SIZE]);
+                let mut node = match node_type {
+                    NodeFlag::Tree => Node::Tree(TreeNode::new()),
+                    NodeFlag::Freelist => Node::Freelist(FLNode::new()),
+                };
+                node[..PAGE_SIZE].copy_from_slice(&chunk[offset..offset + PAGE_SIZE]);
                 debug!("returning node at offset {offset}, {}", as_page(offset));
                 return node;
             }
@@ -289,7 +306,7 @@ impl DiskPager {
     /// loads node into buffer to be flushed late
     /// appends the page
     /// pageAppend
-    fn encode(&self, node: Node) -> Pointer {
+    fn encode(&self, node: TreeNode) -> Pointer {
         let mut state = self.state.borrow_mut();
         // empty db has n_pages = 1 (meta page)
         assert!(node.fits_page());
@@ -314,7 +331,7 @@ impl DiskPager {
     /// allocates a new page to be encoded
     ///
     /// pageAlloc, new
-    fn alloc(&self, node: Node) -> Pointer {
+    fn alloc(&self, node: Node, node_type: NodeFlag) -> Pointer {
         // check freelist first
         if let Some(ptr) = self.freelist.borrow_mut().get() {
             self.buffer.borrow_mut().insert(ptr, node);
@@ -327,11 +344,11 @@ impl DiskPager {
     /// freelist callback
     ///
     /// pageWrite
-    fn update(&self, ptr: Pointer) -> Node {
+    fn update(&self, ptr: Pointer) -> FLNode {
         if let Some(n) = self.buffer.borrow_mut().remove(&ptr) {
             n
         } else {
-            self.decode(ptr)
+            self.decode(ptr, NodeFlag::Freelist)
         }
     }
 }

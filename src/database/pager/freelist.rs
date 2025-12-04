@@ -3,10 +3,11 @@ use std::ops::{Deref, DerefMut};
 
 use tracing::debug;
 
+use crate::database::types::Node;
 use crate::database::{
     errors::FLError,
     helper::{read_pointer, write_pointer},
-    node::Node,
+    node::TreeNode,
     types::{PAGE_SIZE, PTR_SIZE, Pointer},
 };
 
@@ -129,10 +130,11 @@ const FREE_LIST_CAP: usize = (PAGE_SIZE - FREE_LIST_NEXT) / 8;
 // | next | pointers | unused |
 // |  8B  |   n*8B   |   ...  |
 
+#[derive(Debug)]
 pub struct FLNode(Box<[u8; PAGE_SIZE]>);
 
 impl FLNode {
-    fn new() -> Self {
+    pub fn new() -> Self {
         FLNode(Box::new([0u8; PAGE_SIZE]))
     }
 
@@ -159,8 +161,8 @@ impl FLNode {
     }
 }
 
-impl From<Node> for FLNode {
-    fn from(value: Node) -> Self {
+impl From<TreeNode> for FLNode {
+    fn from(value: TreeNode) -> Self {
         let mut n = FLNode::new();
         n.copy_from_slice(&value[..PAGE_SIZE]);
         n
