@@ -35,8 +35,8 @@ pub struct DiskPager {
 #[derive(Debug)]
 struct State {
     mmap: Mmap,
-    n_pages: u64, // database size in number of pages
-    temp: Vec<Node>,
+    n_pages: u64,    // database size in number of pages
+    temp: Vec<Node>, // nodes to be appended
 }
 
 #[derive(Debug)]
@@ -270,7 +270,7 @@ impl DiskPager {
         assert!(self.state.borrow().n_pages != 0);
     }
 
-    // callbacks
+    /// callbacks
     /// kv.pageRead, db.pageRead
     fn decode(&self, state: &State, ptr: Pointer) -> Node {
         debug!(
@@ -279,6 +279,7 @@ impl DiskPager {
             state.mmap.chunks.len(),
             state.mmap.chunks[0].len
         );
+
         let mut start: usize = 0;
         for chunk in state.mmap.chunks.iter() {
             let end = start + chunk.len() / PAGE_SIZE;
@@ -296,7 +297,7 @@ impl DiskPager {
     }
 
     /// loads node into buffer to be flushed late
-    ///
+    /// appends the page
     /// pageAppend
     fn encode(&self, state: &mut State, node: Node) -> Pointer {
         // empty db has n_pages = 1 (meta page)
@@ -315,19 +316,20 @@ impl DiskPager {
     /// PushTail
     fn dealloc(&self, ptr: Pointer) {
         debug!("deallocating ptr {}", ptr.0);
-        self.freelist.borrow_mut().append(ptr);
+        self.freelist.borrow_mut().append(ptr).unwrap();
         ()
     }
 
-    /// allocates a new page from the free list
+    /// allocates a new page to be encoded
     ///
-    /// pageAlloc
-    fn alloc(&self, buf: &mut HashMap<Pointer, Node>) -> Pointer {
+    /// pageAlloc, new
+    fn alloc(&self, node: Node, buf: &mut HashMap<Pointer, Node>) -> Pointer {
         // check freelist first
         if let Some(ptr) = self.freelist.borrow_mut().get() {
-            self.decode(state, ptr)
+            buf.insert(ptr, node);
+            ptr
         } else {
-            self.encode(state, Node::new())
+            self.encode(&mut *self.state.borrow_mut(), node)
         }
     }
 
@@ -336,9 +338,10 @@ impl DiskPager {
     /// pageWrite
     fn update(&self, buf: &mut HashMap<Pointer, Node>, ptr: Pointer) -> Node {
         if let Some(n) = buf.remove(&ptr) {
-            return n;
+            n
+        } else {
+            Node::new()
         }
-        Node::new()
     }
 }
 
