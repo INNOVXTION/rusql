@@ -78,7 +78,7 @@ impl FreeList {
     pub fn append(&mut self, ptr: Pointer) -> Result<(), FLError> {
         // updates tail page, by getting a reference to the buffer if its already in there
         // updating appending the pointer
-        let mut cur_tail = (self.update)(self.tail_page.unwrap());
+        let mut cur_tail = (self.update)(self.tail_page.unwrap()); // TODO: check for none?
         cur_tail.set_ptr(seq_to_idx(self.tail_seq) as u16, ptr);
         self.tail_seq += 1;
         // allocating new node if the the node is full

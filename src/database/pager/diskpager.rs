@@ -84,61 +84,51 @@ impl DiskPager {
         });
 
         // master weak pointer pointing to the owning struct
+        // each callbacl back captures a copy of the weak pointer on creation, which is used to refer back to the pager
         let weak = Rc::downgrade(&pager);
-        // initializing BTree callbacks
-        let decode = {
-            let weak = Weak::clone(&weak);
-            Box::new(move |ptr: &Pointer| {
-                let strong = weak.upgrade().expect("pager dropped");
-                let imm_ref = strong.state.borrow();
-                strong.decode(&*imm_ref, *ptr)
-            })
-        };
-        let encode = {
-            let weak = Weak::clone(&weak);
-            Box::new(move |node: Node| {
-                let strong = weak.upgrade().expect("pager dropped");
-                let mut mut_ref = strong.state.borrow_mut();
-                strong.encode(&mut *mut_ref, node)
-            })
-        };
-        let dealloc = {
-            let weak = Weak::clone(&weak);
-            Box::new(move |ptr: Pointer| {
-                let strong = weak.upgrade().expect("pager dropped");
-                strong.dealloc(ptr)
-            })
-        };
-        let mut ref_mut = pager.tree.borrow_mut();
-        ref_mut.decode = decode;
-        ref_mut.encode = encode;
-        ref_mut.dealloc = dealloc;
+        {
+            // initializing BTree callbacks
+            let decode = {
+                let weak = Weak::clone(&weak);
+                Box::new(move |ptr: &Pointer| weak.upgrade().expect("pager dropped").decode(*ptr))
+            };
+            let encode = {
+                let weak = Weak::clone(&weak);
+                Box::new(move |node: Node| weak.upgrade().expect("pager dropped").encode(node))
+            };
+            let dealloc = {
+                let weak = Weak::clone(&weak);
+                Box::new(move |ptr: Pointer| weak.upgrade().expect("pager dropped").dealloc(ptr))
+            };
+            let mut ref_mut = pager.tree.borrow_mut();
+            ref_mut.decode = decode;
+            ref_mut.encode = encode;
+            ref_mut.dealloc = dealloc;
+        }
+        // {
+        //     // initializing freelist callbacks
+        //     let decode = {
+        //         let weak = Weak::clone(&weak);
+        //         Box::new(move |ptr: &Pointer| {
+        //             FLNode::from(weak.upgrade().expect("pager dropped").decode(*ptr))
+        //         })
+        //     };
+        //     let encode = {
+        //         let weak = Weak::clone(&weak);
+        //         Box::new(move |node: FLNode| {
+        //             weak.upgrade().expect("pager dropped").encode(node);
+        //         })
+        //     };
+        //     let update = {
+        //         let weak = Weak::clone(&weak);
+        //         Box::new(move |ptr: Pointer| weak.upgrade().expect("pager dropped").update(ptr))
+        //     };
 
-        // initializing freelist callbacks
-        let decode = {
-            let weak = Weak::clone(&weak);
-            Box::new(move |ptr: &Pointer| {
-                let strong = weak.upgrade().expect("pager dropped");
-                let imm_ref = strong.state.borrow();
-                FLNode::from(strong.decode(&*imm_ref, *ptr))
-            })
-        };
-        let encode = {
-            let weak = Weak::clone(&weak);
-            Box::new(move |node: Node| {
-                let strong = weak.upgrade().expect("pager dropped");
-                let mut mut_ref = strong.state.borrow_mut();
-                strong.encode(&mut *mut_ref, node)
-            })
-        };
-        let update = {
-            let weak = Weak::clone(&weak);
-            Box::new(move |ptr: Pointer| {
-                let strong = weak.upgrade().expect("pager dropped");
-                let mut buf_ref = strong.buffer.borrow_mut();
-                strong.update(&mut *buf_ref, ptr)
-            })
-        };
+        //     let ref_fl = pager.freelist.borrow_mut();
+        //     ref_fl.decode = decode;
+        //     ref_fl.encode = encode;
+        //     ref_fl.update = update;
+        // }
 
         let fd_size = rustix::fs::fstat(&pager.database)
             .map_err(|e| {
@@ -147,7 +137,6 @@ impl DiskPager {
             })
             .unwrap()
             .st_size as u64;
-        drop(ref_mut);
         pager.root_read(fd_size);
         debug!(
             "\npager initialized:\nmmap.total {}\nn_pages {}\nchunks.len {}",
@@ -272,7 +261,8 @@ impl DiskPager {
 
     /// callbacks
     /// kv.pageRead, db.pageRead
-    fn decode(&self, state: &State, ptr: Pointer) -> Node {
+    fn decode(&self, ptr: Pointer) -> Node {
+        let state = self.state.borrow();
         debug!(
             "decoding ptr: {}, amount of chunks {}, chunk 0 size {}",
             ptr.0,
@@ -299,7 +289,8 @@ impl DiskPager {
     /// loads node into buffer to be flushed late
     /// appends the page
     /// pageAppend
-    fn encode(&self, state: &mut State, node: Node) -> Pointer {
+    fn encode(&self, node: Node) -> Pointer {
+        let mut state = self.state.borrow_mut();
         // empty db has n_pages = 1 (meta page)
         assert!(node.fits_page());
         let ptr = Pointer(state.n_pages + state.temp.len() as u64);
@@ -323,24 +314,24 @@ impl DiskPager {
     /// allocates a new page to be encoded
     ///
     /// pageAlloc, new
-    fn alloc(&self, node: Node, buf: &mut HashMap<Pointer, Node>) -> Pointer {
+    fn alloc(&self, node: Node) -> Pointer {
         // check freelist first
         if let Some(ptr) = self.freelist.borrow_mut().get() {
-            buf.insert(ptr, node);
+            self.buffer.borrow_mut().insert(ptr, node);
             ptr
         } else {
-            self.encode(&mut *self.state.borrow_mut(), node)
+            self.encode(node)
         }
     }
 
     /// freelist callback
     ///
     /// pageWrite
-    fn update(&self, buf: &mut HashMap<Pointer, Node>, ptr: Pointer) -> Node {
-        if let Some(n) = buf.remove(&ptr) {
+    fn update(&self, ptr: Pointer) -> Node {
+        if let Some(n) = self.buffer.borrow_mut().remove(&ptr) {
             n
         } else {
-            Node::new()
+            self.decode(ptr)
         }
     }
 }
