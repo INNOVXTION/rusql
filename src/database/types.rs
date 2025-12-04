@@ -1,3 +1,7 @@
+/*
+ * higher level types and constants used throughout the database
+ */
+
 use std::{
     fmt::Display,
     ops::{Deref, DerefMut},
@@ -27,14 +31,10 @@ pub const PTR_SIZE: usize = 8;
 pub const U16_SIZE: usize = 2;
 
 #[derive(Debug)]
+/// implements deref to get to the underlying array
 pub enum Node {
     Tree(TreeNode),
     Freelist(FLNode),
-}
-
-pub enum NodeSize {
-    Page,
-    Mem,
 }
 
 impl Node {

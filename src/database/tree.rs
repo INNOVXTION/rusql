@@ -9,8 +9,8 @@ pub struct BTree {
     pub root_ptr: Option<Pointer>,
     // callbacks
     pub decode: Box<dyn Fn(Pointer) -> TreeNode>, // get
-    pub encode: Box<dyn FnMut(TreeNode) -> Pointer>, // set
-    pub dealloc: Box<dyn FnMut(Pointer)>,         // del
+    pub encode: Box<dyn Fn(TreeNode) -> Pointer>, // set
+    pub dealloc: Box<dyn Fn(Pointer)>,            // del
 }
 
 impl Debug for BTree {

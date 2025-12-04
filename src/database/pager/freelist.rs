@@ -21,10 +21,7 @@ pub(crate) struct FreeList {
     // reads page, get
     pub decode: Box<dyn Fn(Pointer) -> FLNode>,
     // appends page, set
-    pub encode: Box<dyn FnMut(FLNode) -> Pointer>,
-    // returns a reference to a node in updates buffer
-    // remove after test
-    pub update: Box<dyn Fn(Pointer) -> FLNode>,
+    pub encode: Box<dyn Fn(FLNode) -> Pointer>,
 }
 
 impl FreeList {
@@ -38,7 +35,6 @@ impl FreeList {
             max_seq: 0,
             decode: Box::new(|_| panic!("not initialized")),
             encode: Box::new(|_| panic!("not initialized")),
-            update: Box::new(|_| panic!("not initialized")),
         }
     }
     /// removes a page from the head, decrement head seq
@@ -78,7 +74,7 @@ impl FreeList {
     pub fn append(&mut self, ptr: Pointer) -> Result<(), FLError> {
         // updates tail page, by getting a reference to the buffer if its already in there
         // updating appending the pointer
-        let mut cur_tail = (self.update)(self.tail_page.unwrap()); // TODO: check for none?
+        let mut cur_tail = (self.decode)(self.tail_page.unwrap()); // TODO: check for none?
         cur_tail.set_ptr(seq_to_idx(self.tail_seq) as u16, ptr);
         self.tail_seq += 1;
         // allocating new node if the the node is full
@@ -99,7 +95,7 @@ impl FreeList {
                 // appending the empty head as well
                 (Some(next), Some(head)) => {
                     cur_tail.set_next(next);
-                    let mut node = (self.update)(next);
+                    let mut node = (self.decode)(next);
                     node.set_ptr(0, head);
                     (self.encode)(node);
                     self.tail_page = Some(next);

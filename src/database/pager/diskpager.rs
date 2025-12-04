@@ -2,7 +2,6 @@ use core::ffi::c_void;
 use rustix::mm::{MapFlags, ProtFlags};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::io::IoSlice;
 use std::ops::{Deref, DerefMut};
 use std::os::fd::OwnedFd;
 use std::rc::{Rc, Weak};
@@ -115,7 +114,7 @@ impl DiskPager {
                 Box::new(move |node: TreeNode| {
                     weak.upgrade()
                         .expect("pager dropped")
-                        .alloc(Node::Tree(node), NodeFlag::Tree)
+                        .page_alloc(Node::Tree(node), NodeFlag::Tree)
                 })
             };
             // dealloc
@@ -149,21 +148,10 @@ impl DiskPager {
                         .encode(Node::Freelist(node))
                 })
             };
-            // pageWrite
-            let update = {
-                let weak = Weak::clone(&weak);
-                Box::new(move |ptr: Pointer| {
-                    weak.upgrade()
-                        .expect("pager dropped")
-                        .page_read(ptr, NodeFlag::Freelist)
-                        .as_fl()
-                })
-            };
 
             let mut ref_fl = pager.freelist.borrow_mut();
             ref_fl.decode = decode;
             ref_fl.encode = encode;
-            ref_fl.update = update;
         }
 
         let fd_size = rustix::fs::fstat(&pager.database)
@@ -316,6 +304,7 @@ impl DiskPager {
         assert!(self.state.borrow().npages != 0);
     }
 
+    // decodes a page, checks buffer before reading disk
     // `BTree.get`, reads a page possibly from buffer or disk
     fn page_read(&self, ptr: Pointer, flag: NodeFlag) -> Node {
         // check buffer first
@@ -326,7 +315,7 @@ impl DiskPager {
         }
     }
 
-    /// callbacks
+    /// decodes a page from disk
     /// kv.pageRead, db.pageRead -> pagereadfile
     fn decode(&self, ptr: Pointer, node_type: NodeFlag) -> Node {
         let state = self.state.borrow();
@@ -356,8 +345,20 @@ impl DiskPager {
         panic!()
     }
 
-    /// loads node into buffer to be flushed late
-    /// returning ptr is always appended page!
+    /// allocates a new page to be encoded, checks freelist first before appending to disk
+    ///
+    /// pageAlloc, new
+    fn page_alloc(&self, node: Node, node_type: NodeFlag) -> Pointer {
+        // check freelist first
+        if let Some(ptr) = self.freelist.borrow_mut().get() {
+            self.buffer.borrow_mut().hmap.insert(ptr, node);
+            ptr
+        } else {
+            self.encode(node)
+        }
+    }
+
+    /// appends page on disk, generating a new pointer
     /// pageAppend
     fn encode(&self, node: Node) -> Pointer {
         let state = self.state.borrow();
@@ -381,30 +382,6 @@ impl DiskPager {
         self.freelist.borrow_mut().append(ptr).unwrap();
         ()
     }
-
-    /// allocates a new page to be encoded, checks buffer first before appending to disk
-    ///
-    /// pageAlloc, new
-    fn alloc(&self, node: Node, node_type: NodeFlag) -> Pointer {
-        // check freelist first
-        if let Some(ptr) = self.freelist.borrow_mut().get() {
-            self.buffer.borrow_mut().hmap.insert(ptr, node);
-            ptr
-        } else {
-            self.encode(node)
-        }
-    }
-
-    // /// freelist callback, possibly redundant
-    // ///
-    // /// pageWrite
-    // fn update(&self, ptr: Pointer) -> FLNode {
-    //     if let Some(n) = self.buffer.borrow_mut().hmap.remove(&ptr) {
-    //         n.as_fl()
-    //     } else {
-    //         self.decode(ptr, NodeFlag::Freelist).as_fl()
-    //     }
-    // }
 }
 
 /// read-only
