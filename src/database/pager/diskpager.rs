@@ -5,10 +5,11 @@ use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 use std::os::fd::OwnedFd;
 use std::rc::{Rc, Weak};
+use std::str::FromStr;
 
 use tracing::{debug, error, info, instrument};
 
-use crate::database::helper::{as_mb, as_page, input_valid};
+use crate::database::helper::{DecodeSlice, EncodeSlice, as_mb, as_page, input_valid};
 use crate::database::pager::freelist::{FLNode, FreeList};
 use crate::database::{
     errors::{Error, PagerError},
@@ -266,7 +267,7 @@ impl DiskPager {
         // iterate over buffer and write nodes to designated pages
         debug!(buf_len, "pages in buffer:");
         let mut bytes_written: usize = 0;
-        for pair in &mut *buf {
+        for pair in buf.iter() {
             debug!(page = pair.0.get(), "writing note at page: ");
             let offset = pair.0.get() * PAGE_SIZE as u64;
             let io_slice = rustix::io::IoSlice::new(&pair.1[..PAGE_SIZE]);
@@ -358,7 +359,8 @@ impl DiskPager {
         }
     }
 
-    /// appends page on disk, generating a new pointer
+    /// adds pages to buffer to be encoded to disk later (append)
+    /// does not check if node exists in buffer!
     /// pageAppend
     fn encode(&self, node: Node) -> Pointer {
         let state = self.state.borrow();
@@ -469,11 +471,50 @@ impl Drop for Chunk {
 unsafe impl Send for Chunk {}
 unsafe impl Sync for Chunk {}
 
+//--------Meta Page Layout-------
+// | sig | root_ptr | page_used |
+// | 16B |    8B    |     8B    |
+//
+// new
+// | sig | root_ptr | page_used | head_page | head_seq | tail_page | tail_seq |
+// | 16B |    8B    |     8B    |     8B    |    8B    |     8B    |    8B    |
+
+// offsets
+enum MpField {
+    Sig = 0,
+    RootPtr = 16,
+    Npages = 16 + 8,
+    HeadPage = 16 + (8 * 2),
+    HeadSeq = 16 + (8 * 3),
+    Tailpage = 16 + (8 * 4),
+    TailSeq = 16 + (8 * 5),
+}
+
 struct MetaPage(Box<[u8; METAPAGE_SIZE]>);
 
 impl MetaPage {
     fn new() -> Self {
         MetaPage(Box::new([0u8; METAPAGE_SIZE]))
+    }
+
+    fn set_sig(&mut self, sig: &str) {
+        self[..16].copy_from_slice(sig.as_bytes());
+    }
+
+    fn read_sig(&self) -> String {
+        String::from_str(str::from_utf8(&self[..16]).unwrap()).unwrap()
+    }
+
+    fn set_ptr(&mut self, ptr: Pointer, field: MpField) {
+        let offset = field as usize;
+        self[offset..offset + 8].copy_from_slice(&ptr.as_slice());
+    }
+
+    fn read_ptr(&self, field: MpField) -> Pointer {
+        let offset = field as usize;
+        Pointer::from(u64::from_le_bytes(
+            self[offset..offset + 8].try_into().unwrap(),
+        ))
     }
 }
 
@@ -489,14 +530,6 @@ impl DerefMut for MetaPage {
         &mut *self.0
     }
 }
-
-//--------Meta Page Layout-------
-// | sig | root_ptr | page_used |
-// | 16B |    8B    |     8B    |
-//
-// new
-// | sig | root_ptr | page_used | head_page | head_seq | tail_page | tail_seq |
-// | 16B |    8B    |     8B    |     8B    |    8B    |     8B    |    8B    |
 
 /// returns metapage object of current pager state
 fn metapage_save(pager: &DiskPager) -> MetaPage {

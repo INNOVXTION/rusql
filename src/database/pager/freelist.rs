@@ -11,9 +11,9 @@ use tracing::debug;
 
 pub(crate) struct FreeList {
     pub head_page: Option<Pointer>,
-    head_seq: usize,
+    pub head_seq: usize,
     pub tail_page: Option<Pointer>,
-    tail_seq: usize,
+    pub tail_seq: usize,
     // maximum amount of items in the list
     max_seq: usize,
     //
@@ -57,8 +57,8 @@ impl FreeList {
             // no free page available
             return (None, None);
         }
-        let node = (self.decode)(self.head_page.unwrap());
-        let ptr = read_pointer(&node, seq_to_idx(self.head_seq)).unwrap();
+        let node = (self.decode)(self.head_page.unwrap()); // loading free list node
+        let ptr = node.get_ptr(seq_to_idx(self.head_seq));
         self.head_seq += 1;
         // in case the head page is empty we reuse it
         if seq_to_idx(self.head_seq) == 0 {
@@ -94,11 +94,12 @@ impl FreeList {
                 // getting the last item of the head node and the head node iteself
                 // appending the empty head as well
                 (Some(next), Some(head)) => {
-                    cur_tail.set_next(next);
-                    let mut node = (self.decode)(next);
+                    let mut node = (self.decode)(next); // this maybe needs pager.alloc()
                     node.set_ptr(0, head);
                     (self.encode)(node);
+
                     self.tail_page = Some(next);
+                    cur_tail.set_next(next);
                     self.tail_seq += 1; // accounting for re-added head
                 }
                 _ => unreachable!(),
@@ -114,8 +115,8 @@ impl FreeList {
 }
 
 // converts seq to idx
-fn seq_to_idx(seq: usize) -> usize {
-    seq as usize % FREE_LIST_CAP
+fn seq_to_idx(seq: usize) -> u16 {
+    seq as u16 % FREE_LIST_CAP as u16
 }
 
 const FREE_LIST_NEXT: usize = 8;
@@ -144,7 +145,7 @@ impl FLNode {
     }
 
     // removes a pointer from the free list
-    fn get_ptr(&mut self, idx: u16) -> Pointer {
+    fn get_ptr(&self, idx: u16) -> Pointer {
         debug!(idx, "getting pointer");
         read_pointer(self, FREE_LIST_NEXT * idx as usize).expect("reading ptr failed")
     }

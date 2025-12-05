@@ -93,16 +93,7 @@ impl DerefMut for Node {
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Eq, Hash)]
 pub(crate) struct Pointer(pub u64);
 
-impl From<u64> for Pointer {
-    fn from(value: u64) -> Self {
-        Pointer(value)
-    }
-}
-
 impl Pointer {
-    pub fn from(val: u64) -> Self {
-        Pointer(val)
-    }
     pub fn as_slice(self) -> [u8; 8] {
         self.0.to_le_bytes()
     }
@@ -111,6 +102,12 @@ impl Pointer {
     }
     pub fn set(&mut self, val: u64) {
         self.0 = val
+    }
+}
+
+impl From<u64> for Pointer {
+    fn from(value: u64) -> Self {
+        Pointer(value)
     }
 }
 
