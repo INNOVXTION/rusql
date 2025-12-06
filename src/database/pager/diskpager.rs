@@ -10,7 +10,7 @@ use std::str::FromStr;
 
 use tracing::{debug, error, info, instrument};
 
-use crate::database::helper::{as_mb, as_page, input_valid};
+use crate::database::helper::{as_mb, as_page, input_valid, print_buffer};
 use crate::database::pager::freelist::{FLNode, FreeList};
 use crate::database::{
     errors::{Error, PagerError},
@@ -32,7 +32,7 @@ pub struct DiskPager {
     path: &'static str,
     database: OwnedFd,
     tree: RefCell<BTree>,
-    state: RefCell<State>, // newly allocated pages to be flushed
+    state: RefCell<State>,
     failed: Cell<bool>,
     freelist: RefCell<FreeList>,
     buffer: RefCell<Buffer>,
@@ -237,6 +237,8 @@ impl DiskPager {
         rustix::fs::fsync(&self.database)?;
         // updating free list for next update
         self.freelist.borrow_mut().set_max_seq();
+        assert!(self.tree.borrow().root_ptr != self.freelist.borrow().head_page);
+        assert!(self.tree.borrow().root_ptr != self.freelist.borrow().tail_page);
         Ok(())
     }
 
@@ -244,8 +246,8 @@ impl DiskPager {
     ///
     fn page_write(&self) -> Result<(), PagerError> {
         debug!("writing page...");
-        let buf = &mut self.buffer.borrow_mut().hmap;
-        let buf_len = buf.len();
+        let mut buf = self.buffer.borrow_mut();
+        let buf_len = buf.hmap.len();
         let npage = self.state.borrow().npages;
 
         // extend the mmap if needed
@@ -271,15 +273,15 @@ impl DiskPager {
         // let bytes_written = rustix::io::pwritev(&self.database, &io_buf, offset as u64)?;
 
         // iterate over buffer and write nodes to designated pages
-        debug!(buf_len, "pages in buffer:");
+        debug!(
+            nappend = buf.nappend,
+            buffer = buf_len,
+            "pages to be written:"
+        );
         let mut bytes_written: usize = 0;
-        for pair in buf.iter() {
-            debug!(
-                page = pair.0.get(),
-                "writing {:?} at page {}",
-                pair.1.get_type(),
-                pair.0
-            );
+        for pair in buf.hmap.iter() {
+            assert!(pair.0.get() != 0);
+            debug!("writing {:?} at {}", pair.1.get_type(), pair.0);
             let offset = pair.0.get() * PAGE_SIZE as u64;
             let io_slice = rustix::io::IoSlice::new(&pair.1[..PAGE_SIZE]);
             bytes_written +=
@@ -291,8 +293,9 @@ impl DiskPager {
         debug!(bytes_written, "bytes written:");
         assert!(bytes_written == buf_len * PAGE_SIZE);
         //discard in-memory data
-        self.state.borrow_mut().npages += buf.len() as u64;
-        buf.clear();
+        self.state.borrow_mut().npages += buf.nappend;
+        buf.nappend = 0;
+        buf.hmap.clear();
         Ok(())
     }
 
@@ -300,7 +303,7 @@ impl DiskPager {
     fn root_read(&self, file_size: u64) {
         if file_size == 0 {
             // empty file
-            debug!("root read: file size = 0, empty file...");
+            debug!("root read: empty file...");
             self.state.borrow_mut().npages = 2; // reserved for meta page and one free list node
             self.freelist.borrow_mut().head_page = Some(Pointer::from(1u64));
             self.freelist.borrow_mut().tail_page = Some(Pointer::from(1u64));
@@ -320,10 +323,44 @@ impl DiskPager {
     // `BTree.get`, reads a page possibly from buffer or disk
     fn page_read(&self, ptr: Pointer, flag: NodeFlag) -> Node {
         // check buffer first
+        debug!(node=?flag, %ptr, "page read");
         if let Some(n) = self.buffer.borrow_mut().hmap.remove(&ptr) {
+            debug!("page found in buffer!");
             n
         } else {
+            debug!("reading from disk...");
             self.decode(ptr, flag)
+        }
+    }
+
+    /// callback for free list
+    /// checks buffer for allocated page and returns pointer
+    fn update(&self, ptr: Pointer) -> *mut FLNode {
+        let buf = &mut self.buffer.borrow_mut();
+        // checking buffer, decoding a page if needed
+        let entry = match buf.hmap.get_mut(&ptr) {
+            Some(n) => {
+                debug!("updating {} in buffer", ptr);
+                n
+            }
+            None => {
+                debug!(%ptr, "reading free list from disk...");
+                buf.hmap.insert(ptr, self.decode(ptr, NodeFlag::Freelist));
+                buf.hmap.get_mut(&ptr).expect("we just inserted it")
+            }
+        };
+        // let entry = buf.hmap.entry(ptr).or_insert_with(|| {
+        //     debug!("loading free list from disk...");
+        //     self.decode(ptr, NodeFlag::Freelist)
+        // });
+        match entry {
+            Node::Freelist(flnode) => {
+                let ptr = ptr::from_mut(flnode);
+                print_buffer(&buf.hmap);
+                ptr
+            }
+            // only the freelist calls this function
+            _ => unreachable!(),
         }
     }
 
@@ -362,40 +399,16 @@ impl DiskPager {
     /// pageAlloc, new
     fn page_alloc(&self, node: Node) -> Pointer {
         // check freelist first
+        debug!("allocating ...");
         if let Some(ptr) = self.freelist.borrow_mut().get() {
             self.buffer.borrow_mut().hmap.insert(ptr, node);
+            print_buffer(&self.buffer.borrow().hmap);
             ptr
         } else {
+            // increment append?
+            debug!("appending to disk...");
             self.encode(node)
         }
-    }
-
-    // we need a way to edit a node inside the buffer without changing the designated ptr
-    fn update(&self, ptr: Pointer) -> *mut FLNode {
-        let buf = &mut self.buffer.borrow_mut();
-        // checking buffer, decoding a page if needed
-        let entry = buf
-            .hmap
-            .entry(ptr)
-            .or_insert_with(|| self.decode(ptr, NodeFlag::Freelist));
-        match entry {
-            Node::Freelist(flnode) => ptr::from_mut(flnode),
-            // only the freelist calls this function
-            _ => unreachable!(),
-        }
-
-        // // check inside buffer hashmap
-        // buf.entry(key).or_insert_with(default)
-        // let node = match buf.get_mut(&ptr) {
-        //     Some(n) => n,
-        //     None => {
-        //         // otherwise page read from ptr and add to buffer hashmap
-        //         let n = self.decode(ptr, NodeFlag::Freelist);
-        //         buf.insert(ptr, n);
-        //         buf.get_mut(&ptr).unwrap()
-        //     }
-        // };
-        // ptr::from_mut(node) as *mut FLNode
     }
 
     /// adds pages to buffer to be encoded to disk later (append)
@@ -403,24 +416,28 @@ impl DiskPager {
     /// pageAppend
     fn encode(&self, node: Node) -> Pointer {
         let state = self.state.borrow();
-        let hmap = &mut self.buffer.borrow_mut().hmap;
+        let buf = &mut self.buffer.borrow_mut();
         // empty db has n_pages = 1 (meta page)
         assert!(node.fits_page());
-        let ptr = Pointer(state.npages + hmap.len() as u64);
+        buf.nappend += 1;
+        let ptr = Pointer(state.npages + buf.nappend);
         debug!(
             "encode: adding {:?} at page: {} to buffer",
             node.get_type(),
             ptr.0
         );
-        hmap.insert(ptr, node);
+        buf.hmap.insert(ptr, node);
+        print_buffer(&buf.hmap);
         assert!(ptr.0 != 0);
         ptr
     }
 
     /// PushTail
     fn dealloc(&self, ptr: Pointer) {
-        debug!("deallocating ptr {}", ptr.0);
-        self.freelist.borrow_mut().append(ptr).unwrap();
+        self.freelist
+            .borrow_mut()
+            .append(ptr)
+            .expect("dealloc error");
         ()
     }
 }
@@ -684,7 +701,7 @@ mod test {
         let path = "test-files/open_pager.rdb";
         cleanup_file(path);
         let pager = DiskPager::open(path).unwrap();
-        assert_eq!(pager.state.borrow().npages, 1);
+        assert_eq!(pager.state.borrow().npages, 2);
         cleanup_file(path);
     }
 
@@ -714,8 +731,8 @@ mod test {
     }
 
     #[test]
-    fn disk_delete() {
-        let path = "test-files/disk_insert2.rdb";
+    fn disk_delete1() {
+        let path = "test-files/disk_delete1.rdb";
         cleanup_file(path);
         let pager = DiskPager::open(path).unwrap();
 
@@ -738,6 +755,21 @@ mod test {
             pager
                 .set(&format!("{:?}", rand::rng().random_range(1..1000)), "val")
                 .unwrap()
+        }
+        cleanup_file(path);
+    }
+
+    #[test]
+    fn disk_delete2() {
+        let path = "test-files/disk_delete2.rdb";
+        cleanup_file(path);
+        let pager = DiskPager::open(path).unwrap();
+
+        for k in 1u16..=1000 {
+            pager.set(&format!("{}", k), "val").unwrap()
+        }
+        for k in 1u16..=1000 {
+            pager.delete(&format!("{}", k)).unwrap()
         }
         cleanup_file(path);
     }

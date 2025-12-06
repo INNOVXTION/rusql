@@ -1,6 +1,7 @@
 use crate::database::errors::{Error, PagerError};
 use crate::database::types::*;
 use rustix::fs::{self, Mode, OFlags};
+use std::collections::HashMap;
 use std::os::fd::OwnedFd;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -155,6 +156,15 @@ pub(crate) fn input_valid(key: &str, value: &str) -> Result<(), Error> {
         return Err(Error::InvalidInput("key cant be zero or negative!"));
     };
     Ok(())
+}
+
+pub fn print_buffer(buf: &HashMap<Pointer, Node>) {
+    debug!("current buffer:");
+    debug!("---------");
+    for kv in buf {
+        debug!("{}, {:?}", kv.0, kv.1.get_type())
+    }
+    debug!("---------")
 }
 
 #[cfg(test)]

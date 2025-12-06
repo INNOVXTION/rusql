@@ -390,7 +390,7 @@ impl TreeNode {
         while hi > lo {
             let m = (hi + lo) / 2;
             let v = key_num(m);
-            debug!(key, lo, hi, v = key_num(m), m);
+            // debug!(key, lo, hi, v = key_num(m), m);
             if v == n {
                 return m as u16;
             };
