@@ -8,7 +8,7 @@ use std::ptr;
 use std::rc::{Rc, Weak};
 use std::str::FromStr;
 
-use tracing::{debug, error, info, instrument};
+use tracing::{debug, error, info, instrument, warn};
 
 use crate::database::helper::{as_mb, as_page, input_valid, print_buffer};
 use crate::database::pager::freelist::{FLNode, FreeList};
@@ -209,16 +209,18 @@ impl DiskPager {
     fn update_or_revert(&self) -> Result<(), Error> {
         let meta = metapage_save(self); // saving current metapage
         if self.failed.get() {
+            // checking after previous error to see if the meta page on disk fits with page in memory
             if self.state.borrow().mmap.chunks[0].to_slice()[..METAPAGE_SIZE] == *meta.0 {
                 self.failed.set(false);
+            // reverting to in memory meta page
             } else {
-                metapage_write(self).unwrap();
-                rustix::fs::fsync(&self.database).unwrap();
+                metapage_write(self).expect("writing to metapage for restoration failed");
+                rustix::fs::fsync(&self.database).expect("fsync metapage for restoration failed");
                 self.failed.set(false);
             }
         };
         if let Err(e) = self.file_update() {
-            error!(%e, "file update failed! Reverting meta page...");
+            warn!(%e, "file update failed! Reverting meta page...");
             self.buffer.borrow_mut().hmap.clear(); // discard buffer
             metapage_load(self, meta); // in case the file writing fails, we revert back to the old meta page
             self.failed.set(true);
@@ -280,7 +282,7 @@ impl DiskPager {
         );
         let mut bytes_written: usize = 0;
         for pair in buf.hmap.iter() {
-            assert!(pair.0.get() != 0);
+            assert!(pair.0.get() != 0); // never write to the meta page
             debug!("writing {:?} at {}", pair.1.get_type(), pair.0);
             let offset = pair.0.get() * PAGE_SIZE as u64;
             let io_slice = rustix::io::IoSlice::new(&pair.1[..PAGE_SIZE]);
@@ -419,8 +421,8 @@ impl DiskPager {
         let buf = &mut self.buffer.borrow_mut();
         // empty db has n_pages = 1 (meta page)
         assert!(node.fits_page());
-        buf.nappend += 1;
         let ptr = Pointer(state.npages + buf.nappend);
+        buf.nappend += 1;
         debug!(
             "encode: adding {:?} at page: {} to buffer",
             node.get_type(),
@@ -677,7 +679,7 @@ fn metapage_load(pager: &DiskPager, data: MetaPage) {
 
 /// writes currently loaded meta data to disk
 fn metapage_write(pager: &DiskPager) -> Result<(), PagerError> {
-    debug!("updating root...");
+    debug!("writing metapage to disk...");
     let r = rustix::io::pwrite(&pager.database, &metapage_save(pager), 0)?;
     Ok(())
 }

@@ -30,6 +30,11 @@ pub const SIG_SIZE: usize = 16;
 pub const PTR_SIZE: usize = 8;
 pub const U16_SIZE: usize = 2;
 
+pub struct NodePage {
+    node: Node,
+    page: Option<Pointer>,
+}
+
 /// implements deref to get to the underlying array
 pub enum Node {
     Tree(TreeNode),
