@@ -8,25 +8,22 @@ use crate::database::{errors::Error, node::*, types::*};
 pub struct BTree {
     pub root_ptr: Option<Pointer>,
     // callbacks
+    // receives a node from the pager
     pub decode: Box<dyn Fn(Pointer) -> TreeNode>, // get
+    // hands off a node to the pager
     pub encode: Box<dyn Fn(TreeNode) -> Pointer>, // set
-    pub dealloc: Box<dyn Fn(Pointer)>,            // del
-}
-
-impl Debug for BTree {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("BTree")
-            .field("root_ptr", &self.root_ptr)
-            .finish()
-    }
+    // marks a node for deallocation
+    pub dealloc: Box<dyn Fn(Pointer)>, // del
 }
 
 impl BTree {
     pub fn insert(&mut self, key: &str, val: &str) -> Result<(), Error> {
-        info!("inserting new kv...");
         // get root node
         let root = match self.root_ptr {
-            Some(ptr) => (self.decode)(ptr),
+            Some(ptr) => {
+                debug!(?ptr, "getting root ptr at:");
+                (self.decode)(ptr)
+            }
             None => {
                 debug!("no root found, creating new root");
                 let mut new_root = TreeNode::new();
@@ -272,6 +269,14 @@ impl BTree {
                 BTree::tree_search(tree, (tree.decode)(kptr), key)
             }
         }
+    }
+}
+
+impl Debug for BTree {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BTree")
+            .field("root_ptr", &self.root_ptr)
+            .finish()
     }
 }
 

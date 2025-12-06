@@ -3,7 +3,7 @@
  */
 
 use std::{
-    fmt::Display,
+    fmt::{Debug, Display},
     ops::{Deref, DerefMut},
 };
 
@@ -25,16 +25,24 @@ pub const PAGE_SIZE: usize = 4096; // 4096 bytes
 pub const NODE_SIZE: usize = PAGE_SIZE * 2;
 
 pub const DB_SIG: &'static str = "BuildYourOwnDB06";
-pub const METAPAGE_SIZE: usize = 32;
+pub const METAPAGE_SIZE: usize = 16 + (8 * 6); // sig plus 6 eight byte values
 pub const SIG_SIZE: usize = 16;
 pub const PTR_SIZE: usize = 8;
 pub const U16_SIZE: usize = 2;
 
-#[derive(Debug)]
 /// implements deref to get to the underlying array
 pub enum Node {
     Tree(TreeNode),
     Freelist(FLNode),
+}
+
+impl Debug for Node {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Tree(arg0) => f.debug_tuple("tree node").field(arg0).finish(),
+            Self::Freelist(arg0) => f.debug_tuple("freelist node").field(arg0).finish(),
+        }
+    }
 }
 
 impl Node {
@@ -103,6 +111,9 @@ impl Pointer {
     pub fn set(&mut self, val: u64) {
         self.0 = val
     }
+    pub fn from(val: u64) -> Self {
+        Pointer(val)
+    }
 }
 
 impl From<u64> for Pointer {
@@ -110,9 +121,14 @@ impl From<u64> for Pointer {
         Pointer(value)
     }
 }
+impl From<usize> for Pointer {
+    fn from(value: usize) -> Self {
+        Pointer(value as u64)
+    }
+}
 
 impl Display for Pointer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
+        write!(f, "page: {}", self.0)
     }
 }

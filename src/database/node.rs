@@ -24,6 +24,7 @@ const OFFSETARR_OFFSET: usize = 2;
 |    2B    |    2B    | ... | ... |
 */
 
+/// types of tree nodes
 #[derive(PartialEq, Debug)]
 pub enum NodeType {
     Node,
@@ -38,7 +39,6 @@ pub enum MergeDirection {
 pub(crate) struct TreeNode(pub Box<[u8; NODE_SIZE]>);
 
 impl TreeNode {
-    /// new empty node
     pub fn new() -> Self {
         TreeNode(Box::new([0; NODE_SIZE]))
     }

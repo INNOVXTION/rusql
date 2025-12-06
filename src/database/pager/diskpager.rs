@@ -4,16 +4,17 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 use std::os::fd::OwnedFd;
+use std::ptr;
 use std::rc::{Rc, Weak};
 use std::str::FromStr;
 
 use tracing::{debug, error, info, instrument};
 
-use crate::database::helper::{DecodeSlice, EncodeSlice, as_mb, as_page, input_valid};
+use crate::database::helper::{as_mb, as_page, input_valid};
 use crate::database::pager::freelist::{FLNode, FreeList};
 use crate::database::{
     errors::{Error, PagerError},
-    helper::{create_file_sync, read_pointer, write_pointer},
+    helper::create_file_sync,
     node::TreeNode,
     tree::BTree,
     types::*,
@@ -115,7 +116,7 @@ impl DiskPager {
                 Box::new(move |node: TreeNode| {
                     weak.upgrade()
                         .expect("pager dropped")
-                        .page_alloc(Node::Tree(node), NodeFlag::Tree)
+                        .page_alloc(Node::Tree(node))
                 })
             };
             // dealloc
@@ -136,7 +137,7 @@ impl DiskPager {
                 Box::new(move |ptr: Pointer| {
                     weak.upgrade()
                         .expect("pager dropped")
-                        .decode(ptr, NodeFlag::Freelist)
+                        .page_read(ptr, NodeFlag::Freelist)
                         .as_fl()
                 })
             };
@@ -149,10 +150,16 @@ impl DiskPager {
                         .encode(Node::Freelist(node))
                 })
             };
+            // pageAppend
+            let update = {
+                let weak = Weak::clone(&weak);
+                Box::new(move |ptr: Pointer| weak.upgrade().expect("pager dropped").update(ptr))
+            };
 
             let mut ref_fl = pager.freelist.borrow_mut();
             ref_fl.decode = decode;
             ref_fl.encode = encode;
+            ref_fl.update = update;
         }
 
         let fd_size = rustix::fs::fstat(&pager.database)
@@ -181,14 +188,13 @@ impl DiskPager {
     #[instrument(skip(self))]
     pub fn set(&self, key: &str, val: &str) -> Result<(), Error> {
         input_valid(key, val)?;
-        info!(key = key, value = val, "inserting");
+        info!("inserting");
         self.tree.borrow_mut().insert(key, val).map_err(|e| {
             error!(%e, "tree error");
             e
         })?;
         debug!("updating file");
         self.update_or_revert()?;
-        // update or revert
         Ok(())
     }
 
@@ -268,7 +274,12 @@ impl DiskPager {
         debug!(buf_len, "pages in buffer:");
         let mut bytes_written: usize = 0;
         for pair in buf.iter() {
-            debug!(page = pair.0.get(), "writing note at page: ");
+            debug!(
+                page = pair.0.get(),
+                "writing {:?} at page {}",
+                pair.1.get_type(),
+                pair.0
+            );
             let offset = pair.0.get() * PAGE_SIZE as u64;
             let io_slice = rustix::io::IoSlice::new(&pair.1[..PAGE_SIZE]);
             bytes_written +=
@@ -291,8 +302,8 @@ impl DiskPager {
             // empty file
             debug!("root read: file size = 0, empty file...");
             self.state.borrow_mut().npages = 2; // reserved for meta page and one free list node
-            self.freelist.borrow_mut().head_page = Some(Pointer::from(1));
-            self.freelist.borrow_mut().tail_page = Some(Pointer::from(1));
+            self.freelist.borrow_mut().head_page = Some(Pointer::from(1u64));
+            self.freelist.borrow_mut().tail_page = Some(Pointer::from(1u64));
             return;
         }
         debug!("root read: loading meta page");
@@ -349,7 +360,7 @@ impl DiskPager {
     /// allocates a new page to be encoded, checks freelist first before appending to disk
     ///
     /// pageAlloc, new
-    fn page_alloc(&self, node: Node, node_type: NodeFlag) -> Pointer {
+    fn page_alloc(&self, node: Node) -> Pointer {
         // check freelist first
         if let Some(ptr) = self.freelist.borrow_mut().get() {
             self.buffer.borrow_mut().hmap.insert(ptr, node);
@@ -357,6 +368,34 @@ impl DiskPager {
         } else {
             self.encode(node)
         }
+    }
+
+    // we need a way to edit a node inside the buffer without changing the designated ptr
+    fn update(&self, ptr: Pointer) -> *mut FLNode {
+        let buf = &mut self.buffer.borrow_mut();
+        // checking buffer, decoding a page if needed
+        let entry = buf
+            .hmap
+            .entry(ptr)
+            .or_insert_with(|| self.decode(ptr, NodeFlag::Freelist));
+        match entry {
+            Node::Freelist(flnode) => ptr::from_mut(flnode),
+            // only the freelist calls this function
+            _ => unreachable!(),
+        }
+
+        // // check inside buffer hashmap
+        // buf.entry(key).or_insert_with(default)
+        // let node = match buf.get_mut(&ptr) {
+        //     Some(n) => n,
+        //     None => {
+        //         // otherwise page read from ptr and add to buffer hashmap
+        //         let n = self.decode(ptr, NodeFlag::Freelist);
+        //         buf.insert(ptr, n);
+        //         buf.get_mut(&ptr).unwrap()
+        //     }
+        // };
+        // ptr::from_mut(node) as *mut FLNode
     }
 
     /// adds pages to buffer to be encoded to disk later (append)
@@ -425,7 +464,11 @@ fn mmap_new(fd: &OwnedFd, offset: u64, length: usize) -> Result<Chunk, PagerErro
 fn mmap_extend(db: &DiskPager, size: usize) -> Result<(), PagerError> {
     let state_ref = db.state.borrow();
     if size <= state_ref.mmap.total {
-        debug!("no mmap extension needed: size {size}, {}", as_mb(size));
+        debug!(
+            "no mmap extension needed: mmap_size {size} ({}), file_size {}",
+            as_mb(size),
+            as_mb(state_ref.npages as usize * PAGE_SIZE)
+        );
         return Ok(()); // enough range
     };
     debug!("extending mmap: for file size {size}, {}", as_mb(size));
@@ -486,7 +529,7 @@ enum MpField {
     Npages = 16 + 8,
     HeadPage = 16 + (8 * 2),
     HeadSeq = 16 + (8 * 3),
-    Tailpage = 16 + (8 * 4),
+    TailPage = 16 + (8 * 4),
     TailSeq = 16 + (8 * 5),
 }
 
@@ -505,15 +548,19 @@ impl MetaPage {
         String::from_str(str::from_utf8(&self[..16]).unwrap()).unwrap()
     }
 
-    fn set_ptr(&mut self, ptr: Pointer, field: MpField) {
+    fn set_ptr(&mut self, ptr: Option<Pointer>, field: MpField) {
         let offset = field as usize;
-        self[offset..offset + 8].copy_from_slice(&ptr.as_slice());
+        let ptr = match ptr {
+            Some(ptr) => ptr,
+            None => Pointer::from(0u64),
+        };
+        self[offset..offset + PTR_SIZE].copy_from_slice(&ptr.as_slice());
     }
 
     fn read_ptr(&self, field: MpField) -> Pointer {
         let offset = field as usize;
         Pointer::from(u64::from_le_bytes(
-            self[offset..offset + 8].try_into().unwrap(),
+            self[offset..offset + PTR_SIZE].try_into().unwrap(),
         ))
     }
 }
@@ -533,49 +580,82 @@ impl DerefMut for MetaPage {
 
 /// returns metapage object of current pager state
 fn metapage_save(pager: &DiskPager) -> MetaPage {
+    let fl_ref = pager.freelist.borrow();
     let mut data = MetaPage::new();
-    // write sig
-    data[..SIG_SIZE].copy_from_slice(DB_SIG.as_bytes());
-    // write root ptr
     debug!(
-        "metapage: writing root ptr: {} to meta page",
-        pager.tree.borrow().root_ptr.or(Some(Pointer(0))).unwrap()
+        sig = DB_SIG,
+        root_ptr = ?pager.tree.borrow().root_ptr.unwrap(),
+        npages = pager.state.borrow().npages,
+        fl_head_ptr = ?fl_ref.head_page,
+        fl_head_seq = fl_ref.head_seq,
+        fl_tail_ptr = ?fl_ref.tail_page,
+        fl_tail_seq = fl_ref.tail_seq,
+        "saving meta page:"
     );
-    write_pointer(
-        &mut data,
-        SIG_SIZE,
-        pager.tree.borrow().root_ptr.or(Some(Pointer(0))).unwrap(),
-    )
-    .unwrap();
-    // write n pages
-    debug!("metapage: writing n_pages: {}", pager.state.borrow().npages);
-    data[SIG_SIZE + PTR_SIZE..SIG_SIZE + (PTR_SIZE * 2)]
-        .copy_from_slice(&pager.state.borrow().npages.to_le_bytes());
+    data.set_sig(DB_SIG);
+    data.set_ptr(pager.tree.borrow().root_ptr, MpField::RootPtr);
+    data.set_ptr(Some(pager.state.borrow().npages.into()), MpField::Npages);
+
+    data.set_ptr(fl_ref.head_page, MpField::HeadPage);
+    data.set_ptr(Some(fl_ref.head_seq.into()), MpField::HeadSeq);
+    data.set_ptr(fl_ref.tail_page, MpField::TailPage);
+    data.set_ptr(Some(fl_ref.tail_seq.into()), MpField::TailSeq);
     data
+    // // write sig
+    // data[..SIG_SIZE].copy_from_slice(DB_SIG.as_bytes());
+    // // write root ptr
+    // debug!(
+    //     "metapage: writing root ptr: {} to meta page",
+    //     pager.tree.borrow().root_ptr.or(Some(Pointer(0))).unwrap()
+    // );
+    // write_pointer(
+    //     &mut data,
+    //     SIG_SIZE,
+    //     pager.tree.borrow().root_ptr.or(Some(Pointer(0))).unwrap(),
+    // )
+    // .unwrap();
+    // // write n pages
+    // debug!("metapage: writing n_pages: {}", pager.state.borrow().npages);
+    // data[SIG_SIZE + PTR_SIZE..SIG_SIZE + (PTR_SIZE * 2)]
+    //     .copy_from_slice(&pager.state.borrow().npages.to_le_bytes());
+    // data
 }
 
 /// loads meta page object into pager
 ///
 /// panics when called without initialized mmap
 fn metapage_load(pager: &DiskPager, data: MetaPage) {
+    debug!("loading metapage");
     let mut pager_ref = pager.state.borrow_mut();
-    pager.tree.borrow_mut().root_ptr = match read_pointer(&data, SIG_SIZE) {
-        Ok(Pointer(0)) => None,
-        Ok(n) => Some(n),
-        Err(e) => {
-            error!(%e, "Error when reading root ptr from meta page");
-            panic!()
-        }
+    pager.tree.borrow_mut().root_ptr = match data.read_ptr(MpField::RootPtr) {
+        Pointer(0) => None,
+        n => Some(n),
     };
-    pager_ref.npages = u64::from_le_bytes(
-        data[SIG_SIZE + PTR_SIZE..SIG_SIZE + PTR_SIZE * 2]
-            .try_into()
-            .unwrap(),
-    );
-    info!(
-        "opening database: {}",
-        str::from_utf8(&data[..SIG_SIZE]).unwrap()
-    );
+    pager_ref.npages = data.read_ptr(MpField::Npages).get();
+
+    let mut fl_ref = pager.freelist.borrow_mut();
+    fl_ref.head_page = Some(data.read_ptr(MpField::HeadPage));
+    fl_ref.head_seq = data.read_ptr(MpField::HeadSeq).get() as usize;
+    fl_ref.tail_page = Some(data.read_ptr(MpField::TailPage));
+    fl_ref.tail_seq = data.read_ptr(MpField::TailSeq).get() as usize;
+
+    // pager.tree.borrow_mut().root_ptr = match read_pointer(&data, SIG_SIZE) {
+    //     Ok(Pointer(0)) => None,
+    //     Ok(n) => Some(n),
+    //     Err(e) => {
+    //         error!(%e, "Error when reading root ptr from meta page");
+    //         panic!()
+    //     }
+    // };
+    // pager_ref.npages = u64::from_le_bytes(
+    //     data[SIG_SIZE + PTR_SIZE..SIG_SIZE + PTR_SIZE * 2]
+    //         .try_into()
+    //         .unwrap(),
+    // );
+    // info!(
+    //     "opening database: {}",
+    //     str::from_utf8(&data[..SIG_SIZE]).unwrap()
+    // );
 }
 
 /// writes currently loaded meta data to disk
