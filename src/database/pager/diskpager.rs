@@ -149,6 +149,7 @@ impl DiskPager {
             })
             .unwrap()
             .st_size as u64;
+        mmap_extend(&pager, PAGE_SIZE).expect("mmap extend error");
         pager.root_read(fd_size);
         debug!(
             "\npager initialized:\nmmap.total {}\nn_pages {}\nchunks.len {}",
@@ -174,16 +175,14 @@ impl DiskPager {
             e
         })?;
         debug!("updating file");
-        self.update_or_revert()?;
-        Ok(())
+        self.update_or_revert()
     }
 
     #[instrument(skip(self))]
     pub fn delete(&self, key: &str) -> Result<(), Error> {
         input_valid(key, " ")?;
         self.tree.borrow_mut().delete(key)?;
-        self.update_or_revert()?;
-        Ok(())
+        self.update_or_revert()
     }
 
     fn update_or_revert(&self) -> Result<(), Error> {
@@ -192,18 +191,21 @@ impl DiskPager {
             debug!("failed update detected...");
             // checking after previous error to see if the meta page on disk fits with page in memory
             if self.mmap.borrow().chunks[0].to_slice()[..METAPAGE_SIZE] == *meta.0 {
+                debug!("meta page intact!");
                 self.failed.set(false);
             // reverting to in memory meta page
             } else {
-                metapage_write(self).expect("writing to metapage for restoration failed");
+                debug!("meta page corrupted, reverting state...");
+                rustix::io::pwrite(&self.database, &meta, 0)
+                    .expect("writing meta page on recovery failed");
                 rustix::fs::fsync(&self.database).expect("fsync metapage for restoration failed");
                 self.failed.set(false);
             }
         };
         if let Err(e) = self.file_update() {
             warn!(%e, "file update failed! Reverting meta page...");
-            self.buffer.borrow_mut().hmap.clear(); // discard buffer
             metapage_load(self, meta); // in case the file writing fails, we revert back to the old meta page
+            self.buffer.borrow_mut().hmap.clear(); // discard buffer
             self.failed.set(true);
             return Err(Error::PagerError(e));
         }
@@ -281,9 +283,6 @@ impl DiskPager {
             return;
         }
         debug!("root read: loading meta page");
-        if self.mmap.borrow().total < PAGE_SIZE {
-            mmap_extend(self, PAGE_SIZE).expect("mmap extend error");
-        };
         let mut meta = MetaPage::new();
         meta.copy_from_slice(&self.mmap.borrow().chunks[0].to_slice()[..PAGE_SIZE]);
         metapage_load(self, meta);
