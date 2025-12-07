@@ -241,20 +241,6 @@ impl DiskPager {
                 error!(%e, new_size, "Error when extending mmap");
             })
             .unwrap();
-
-        // // write data pages to the file
-        // let offset = npage as usize * PAGE_SIZE;
-        // let io_buf: Vec<IoSlice> = buf
-        //     .iter()
-        //     .map(|pair| rustix::io::IoSlice::new(&pair.1[..PAGE_SIZE]))
-        //     .collect();
-        // debug!(
-        //     "flushed {} nodes at offset {offset} (page: {})",
-        //     buf_len,
-        //     offset / PAGE_SIZE,
-        // );
-        // let bytes_written = rustix::io::pwritev(&self.database, &io_buf, offset as u64)?;
-
         // iterate over buffer and write nodes to designated pages
         debug!(
             nappend = buf.nappend,
@@ -515,24 +501,6 @@ fn metapage_save(pager: &DiskPager) -> MetaPage {
     data.set_ptr(fl_ref.tail_page, MpField::TailPage);
     data.set_ptr(Some(fl_ref.tail_seq.into()), MpField::TailSeq);
     data
-    // // write sig
-    // data[..SIG_SIZE].copy_from_slice(DB_SIG.as_bytes());
-    // // write root ptr
-    // debug!(
-    //     "metapage: writing root ptr: {} to meta page",
-    //     pager.tree.borrow().root_ptr.or(Some(Pointer(0))).unwrap()
-    // );
-    // write_pointer(
-    //     &mut data,
-    //     SIG_SIZE,
-    //     pager.tree.borrow().root_ptr.or(Some(Pointer(0))).unwrap(),
-    // )
-    // .unwrap();
-    // // write n pages
-    // debug!("metapage: writing n_pages: {}", pager.state.borrow().npages);
-    // data[SIG_SIZE + PTR_SIZE..SIG_SIZE + (PTR_SIZE * 2)]
-    //     .copy_from_slice(&pager.state.borrow().npages.to_le_bytes());
-    // data
 }
 
 /// loads meta page object into pager
@@ -552,24 +520,6 @@ fn metapage_load(pager: &DiskPager, data: MetaPage) {
     fl_ref.head_seq = data.read_ptr(MpField::HeadSeq).get() as usize;
     fl_ref.tail_page = Some(data.read_ptr(MpField::TailPage));
     fl_ref.tail_seq = data.read_ptr(MpField::TailSeq).get() as usize;
-
-    // pager.tree.borrow_mut().root_ptr = match read_pointer(&data, SIG_SIZE) {
-    //     Ok(Pointer(0)) => None,
-    //     Ok(n) => Some(n),
-    //     Err(e) => {
-    //         error!(%e, "Error when reading root ptr from meta page");
-    //         panic!()
-    //     }
-    // };
-    // pager_ref.npages = u64::from_le_bytes(
-    //     data[SIG_SIZE + PTR_SIZE..SIG_SIZE + PTR_SIZE * 2]
-    //         .try_into()
-    //         .unwrap(),
-    // );
-    // info!(
-    //     "opening database: {}",
-    //     str::from_utf8(&data[..SIG_SIZE]).unwrap()
-    // );
 }
 
 /// writes currently loaded meta data to disk
