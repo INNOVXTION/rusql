@@ -196,15 +196,15 @@ impl DiskPager {
             // reverting to in memory meta page
             } else {
                 debug!("meta page corrupted, reverting state...");
-                rustix::io::pwrite(&self.database, &meta, 0)
-                    .expect("writing meta page on recovery failed");
+                metapage_load(self, &meta);
+                metapage_write(self);
                 rustix::fs::fsync(&self.database).expect("fsync metapage for restoration failed");
                 self.failed.set(false);
             }
         };
         if let Err(e) = self.file_update() {
             warn!(%e, "file update failed! Reverting meta page...");
-            metapage_load(self, meta); // in case the file writing fails, we revert back to the old meta page
+            metapage_load(self, &meta); // in case the file writing fails, we revert back to the old meta page
             self.buffer.borrow_mut().hmap.clear(); // discard buffer
             self.failed.set(true);
             return Err(Error::PagerError(e));
@@ -285,7 +285,7 @@ impl DiskPager {
         debug!("root read: loading meta page");
         let mut meta = MetaPage::new();
         meta.copy_from_slice(&self.mmap.borrow().chunks[0].to_slice()[..PAGE_SIZE]);
-        metapage_load(self, meta);
+        metapage_load(self, &meta);
         assert!(self.buffer.borrow().npages != 0);
     }
 
@@ -504,7 +504,7 @@ fn metapage_save(pager: &DiskPager) -> MetaPage {
 /// loads meta page object into pager
 ///
 /// panics when called without initialized mmap
-fn metapage_load(pager: &DiskPager, data: MetaPage) {
+fn metapage_load(pager: &DiskPager, data: &MetaPage) {
     debug!("loading metapage");
     let mut buf_ref = pager.buffer.borrow_mut();
     pager.tree.borrow_mut().root_ptr = match data.read_ptr(MpField::RootPtr) {
