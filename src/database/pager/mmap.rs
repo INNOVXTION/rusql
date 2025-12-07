@@ -15,8 +15,8 @@ pub struct Mmap {
 
 #[derive(Debug)]
 pub struct Chunk {
-    data: *const u8,
-    pub len: usize,
+    data: *const u8, // pointer to start of memory mapping
+    pub len: usize,  // len of memory mapping
 }
 
 impl Deref for Chunk {
@@ -35,6 +35,7 @@ impl Chunk {
 
 impl Drop for Chunk {
     fn drop(&mut self) {
+        // SAFETY: non null, and page aligned pointer from mmap()
         unsafe {
             if let Err(e) = rustix::mm::munmap(self.data as *mut c_void, self.len) {
                 error!("error when dropping with mumap {}", e);
@@ -75,7 +76,6 @@ fn mmap_new(fd: &OwnedFd, offset: u64, length: usize) -> Result<Chunk, PagerErro
         })?
     };
     Ok(Chunk {
-        // SAFETY: non null, and page aligned pointer from mmap()
         data: ptr as *const u8,
         len: length,
     })
@@ -94,8 +94,9 @@ pub fn mmap_extend(db: &DiskPager, size: usize) -> Result<(), PagerError> {
         return Ok(()); // enough range
     };
     debug!("extending mmap: for file size {size}, {}", as_mb(size));
-    let mut alloc = usize::max(mmap_ref.total, 64 << 20); // double the current address space
+    let mut alloc = 64 << 20; // allocating 64 MiB
     while mmap_ref.total + alloc < size {
+        // doubling if needed
         alloc *= 2;
     }
     let chunk = mmap_new(&db.database, mmap_ref.total as u64, alloc).map_err(|e| {

@@ -76,7 +76,7 @@ impl DiskPager {
         });
 
         // master weak pointer pointing to the owning struct
-        // each callbacl back captures a copy of the weak pointer on creation, which is used to refer back to the pager
+        // each callback captures a copy of the weak pointer on creation, which is used to refer back to the pager
         let weak = Rc::downgrade(&pager);
         {
             // initializing BTree callbacks
@@ -210,7 +210,7 @@ impl DiskPager {
         Ok(())
     }
 
-    /// write sequence, first nodes in buffer then root
+    /// write sequence, flushing buffer to disk, then updating the meta page
     fn file_update(&self) -> Result<(), PagerError> {
         // flush buffer to disk
         self.page_write()?;
@@ -281,11 +281,11 @@ impl DiskPager {
             return;
         }
         debug!("root read: loading meta page");
-        if self.mmap.borrow().chunks.len() == 0 {
+        if self.mmap.borrow().total < PAGE_SIZE {
             mmap_extend(self, PAGE_SIZE).expect("mmap extend error");
         };
         let mut meta = MetaPage::new();
-        meta.copy_from_slice(self.mmap.borrow_mut().chunks[0].to_slice());
+        meta.copy_from_slice(&self.mmap.borrow().chunks[0].to_slice()[..PAGE_SIZE]);
         metapage_load(self, meta);
         assert!(self.buffer.borrow().npages != 0);
     }
@@ -298,7 +298,10 @@ impl DiskPager {
         if let Some(n) = self.buffer.borrow_mut().hmap.remove(&ptr) {
             debug!("page found in buffer!");
             // re-adding to freelist to prevent memory leak
-            self.freelist.borrow_mut().append(ptr);
+            self.freelist
+                .borrow_mut()
+                .append(ptr)
+                .expect("page_read adding to freelist error");
             n
         } else {
             debug!("reading from disk...");
@@ -322,10 +325,6 @@ impl DiskPager {
                 buf.hmap.get_mut(&ptr).expect("we just inserted it")
             }
         };
-        // let entry = buf.hmap.entry(ptr).or_insert_with(|| {
-        //     debug!("loading free list from disk...");
-        //     self.decode(ptr, NodeFlag::Freelist)
-        // });
         match entry {
             Node::Freelist(flnode) => {
                 let ptr = ptr::from_mut(flnode);
@@ -350,7 +349,7 @@ impl DiskPager {
 
         let mut start: usize = 0;
         for chunk in mmap_ref.chunks.iter() {
-            let end = start + chunk.len() / PAGE_SIZE;
+            let end = start + chunk.len / PAGE_SIZE;
             if ptr.0 < end as u64 {
                 let offset: usize = PAGE_SIZE * (ptr.0 as usize - start);
                 let mut node = match node_type {
