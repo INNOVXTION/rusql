@@ -30,9 +30,25 @@ pub const SIG_SIZE: usize = 16;
 pub const PTR_SIZE: usize = 8;
 pub const U16_SIZE: usize = 2;
 
-pub struct NodePage {
-    node: Node,
-    page: Option<Pointer>,
+#[derive(Debug)]
+pub struct SignedNode {
+    pub node: Node,
+    pub addr: Option<Pointer>,
+}
+
+impl SignedNode {
+    fn get_node(&mut self) -> &mut Node {
+        &mut self.node
+    }
+}
+
+impl From<TreeNode> for SignedNode {
+    fn from(value: TreeNode) -> Self {
+        SignedNode {
+            node: Node::Tree(value),
+            addr: None,
+        }
+    }
 }
 
 /// implements deref to get to the underlying array

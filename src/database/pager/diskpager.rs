@@ -20,7 +20,7 @@ use crate::database::{
     types::*,
 };
 
-/// indicates the encoding/decodin style of a node
+/// indicates the encoding/decoding style of a node
 #[derive(Debug)]
 pub enum NodeFlag {
     Tree,
