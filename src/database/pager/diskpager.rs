@@ -1,5 +1,3 @@
-use core::ffi::c_void;
-use rustix::mm::{MapFlags, ProtFlags};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
@@ -10,8 +8,9 @@ use std::str::FromStr;
 
 use tracing::{debug, error, info, instrument, warn};
 
-use crate::database::helper::{as_mb, as_page, input_valid, print_buffer};
+use crate::database::helper::{as_page, input_valid, print_buffer};
 use crate::database::pager::freelist::{FLNode, FreeList};
+use crate::database::pager::mmap::*;
 use crate::database::{
     errors::{Error, PagerError},
     helper::create_file_sync,
@@ -30,36 +29,19 @@ pub enum NodeFlag {
 #[derive(Debug)]
 pub struct DiskPager {
     path: &'static str,
-    database: OwnedFd,
+    pub database: OwnedFd,
     tree: RefCell<BTree>,
-    state: RefCell<State>,
     failed: Cell<bool>,
     freelist: RefCell<FreeList>,
-    buffer: RefCell<Buffer>,
+    pub buffer: RefCell<Buffer>,
+    pub mmap: RefCell<Mmap>,
 }
 
 #[derive(Debug)]
-struct Buffer {
-    hmap: HashMap<Pointer, Node>, // pages to be written, like temp
-    nappend: u64,                 // number of pages to be appended
-}
-
-#[derive(Debug)]
-struct State {
-    mmap: Mmap,
-    npages: u64, // database size in number of pages
-}
-
-#[derive(Debug)]
-struct Mmap {
-    total: usize,       // mmap size, can be larger than the file size
-    chunks: Vec<Chunk>, // multiple mmaps, can be non-continuous
-}
-
-#[derive(Debug)]
-struct Chunk {
-    data: *const u8,
-    len: usize,
+pub struct Buffer {
+    pub hmap: HashMap<Pointer, Node>, // pages to be written, like temp
+    pub nappend: u64,                 // number of pages to be appended
+    pub npages: u64,                  // database size in number of pages
 }
 
 impl DiskPager {
@@ -80,17 +62,15 @@ impl DiskPager {
                 encode: Box::new(|_| panic!("not initialized")),
                 dealloc: Box::new(|_| panic!("not initialized")),
             }),
-            state: RefCell::new(State {
-                mmap: Mmap {
-                    total: 0,
-                    chunks: vec![],
-                },
-                npages: 0,
+            mmap: RefCell::new(Mmap {
+                total: 0,
+                chunks: vec![],
             }),
             failed: Cell::new(false),
             buffer: RefCell::new(Buffer {
                 nappend: 0,
                 hmap: HashMap::new(),
+                npages: 0,
             }),
             freelist: RefCell::new(FreeList::new()),
         });
@@ -172,9 +152,9 @@ impl DiskPager {
         pager.root_read(fd_size);
         debug!(
             "\npager initialized:\nmmap.total {}\nn_pages {}\nchunks.len {}",
-            pager.state.borrow().mmap.total,
-            pager.state.borrow().npages,
-            pager.state.borrow().mmap.chunks.len(),
+            pager.mmap.borrow().total,
+            pager.buffer.borrow().npages,
+            pager.mmap.borrow().chunks.len(),
         );
         Ok(pager)
     }
@@ -209,8 +189,9 @@ impl DiskPager {
     fn update_or_revert(&self) -> Result<(), Error> {
         let meta = metapage_save(self); // saving current metapage
         if self.failed.get() {
+            debug!("failed update detected...");
             // checking after previous error to see if the meta page on disk fits with page in memory
-            if self.state.borrow().mmap.chunks[0].to_slice()[..METAPAGE_SIZE] == *meta.0 {
+            if self.mmap.borrow().chunks[0].to_slice()[..METAPAGE_SIZE] == *meta.0 {
                 self.failed.set(false);
             // reverting to in memory meta page
             } else {
@@ -248,9 +229,9 @@ impl DiskPager {
     ///
     fn page_write(&self) -> Result<(), PagerError> {
         debug!("writing page...");
-        let mut buf = self.buffer.borrow_mut();
+        let buf = self.buffer.borrow();
         let buf_len = buf.hmap.len();
-        let npage = self.state.borrow().npages;
+        let npage = buf.npages;
 
         // extend the mmap if needed
         // number of page plus current buffer
@@ -295,7 +276,9 @@ impl DiskPager {
         debug!(bytes_written, "bytes written:");
         assert!(bytes_written == buf_len * PAGE_SIZE);
         //discard in-memory data
-        self.state.borrow_mut().npages += buf.nappend;
+        drop(buf);
+        let mut buf = self.buffer.borrow_mut();
+        buf.npages += buf.nappend;
         buf.nappend = 0;
         buf.hmap.clear();
         Ok(())
@@ -306,19 +289,19 @@ impl DiskPager {
         if file_size == 0 {
             // empty file
             debug!("root read: empty file...");
-            self.state.borrow_mut().npages = 2; // reserved for meta page and one free list node
+            self.buffer.borrow_mut().npages = 2; // reserved for meta page and one free list node
             self.freelist.borrow_mut().head_page = Some(Pointer::from(1u64));
             self.freelist.borrow_mut().tail_page = Some(Pointer::from(1u64));
             return;
         }
         debug!("root read: loading meta page");
-        if self.state.borrow().mmap.chunks.len() == 0 {
+        if self.mmap.borrow().chunks.len() == 0 {
             mmap_extend(self, PAGE_SIZE).expect("mmap extend error");
         };
         let mut meta = MetaPage::new();
-        meta.copy_from_slice(self.state.borrow_mut().mmap.chunks[0].to_slice());
+        meta.copy_from_slice(self.mmap.borrow_mut().chunks[0].to_slice());
         metapage_load(self, meta);
-        assert!(self.state.borrow().npages != 0);
+        assert!(self.buffer.borrow().npages != 0);
     }
 
     // decodes a page, checks buffer before reading disk
@@ -328,6 +311,8 @@ impl DiskPager {
         debug!(node=?flag, %ptr, "page read");
         if let Some(n) = self.buffer.borrow_mut().hmap.remove(&ptr) {
             debug!("page found in buffer!");
+            // re-adding to freelist to prevent memory leak
+            self.freelist.borrow_mut().append(ptr);
             n
         } else {
             debug!("reading from disk...");
@@ -369,16 +354,16 @@ impl DiskPager {
     /// decodes a page from disk
     /// kv.pageRead, db.pageRead -> pagereadfile
     fn decode(&self, ptr: Pointer, node_type: NodeFlag) -> Node {
-        let state = self.state.borrow();
+        let mmap_ref = self.mmap.borrow();
         debug!(
             "decoding ptr: {}, amount of chunks {}, chunk 0 size {}",
             ptr.0,
-            state.mmap.chunks.len(),
-            state.mmap.chunks[0].len
+            mmap_ref.chunks.len(),
+            mmap_ref.chunks[0].len()
         );
 
         let mut start: usize = 0;
-        for chunk in state.mmap.chunks.iter() {
+        for chunk in mmap_ref.chunks.iter() {
             let end = start + chunk.len() / PAGE_SIZE;
             if ptr.0 < end as u64 {
                 let offset: usize = PAGE_SIZE * (ptr.0 as usize - start);
@@ -417,19 +402,18 @@ impl DiskPager {
     /// does not check if node exists in buffer!
     /// pageAppend
     fn encode(&self, node: Node) -> Pointer {
-        let state = self.state.borrow();
-        let buf = &mut self.buffer.borrow_mut();
+        let buf_ref = &mut self.buffer.borrow_mut();
         // empty db has n_pages = 1 (meta page)
         assert!(node.fits_page());
-        let ptr = Pointer(state.npages + buf.nappend);
-        buf.nappend += 1;
+        let ptr = Pointer(buf_ref.npages + buf_ref.nappend);
+        buf_ref.nappend += 1;
         debug!(
             "encode: adding {:?} at page: {} to buffer",
             node.get_type(),
             ptr.0
         );
-        buf.hmap.insert(ptr, node);
-        print_buffer(&buf.hmap);
+        buf_ref.hmap.insert(ptr, node);
+        print_buffer(&buf_ref.hmap);
         assert!(ptr.0 != 0);
         ptr
     }
@@ -443,95 +427,6 @@ impl DiskPager {
         ()
     }
 }
-
-/// read-only
-fn mmap_new(fd: &OwnedFd, offset: u64, length: usize) -> Result<Chunk, PagerError> {
-    debug!(
-        "requesting new mmap: length {length} {}, offset {offset}",
-        as_mb(length)
-    );
-    if rustix::param::page_size() != PAGE_SIZE {
-        error!("OS page size doesnt work!");
-        return Err(PagerError::UnsupportedOS);
-    };
-    if offset % PAGE_SIZE as u64 != 0 {
-        error!("Invalid offset!");
-        return Err(PagerError::UnalignedOffset(offset));
-    };
-    let ptr = unsafe {
-        rustix::mm::mmap(
-            std::ptr::null_mut(),
-            length,
-            ProtFlags::READ,
-            MapFlags::SHARED,
-            fd,
-            offset,
-        )
-        .map_err(|e| {
-            error!("Error when calling mmap");
-            PagerError::MMapError(e)
-        })?
-    };
-    Ok(Chunk {
-        // SAFETY: non null, and page aligned pointer from mmap()
-        data: ptr as *const u8,
-        len: length,
-    })
-}
-
-/// checks for sufficient space, exponentially extends the mmap
-fn mmap_extend(db: &DiskPager, size: usize) -> Result<(), PagerError> {
-    let state_ref = db.state.borrow();
-    if size <= state_ref.mmap.total {
-        debug!(
-            "no mmap extension needed: mmap_size {size} ({}), file_size {}",
-            as_mb(size),
-            as_mb(state_ref.npages as usize * PAGE_SIZE)
-        );
-        return Ok(()); // enough range
-    };
-    debug!("extending mmap: for file size {size}, {}", as_mb(size));
-    let mut alloc = usize::max(state_ref.mmap.total, 64 << 20); // double the current address space
-    while state_ref.mmap.total + alloc < size {
-        alloc *= 2;
-    }
-    let chunk = mmap_new(&db.database, state_ref.mmap.total as u64, alloc).map_err(|e| {
-        error!("error when extending mmap, size: {size}");
-        e
-    })?;
-    drop(state_ref);
-    let mut state_ref = db.state.borrow_mut();
-    state_ref.mmap.total += alloc;
-    state_ref.mmap.chunks.push(chunk);
-    Ok(())
-}
-
-impl Deref for Chunk {
-    type Target = [u8];
-
-    fn deref(&self) -> &Self::Target {
-        self.to_slice()
-    }
-}
-
-impl Chunk {
-    fn to_slice(&self) -> &[u8] {
-        unsafe { std::slice::from_raw_parts(self.data, self.len) }
-    }
-}
-
-impl Drop for Chunk {
-    fn drop(&mut self) {
-        unsafe {
-            if let Err(e) = rustix::mm::munmap(self.data as *mut c_void, self.len) {
-                error!("error when dropping with mumap {}", e);
-            }
-        };
-    }
-}
-
-unsafe impl Send for Chunk {}
-unsafe impl Sync for Chunk {}
 
 //--------Meta Page Layout-------
 // | sig | root_ptr | page_used |
@@ -604,7 +499,7 @@ fn metapage_save(pager: &DiskPager) -> MetaPage {
     debug!(
         sig = DB_SIG,
         root_ptr = ?pager.tree.borrow().root_ptr.unwrap(),
-        npages = pager.state.borrow().npages,
+        npages = pager.buffer.borrow().npages,
         fl_head_ptr = ?fl_ref.head_page,
         fl_head_seq = fl_ref.head_seq,
         fl_tail_ptr = ?fl_ref.tail_page,
@@ -613,7 +508,7 @@ fn metapage_save(pager: &DiskPager) -> MetaPage {
     );
     data.set_sig(DB_SIG);
     data.set_ptr(pager.tree.borrow().root_ptr, MpField::RootPtr);
-    data.set_ptr(Some(pager.state.borrow().npages.into()), MpField::Npages);
+    data.set_ptr(Some(pager.buffer.borrow().npages.into()), MpField::Npages);
 
     data.set_ptr(fl_ref.head_page, MpField::HeadPage);
     data.set_ptr(Some(fl_ref.head_seq.into()), MpField::HeadSeq);
@@ -645,12 +540,12 @@ fn metapage_save(pager: &DiskPager) -> MetaPage {
 /// panics when called without initialized mmap
 fn metapage_load(pager: &DiskPager, data: MetaPage) {
     debug!("loading metapage");
-    let mut pager_ref = pager.state.borrow_mut();
+    let mut buf_ref = pager.buffer.borrow_mut();
     pager.tree.borrow_mut().root_ptr = match data.read_ptr(MpField::RootPtr) {
         Pointer(0) => None,
         n => Some(n),
     };
-    pager_ref.npages = data.read_ptr(MpField::Npages).get();
+    buf_ref.npages = data.read_ptr(MpField::Npages).get();
 
     let mut fl_ref = pager.freelist.borrow_mut();
     fl_ref.head_page = Some(data.read_ptr(MpField::HeadPage));
@@ -703,7 +598,7 @@ mod test {
         let path = "test-files/open_pager.rdb";
         cleanup_file(path);
         let pager = DiskPager::open(path).unwrap();
-        assert_eq!(pager.state.borrow().npages, 2);
+        assert_eq!(pager.buffer.borrow().npages, 2);
         cleanup_file(path);
     }
 
