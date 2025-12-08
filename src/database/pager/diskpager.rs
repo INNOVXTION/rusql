@@ -217,8 +217,7 @@ impl DiskPager {
         // flush buffer to disk
         self.page_write()?;
         rustix::fs::fsync(&self.database)?;
-        // write new metapage to disk
-        //
+        // write currently loaded metapage to disk
         metapage_write(self, &metapage_save(self))?;
         rustix::fs::fsync(&self.database)?;
         // updating free list for next update
@@ -252,8 +251,9 @@ impl DiskPager {
         // iterate over buffer and write nodes to designated pages
         let mut bytes_written: usize = 0;
         for pair in buf.hmap.iter() {
-            assert!(pair.0.get() != 0); // never write to the meta page
             debug!("writing {:?} at {}", pair.1.get_type(), pair.0);
+            assert!(pair.0.get() != 0); // never write to the meta page
+
             let offset = pair.0.get() * PAGE_SIZE as u64;
             let io_slice = rustix::io::IoSlice::new(&pair.1[..PAGE_SIZE]);
             bytes_written +=
@@ -436,7 +436,7 @@ impl MetaPage {
         String::from_str(str::from_utf8(&self[..16]).unwrap()).unwrap()
     }
 
-    fn set_ptr(&mut self, ptr: Option<Pointer>, field: MpField) {
+    fn set_ptr(&mut self, field: MpField, ptr: Option<Pointer>) {
         let offset = field as usize;
         let ptr = match ptr {
             Some(ptr) => ptr,
@@ -481,13 +481,13 @@ fn metapage_save(pager: &DiskPager) -> MetaPage {
         "saving meta page:"
     );
     data.set_sig(DB_SIG);
-    data.set_ptr(pager.tree.borrow().root_ptr, MpField::RootPtr);
-    data.set_ptr(Some(pager.buffer.borrow().npages.into()), MpField::Npages);
+    data.set_ptr(MpField::RootPtr, pager.tree.borrow().root_ptr);
+    data.set_ptr(MpField::Npages, Some(pager.buffer.borrow().npages.into()));
 
-    data.set_ptr(fl_ref.head_page, MpField::HeadPage);
-    data.set_ptr(Some(fl_ref.head_seq.into()), MpField::HeadSeq);
-    data.set_ptr(fl_ref.tail_page, MpField::TailPage);
-    data.set_ptr(Some(fl_ref.tail_seq.into()), MpField::TailSeq);
+    data.set_ptr(MpField::HeadPage, fl_ref.head_page);
+    data.set_ptr(MpField::HeadSeq, Some(fl_ref.head_seq.into()));
+    data.set_ptr(MpField::TailPage, fl_ref.tail_page);
+    data.set_ptr(MpField::TailSeq, Some(fl_ref.tail_seq.into()));
     data
 }
 
