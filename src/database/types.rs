@@ -98,7 +98,7 @@ impl DerefMut for Node {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Eq, Hash, Ord)]
 pub(crate) struct Pointer(pub u64);
 
 impl Pointer {

@@ -150,7 +150,7 @@ impl DiskPager {
             .unwrap()
             .st_size as u64;
         mmap_extend(&pager, PAGE_SIZE).expect("mmap extend error");
-        pager.root_read(fd_size);
+        metapage_read(&pager, fd_size);
         debug!(
             "\npager initialized:\nmmap.total {}\nn_pages {}\nchunks.len {}",
             pager.mmap.borrow().total,
@@ -196,8 +196,7 @@ impl DiskPager {
             // reverting to in memory meta page
             } else {
                 debug!("meta page corrupted, reverting state...");
-                metapage_load(self, &meta);
-                metapage_write(self);
+                metapage_write(self, &meta).expect("meta page recovery write error");
                 rustix::fs::fsync(&self.database).expect("fsync metapage for restoration failed");
                 self.failed.set(false);
             }
@@ -208,17 +207,19 @@ impl DiskPager {
             self.buffer.borrow_mut().hmap.clear(); // discard buffer
             self.failed.set(true);
             return Err(Error::PagerError(e));
+        } else {
         }
         Ok(())
     }
 
-    /// write sequence, flushing buffer to disk, then updating the meta page
+    /// write sequence
     fn file_update(&self) -> Result<(), PagerError> {
         // flush buffer to disk
         self.page_write()?;
         rustix::fs::fsync(&self.database)?;
-        // updates root and writes new metapage to disk
-        metapage_write(self)?;
+        // write new metapage to disk
+        //
+        metapage_write(self, &metapage_save(self))?;
         rustix::fs::fsync(&self.database)?;
         // updating free list for next update
         self.freelist.borrow_mut().set_max_seq();
@@ -243,12 +244,12 @@ impl DiskPager {
                 error!(%e, new_size, "Error when extending mmap");
             })
             .unwrap();
-        // iterate over buffer and write nodes to designated pages
         debug!(
             nappend = buf.nappend,
             buffer = buf_len,
             "pages to be written:"
         );
+        // iterate over buffer and write nodes to designated pages
         let mut bytes_written: usize = 0;
         for pair in buf.hmap.iter() {
             assert!(pair.0.get() != 0); // never write to the meta page
@@ -270,23 +271,6 @@ impl DiskPager {
         buf.nappend = 0;
         buf.hmap.clear();
         Ok(())
-    }
-
-    /// reads metapage from mmap chunk and loads its data into memory, sets root_ptr and n_pages
-    fn root_read(&self, file_size: u64) {
-        if file_size == 0 {
-            // empty file
-            debug!("root read: empty file...");
-            self.buffer.borrow_mut().npages = 2; // reserved for meta page and one free list node
-            self.freelist.borrow_mut().head_page = Some(Pointer::from(1u64));
-            self.freelist.borrow_mut().tail_page = Some(Pointer::from(1u64));
-            return;
-        }
-        debug!("root read: loading meta page");
-        let mut meta = MetaPage::new();
-        meta.copy_from_slice(&self.mmap.borrow().chunks[0].to_slice()[..PAGE_SIZE]);
-        metapage_load(self, &meta);
-        assert!(self.buffer.borrow().npages != 0);
     }
 
     // decodes a page, checks buffer before reading disk
@@ -410,6 +394,12 @@ impl DiskPager {
             .expect("dealloc error");
         ()
     }
+
+    // WIP
+    fn cleanup(&self) {
+        let list = self.freelist.borrow().collect_ptr();
+        let npages = self.buffer.borrow().npages;
+    }
 }
 
 //--------Meta Page Layout-------
@@ -504,26 +494,44 @@ fn metapage_save(pager: &DiskPager) -> MetaPage {
 /// loads meta page object into pager
 ///
 /// panics when called without initialized mmap
-fn metapage_load(pager: &DiskPager, data: &MetaPage) {
+fn metapage_load(pager: &DiskPager, meta: &MetaPage) {
     debug!("loading metapage");
     let mut buf_ref = pager.buffer.borrow_mut();
-    pager.tree.borrow_mut().root_ptr = match data.read_ptr(MpField::RootPtr) {
+    pager.tree.borrow_mut().root_ptr = match meta.read_ptr(MpField::RootPtr) {
         Pointer(0) => None,
         n => Some(n),
     };
-    buf_ref.npages = data.read_ptr(MpField::Npages).get();
+    buf_ref.npages = meta.read_ptr(MpField::Npages).get();
 
     let mut fl_ref = pager.freelist.borrow_mut();
-    fl_ref.head_page = Some(data.read_ptr(MpField::HeadPage));
-    fl_ref.head_seq = data.read_ptr(MpField::HeadSeq).get() as usize;
-    fl_ref.tail_page = Some(data.read_ptr(MpField::TailPage));
-    fl_ref.tail_seq = data.read_ptr(MpField::TailSeq).get() as usize;
+    fl_ref.head_page = Some(meta.read_ptr(MpField::HeadPage));
+    fl_ref.head_seq = meta.read_ptr(MpField::HeadSeq).get() as usize;
+    fl_ref.tail_page = Some(meta.read_ptr(MpField::TailPage));
+    fl_ref.tail_seq = meta.read_ptr(MpField::TailSeq).get() as usize;
 }
 
-/// writes currently loaded meta data to disk
-fn metapage_write(pager: &DiskPager) -> Result<(), PagerError> {
+/// loads meta page from disk,
+/// formerly root_read
+fn metapage_read(pager: &DiskPager, file_size: u64) {
+    if file_size == 0 {
+        // empty file
+        debug!("root read: empty file...");
+        pager.buffer.borrow_mut().npages = 2; // reserved for meta page and one free list node
+        pager.freelist.borrow_mut().head_page = Some(Pointer::from(1u64));
+        pager.freelist.borrow_mut().tail_page = Some(Pointer::from(1u64));
+        return;
+    }
+    debug!("root read: loading meta page");
+    let mut meta = MetaPage::new();
+    meta.copy_from_slice(&pager.mmap.borrow().chunks[0].to_slice()[..PAGE_SIZE]);
+    metapage_load(pager, &meta);
+    assert!(pager.buffer.borrow().npages != 0);
+}
+
+/// writes meta page to disk
+fn metapage_write(pager: &DiskPager, meta: &MetaPage) -> Result<(), PagerError> {
     debug!("writing metapage to disk...");
-    let r = rustix::io::pwrite(&pager.database, &metapage_save(pager), 0)?;
+    let r = rustix::io::pwrite(&pager.database, meta, 0)?;
     Ok(())
 }
 
