@@ -4,8 +4,7 @@ use parking_lot::Mutex;
 use tracing::{debug, error};
 
 use crate::database::{
-    node::TreeNode,
-    tree::BTree,
+    btree::{BTree, TreeNode},
     types::{PAGE_SIZE, Pointer},
 };
 

@@ -12,10 +12,9 @@ use crate::database::helper::{as_page, input_valid, print_buffer};
 use crate::database::pager::freelist::{FLNode, FreeList};
 use crate::database::pager::mmap::*;
 use crate::database::{
+    btree::{BTree, TreeNode},
     errors::{Error, PagerError},
     helper::create_file_sync,
-    node::TreeNode,
-    tree::BTree,
     types::*,
 };
 
@@ -169,42 +168,42 @@ impl DiskPager {
     #[instrument(skip(self))]
     pub fn set(&self, key: &str, val: &str) -> Result<(), Error> {
         input_valid(key, val)?;
-        let meta = metapage_save(self); // saving current metapage for possible rollback
+        let recov_page = metapage_save(self); // saving current metapage for possible rollback
         info!("inserting");
         self.tree.borrow_mut().insert(key, val).map_err(|e| {
             error!(%e, "tree error");
             e
         })?;
         debug!("updating file");
-        self.update_or_revert(&meta)
+        self.update_or_revert(&recov_page)
     }
 
     #[instrument(skip(self))]
     pub fn delete(&self, key: &str) -> Result<(), Error> {
         input_valid(key, " ")?;
-        let meta = metapage_save(self); // saving current metapage for possible rollback
+        let recov_page = metapage_save(self); // saving current metapage for possible rollback
         self.tree.borrow_mut().delete(key)?;
-        self.update_or_revert(&meta)
+        self.update_or_revert(&recov_page)
     }
 
-    fn update_or_revert(&self, meta: &MetaPage) -> Result<(), Error> {
+    fn update_or_revert(&self, recov_page: &MetaPage) -> Result<(), Error> {
         if self.failed.get() {
             debug!("failed update detected...");
             // checking after previous error to see if the meta page on disk fits with page in memory
-            if self.mmap.borrow().chunks[0].to_slice()[..METAPAGE_SIZE] == **meta {
+            if self.mmap.borrow().chunks[0].to_slice()[..METAPAGE_SIZE] == **recov_page {
                 debug!("meta page intact!");
                 self.failed.set(false);
             // reverting to in memory meta page
             } else {
                 debug!("meta page corrupted, reverting state...");
-                metapage_write(self, meta).expect("meta page recovery write error");
+                metapage_write(self, recov_page).expect("meta page recovery write error");
                 rustix::fs::fsync(&self.database).expect("fsync metapage for restoration failed");
                 self.failed.set(false);
             }
         };
         if let Err(e) = self.file_update() {
             warn!(%e, "file update failed! Reverting meta page...");
-            metapage_load(self, meta); // in case the file writing fails, we revert back to the old meta page
+            metapage_load(self, recov_page); // in case the file writing fails, we revert back to the old meta page
             self.buffer.borrow_mut().hmap.clear(); // discard buffer
             self.failed.set(true);
             return Err(Error::PagerError(e));
@@ -474,7 +473,7 @@ fn metapage_save(pager: &DiskPager) -> MetaPage {
     let mut data = MetaPage::new();
     debug!(
         sig = DB_SIG,
-        root_ptr = ?pager.tree.borrow().root_ptr.unwrap(),
+        root_ptr = ?pager.tree.borrow().root_ptr,
         npages = pager.buffer.borrow().npages,
         fl_head_ptr = ?fl_ref.head_page,
         fl_head_seq = fl_ref.head_seq,

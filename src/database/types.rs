@@ -8,7 +8,7 @@ use std::{
 };
 
 use crate::database::{
-    node::TreeNode,
+    btree::TreeNode,
     pager::{diskpager::NodeFlag, freelist::FLNode},
 };
 use tracing::error;

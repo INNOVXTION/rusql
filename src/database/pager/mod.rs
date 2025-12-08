@@ -7,4 +7,5 @@ pub mod mempager;
 mod mmap;
 
 // exporting to database module
+pub(crate) use diskpager::DiskPager;
 pub(crate) use mempager::mempage_tree;

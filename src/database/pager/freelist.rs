@@ -2,9 +2,9 @@ use std::fmt::Debug;
 use std::ops::{Deref, DerefMut};
 
 use crate::database::{
+    btree::TreeNode,
     errors::FLError,
     helper::{read_pointer, write_pointer},
-    node::TreeNode,
     types::{PAGE_SIZE, PTR_SIZE, Pointer},
 };
 use tracing::debug;
