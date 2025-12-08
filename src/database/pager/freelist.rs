@@ -20,7 +20,7 @@ pub(crate) struct FreeList {
     // callbacks
     // reads page, gets page, removes from buffer if available
     pub decode: Box<dyn Fn(Pointer) -> FLNode>,
-    // appends page, goes straight into buffer
+    // appends page to disk, doesnt make a buffer check
     pub encode: Box<dyn Fn(FLNode) -> Pointer>,
     /*
     returns ptr to node inside the allocation buffer
