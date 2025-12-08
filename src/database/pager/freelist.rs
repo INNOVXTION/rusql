@@ -111,12 +111,15 @@ impl FreeList {
                 // setting new page
                 (Some(next), None) => {
                     debug!("got page from head...");
+                    assert_ne!(next.0, 0);
                     self.set_next(self.tail_page.unwrap(), next);
                     self.tail_page = Some(next);
                 }
                 // getting the last item of the head node and the head node itself
                 (Some(next), Some(head)) => {
                     debug!("got last ptr and head!.");
+                    assert_ne!(next.0, 0);
+                    assert_ne!(head.0, 0);
                     // sets current tail next to new page
                     self.set_next(self.tail_page.unwrap(), next);
                     // moves tail to new empty page

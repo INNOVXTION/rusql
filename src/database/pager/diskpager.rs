@@ -39,7 +39,7 @@ pub struct DiskPager {
 
 #[derive(Debug)]
 pub struct Buffer {
-    pub hmap: HashMap<Pointer, Node>, // pages to be written, like temp
+    pub hmap: HashMap<Pointer, Node>, // pages to be written
     pub nappend: u64,                 // number of pages to be appended
     pub npages: u64,                  // database size in number of pages
 }
@@ -169,59 +169,59 @@ impl DiskPager {
     #[instrument(skip(self))]
     pub fn set(&self, key: &str, val: &str) -> Result<(), Error> {
         input_valid(key, val)?;
+        let meta = metapage_save(self); // saving current metapage for possible rollback
         info!("inserting");
         self.tree.borrow_mut().insert(key, val).map_err(|e| {
             error!(%e, "tree error");
             e
         })?;
         debug!("updating file");
-        self.update_or_revert()
+        self.update_or_revert(&meta)
     }
 
     #[instrument(skip(self))]
     pub fn delete(&self, key: &str) -> Result<(), Error> {
         input_valid(key, " ")?;
+        let meta = metapage_save(self); // saving current metapage for possible rollback
         self.tree.borrow_mut().delete(key)?;
-        self.update_or_revert()
+        self.update_or_revert(&meta)
     }
 
-    fn update_or_revert(&self) -> Result<(), Error> {
-        let meta = metapage_save(self); // saving current metapage
+    fn update_or_revert(&self, meta: &MetaPage) -> Result<(), Error> {
         if self.failed.get() {
             debug!("failed update detected...");
             // checking after previous error to see if the meta page on disk fits with page in memory
-            if self.mmap.borrow().chunks[0].to_slice()[..METAPAGE_SIZE] == *meta.0 {
+            if self.mmap.borrow().chunks[0].to_slice()[..METAPAGE_SIZE] == **meta {
                 debug!("meta page intact!");
                 self.failed.set(false);
             // reverting to in memory meta page
             } else {
                 debug!("meta page corrupted, reverting state...");
-                metapage_write(self, &meta).expect("meta page recovery write error");
+                metapage_write(self, meta).expect("meta page recovery write error");
                 rustix::fs::fsync(&self.database).expect("fsync metapage for restoration failed");
                 self.failed.set(false);
             }
         };
         if let Err(e) = self.file_update() {
             warn!(%e, "file update failed! Reverting meta page...");
-            metapage_load(self, &meta); // in case the file writing fails, we revert back to the old meta page
+            metapage_load(self, meta); // in case the file writing fails, we revert back to the old meta page
             self.buffer.borrow_mut().hmap.clear(); // discard buffer
             self.failed.set(true);
             return Err(Error::PagerError(e));
-        } else {
         }
         Ok(())
     }
 
     /// write sequence
     fn file_update(&self) -> Result<(), PagerError> {
+        // updating free list for next update
+        self.freelist.borrow_mut().set_max_seq();
         // flush buffer to disk
         self.page_write()?;
         rustix::fs::fsync(&self.database)?;
         // write currently loaded metapage to disk
         metapage_write(self, &metapage_save(self))?;
         rustix::fs::fsync(&self.database)?;
-        // updating free list for next update
-        self.freelist.borrow_mut().set_max_seq();
         assert!(self.tree.borrow().root_ptr != self.freelist.borrow().head_page);
         assert!(self.tree.borrow().root_ptr != self.freelist.borrow().tail_page);
         Ok(())
@@ -358,6 +358,7 @@ impl DiskPager {
         if let Some(ptr) = self.freelist.borrow_mut().get() {
             self.buffer.borrow_mut().hmap.insert(ptr, node);
             print_buffer(&self.buffer.borrow().hmap);
+            assert_ne!(ptr.0, 0);
             ptr
         } else {
             // increment append?
@@ -382,7 +383,7 @@ impl DiskPager {
         );
         buf_ref.hmap.insert(ptr, node);
         print_buffer(&buf_ref.hmap);
-        assert!(ptr.0 != 0);
+        assert_ne!(ptr.0, 0);
         ptr
     }
 
@@ -399,6 +400,7 @@ impl DiskPager {
     fn cleanup(&self) {
         let list = self.freelist.borrow().collect_ptr();
         let npages = self.buffer.borrow().npages;
+        ()
     }
 }
 
@@ -480,14 +482,15 @@ fn metapage_save(pager: &DiskPager) -> MetaPage {
         fl_tail_seq = fl_ref.tail_seq,
         "saving meta page:"
     );
+    use MpField as M;
     data.set_sig(DB_SIG);
-    data.set_ptr(MpField::RootPtr, pager.tree.borrow().root_ptr);
-    data.set_ptr(MpField::Npages, Some(pager.buffer.borrow().npages.into()));
+    data.set_ptr(M::RootPtr, pager.tree.borrow().root_ptr);
+    data.set_ptr(M::Npages, Some(pager.buffer.borrow().npages.into()));
 
-    data.set_ptr(MpField::HeadPage, fl_ref.head_page);
-    data.set_ptr(MpField::HeadSeq, Some(fl_ref.head_seq.into()));
-    data.set_ptr(MpField::TailPage, fl_ref.tail_page);
-    data.set_ptr(MpField::TailSeq, Some(fl_ref.tail_seq.into()));
+    data.set_ptr(M::HeadPage, fl_ref.head_page);
+    data.set_ptr(M::HeadSeq, Some(fl_ref.head_seq.into()));
+    data.set_ptr(M::TailPage, fl_ref.tail_page);
+    data.set_ptr(M::TailSeq, Some(fl_ref.tail_seq.into()));
     data
 }
 
