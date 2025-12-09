@@ -5,7 +5,6 @@ pub mod diskpager;
 pub mod freelist;
 pub mod mempager;
 mod mmap;
-mod pager;
 
 // exporting to database module
 pub(crate) use diskpager::DiskPager;

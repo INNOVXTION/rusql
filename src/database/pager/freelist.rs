@@ -9,6 +9,11 @@ use crate::database::{
 };
 use tracing::debug;
 
+pub(crate) trait GC {
+    fn get(&mut self) -> Option<Pointer>;
+    fn append(&mut self, ptr: Pointer) -> Result<(), FLError>;
+}
+
 pub(crate) struct FreeList {
     pub head_page: Option<Pointer>,
     pub head_seq: usize,
@@ -31,23 +36,10 @@ pub(crate) struct FreeList {
     pub update: Box<dyn Fn(Pointer) -> *mut FLNode>,
 }
 
-impl FreeList {
-    /// new uninitialized
-    pub fn new() -> Self {
-        FreeList {
-            head_page: None,
-            head_seq: 0,
-            tail_page: None,
-            tail_seq: 0,
-            max_seq: 0,
-            decode: Box::new(|_| panic!("not initialized")),
-            encode: Box::new(|_| panic!("not initialized")),
-            update: Box::new(|_| panic!("not initialized")),
-        }
-    }
+impl GC for FreeList {
     /// removes a page from the head, decrement head seq
     /// PopHead
-    pub fn get(&mut self) -> Option<Pointer> {
+    fn get(&mut self) -> Option<Pointer> {
         match self.pop_head() {
             (Some(ptr), Some(head)) => {
                 debug!(%ptr, "retrieving from freelist with head: ");
@@ -63,34 +55,9 @@ impl FreeList {
         }
     }
 
-    /// flPop
-    fn pop_head(&mut self) -> (Option<Pointer>, Option<Pointer>) {
-        if self.head_seq == self.max_seq {
-            // no free page available
-            return (None, None);
-        }
-        // let node = (self.decode)(self.head_page.unwrap()); // loading free list node
-        // let ptr = node.get_ptr(seq_to_idx(self.head_seq));
-        let ptr = self.get_ptr(self.head_page.unwrap(), seq_to_idx(self.head_seq));
-        debug!(
-            "getting ptr {} from head at {}",
-            ptr,
-            self.head_page.unwrap()
-        );
-        self.head_seq += 1;
-        // in case the head page is empty we reuse it
-        if seq_to_idx(self.head_seq) == 0 {
-            let head = self.head_page.unwrap();
-            // self.head_page = Some(node.get_next());
-            self.head_page = Some(self.get_next(self.head_page.unwrap()));
-            return (Some(ptr), Some(head));
-        }
-        (Some(ptr), None)
-    }
-
     /// add a page to the tail increment tail seq
     /// PushTail
-    pub fn append(&mut self, ptr: Pointer) -> Result<(), FLError> {
+    fn append(&mut self, ptr: Pointer) -> Result<(), FLError> {
         // updates tail page, by getting a reference to the buffer if its already in there
         // updating appending the pointer
         debug!("appending {} to free list...", ptr);
@@ -132,6 +99,50 @@ impl FreeList {
             }
         }
         Ok(())
+    }
+}
+
+impl FreeList {
+    // updated callbacks
+    fn decode() {}
+    fn encode() {}
+    fn update() {}
+
+    /// new uninitialized
+    pub fn new() -> Self {
+        FreeList {
+            head_page: None,
+            head_seq: 0,
+            tail_page: None,
+            tail_seq: 0,
+            max_seq: 0,
+            decode: Box::new(|_| panic!("not initialized")),
+            encode: Box::new(|_| panic!("not initialized")),
+            update: Box::new(|_| panic!("not initialized")),
+        }
+    }
+
+    /// flPop
+    fn pop_head(&mut self) -> (Option<Pointer>, Option<Pointer>) {
+        if self.head_seq == self.max_seq {
+            // no free page available
+            return (None, None);
+        }
+        let ptr = self.get_ptr(self.head_page.unwrap(), seq_to_idx(self.head_seq));
+        debug!(
+            "getting ptr {} from head at {}",
+            ptr,
+            self.head_page.unwrap()
+        );
+        self.head_seq += 1;
+        // in case the head page is empty we reuse it
+        if seq_to_idx(self.head_seq) == 0 {
+            let head = self.head_page.unwrap();
+            // self.head_page = Some(node.get_next());
+            self.head_page = Some(self.get_next(self.head_page.unwrap()));
+            return (Some(ptr), Some(head));
+        }
+        (Some(ptr), None)
     }
 
     pub fn set_max_seq(&mut self) {

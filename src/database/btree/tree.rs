@@ -1,32 +1,31 @@
 use std::fmt::Debug;
+use std::rc::Weak;
 
 use tracing::debug;
 use tracing::info;
 
+use crate::database::pager::diskpager::NodeFlag;
+use crate::database::pager::diskpager::Pager;
 use crate::database::{btree::node::*, errors::Error, types::*};
 
-pub(crate) struct BTree {
-    pub root_ptr: Option<Pointer>,
-    // callbacks
-    // receives a node from the pager
-    pub decode: Box<dyn Fn(Pointer) -> TreeNode>, // get
-    // hands off a node to the pager
-    pub encode: Box<dyn Fn(TreeNode) -> Pointer>, // set
-    // marks a node for deallocation
-    pub dealloc: Box<dyn Fn(Pointer)>, // del
+pub(crate) trait Tree {
+    fn insert(&mut self, key: &str, value: &str) -> Result<(), Error>;
+    fn delete(&mut self, key: &str) -> Result<(), Error>;
+    fn search(&self, key: &str) -> Option<String>;
 }
 
-impl BTree {
-    pub fn new() {
-        // only for testing purposes
-    }
+pub(crate) struct BTree<P: Pager> {
+    pub root_ptr: Option<Pointer>,
+    pager: Weak<P>,
+}
 
-    pub fn insert(&mut self, key: &str, val: &str) -> Result<(), Error> {
+impl<P: Pager> Tree for BTree<P> {
+    fn insert(&mut self, key: &str, val: &str) -> Result<(), Error> {
         // get root node
         let root = match self.root_ptr {
             Some(ptr) => {
                 debug!(?ptr, "getting root ptr at:");
-                (self.decode)(ptr)
+                self.decode(ptr)
             }
             None => {
                 debug!("no root found, creating new root");
@@ -34,7 +33,7 @@ impl BTree {
                 new_root.set_header(NodeType::Leaf, 2);
                 new_root.kvptr_append(0, Pointer::from(0), "", "")?; // empty key to remove edge case
                 new_root.kvptr_append(1, Pointer::from(0), key, val)?;
-                self.root_ptr = Some((self.encode)(new_root));
+                self.root_ptr = Some(self.encode(new_root));
                 return Ok(());
             }
         };
@@ -42,10 +41,10 @@ impl BTree {
         let updated_root = BTree::tree_insert(self, root, key, val);
         let mut split = updated_root.split()?;
         // deleting old root and creating a new one
-        (self.dealloc)(self.root_ptr.unwrap());
+        self.dealloc(self.root_ptr.unwrap());
         if split.0 == 1 {
             // no split, update root
-            self.root_ptr = Some((self.encode)(split.1.remove(0)));
+            self.root_ptr = Some(self.encode(split.1.remove(0)));
             debug!(
                 "inserted without root split, root ptr {}",
                 self.root_ptr.unwrap()
@@ -58,10 +57,10 @@ impl BTree {
         // iterate through node array from split to create new root node
         for (i, node) in split.1.into_iter().enumerate() {
             let key = node.get_key(0)?.to_string();
-            new_root.kvptr_append(i as u16, (self.encode)(node), &key, "")?;
+            new_root.kvptr_append(i as u16, self.encode(node), &key, "")?;
         }
         // encoding new root and updating tree ptr
-        self.root_ptr = Some((self.encode)(new_root));
+        self.root_ptr = Some(self.encode(new_root));
         debug!(
             "inserted with root split, new root ptr {}",
             self.root_ptr.unwrap()
@@ -69,39 +68,7 @@ impl BTree {
         Ok(())
     }
 
-    /// recursive insertion, node = current node, returns updated node
-    fn tree_insert(tree: &mut BTree, node: TreeNode, key: &str, val: &str) -> TreeNode {
-        let mut new = TreeNode::new();
-        let idx = node.lookupidx(key);
-        match node.get_type() {
-            NodeType::Leaf => {
-                // debug!(idx, "looking through leaf...");
-                // for i in 0..node.get_nkeys() {
-                //     debug!(idx = i, key = node.get_key(i).unwrap(), "-- keys in node:");
-                // }
-                // updating or inserting kv
-                new.insert(node, key, val, idx);
-            }
-            // walking down the tree until we hit a leaf node
-            NodeType::Node => {
-                debug!("traversing through node...");
-                for i in 0..node.get_nkeys() {
-                    debug!(idx = i, key = node.get_key(i).unwrap(), "-- keys in node:");
-                }
-                let kptr = node.get_ptr(idx); // ptr of child below us
-                let knode = BTree::tree_insert(tree, (tree.decode)(kptr), key, val); // node below us
-                assert_eq!(knode.get_key(0).unwrap(), node.get_key(idx).unwrap());
-                let split = knode.split().unwrap(); // potential split
-                // delete old child
-                (tree.dealloc)(kptr);
-                // update child ptr
-                new.insert_nkids(tree, node, idx, split).unwrap();
-            }
-        }
-        new
-    }
-
-    pub fn delete(&mut self, key: &str) -> Result<(), Error> {
+    fn delete(&mut self, key: &str) -> Result<(), Error> {
         info!("deleting kv...");
         let root_ptr = match self.root_ptr {
             Some(n) => n,
@@ -111,9 +78,9 @@ impl BTree {
                 ));
             }
         };
-        let updated = BTree::tree_delete(self, (self.decode)(root_ptr), key)
+        let updated = BTree::tree_delete(self, self.decode(root_ptr), key)
             .ok_or(Error::DeleteError("key not found!".to_string()))?;
-        (self.dealloc)(root_ptr);
+        self.dealloc(root_ptr);
         match updated.get_nkeys() {
             // check if tree needs to shrink in height
             1 if updated.get_type() == NodeType::Node => {
@@ -135,16 +102,68 @@ impl BTree {
                     updated.get_type(),
                     updated.get_nkeys()
                 );
-                self.root_ptr = Some((self.encode)(updated));
+                self.root_ptr = Some(self.encode(updated));
             }
         }
         Ok(())
+    }
+    fn search(&self, key: &str) -> Option<String> {
+        info!("searching for {key}...");
+        BTree::tree_search(self, self.decode(self.root_ptr?), key)
+    }
+}
+
+impl<P: Pager> BTree<P> {
+    // new callbakcs
+    fn decode(&self, ptr: Pointer) -> TreeNode {
+        let strong = self.pager.upgrade().unwrap();
+        strong.page_read(ptr, NodeFlag::Tree).as_tree()
+    }
+    fn encode(&self, node: TreeNode) -> Pointer {
+        let strong = self.pager.upgrade().unwrap();
+        strong.page_alloc(Node::Tree(node))
+    }
+    fn dealloc(&self, ptr: Pointer) {
+        let strong = self.pager.upgrade().unwrap();
+        strong.dealloc(ptr);
+    }
+
+    /// recursive insertion, node = current node, returns updated node
+    fn tree_insert(&mut self, node: TreeNode, key: &str, val: &str) -> TreeNode {
+        let mut new = TreeNode::new();
+        let idx = node.lookupidx(key);
+        match node.get_type() {
+            NodeType::Leaf => {
+                // debug!(idx, "looking through leaf...");
+                // for i in 0..node.get_nkeys() {
+                //     debug!(idx = i, key = node.get_key(i).unwrap(), "-- keys in node:");
+                // }
+                // updating or inserting kv
+                new.insert(node, key, val, idx);
+            }
+            // walking down the tree until we hit a leaf node
+            NodeType::Node => {
+                debug!("traversing through node...");
+                for i in 0..node.get_nkeys() {
+                    debug!(idx = i, key = node.get_key(i).unwrap(), "-- keys in node:");
+                }
+                let kptr = node.get_ptr(idx); // ptr of child below us
+                let knode = BTree::tree_insert(self, self.decode(kptr), key, val); // node below us
+                assert_eq!(knode.get_key(0).unwrap(), node.get_key(idx).unwrap());
+                let split = knode.split().unwrap(); // potential split
+                // delete old child
+                self.dealloc(kptr);
+                // update child ptr
+                new.insert_nkids(self, node, idx, split).unwrap();
+            }
+        }
+        new
     }
 
     /// recursive deletion, node = current node, returns updated node in case a deletion happened
     ///
     /// TODO: update height
-    fn tree_delete(tree: &mut BTree, mut node: TreeNode, key: &str) -> Option<TreeNode> {
+    fn tree_delete(&mut self, mut node: TreeNode, key: &str) -> Option<TreeNode> {
         let idx = node.lookupidx(key);
         match node.get_type() {
             NodeType::Leaf => {
@@ -169,14 +188,14 @@ impl BTree {
                     debug!(idx = i, key = node.get_key(i).unwrap(), "-- keys in node:");
                 }
                 let kptr = node.get_ptr(idx);
-                match BTree::tree_delete(tree, (tree.decode)(kptr), key) {
+                match BTree::tree_delete(self, self.decode(kptr), key) {
                     // no update below us
                     None => return None,
                     // node was updated below us, checking for merge...
                     Some(updated_child) => {
                         let mut new = TreeNode::new();
                         let cur_nkeys = node.get_nkeys();
-                        match node.merge_check(tree, &updated_child, idx) {
+                        match node.merge_check(self, &updated_child, idx) {
                             // we need to merge
                             Some(dir) => {
                                 let left: Pointer;
@@ -199,7 +218,7 @@ impl BTree {
                                             merged_node.get_type(),
                                             merged_node.get_nkeys()
                                         );
-                                        new.merge_setptr(tree, node, merged_node, idx - 1).unwrap();
+                                        new.merge_setptr(self, node, merged_node, idx - 1).unwrap();
                                     }
                                     MergeDirection::Right(sibling) => {
                                         debug!(
@@ -216,17 +235,17 @@ impl BTree {
                                             merged_node.get_type(),
                                             merged_node.get_nkeys()
                                         );
-                                        new.merge_setptr(tree, node, merged_node, idx).unwrap();
+                                        new.merge_setptr(self, node, merged_node, idx).unwrap();
                                     }
                                 };
                                 // delete old nodes
-                                (tree.dealloc)(left);
-                                (tree.dealloc)(right);
+                                self.dealloc(left);
+                                self.dealloc(right);
                                 Some(new)
                             }
                             // no merge necessary, or no sibling to merge with
                             None => {
-                                (tree.dealloc)(kptr);
+                                self.dealloc(kptr);
                                 // empty child without siblings
                                 if updated_child.get_nkeys() == 0 && cur_nkeys == 1 {
                                     assert!(idx == 0);
@@ -247,10 +266,10 @@ impl BTree {
                                     )
                                     .unwrap();
                                     new.set_header(cur_type, cur_nkeys);
-                                    new.set_ptr(idx, (tree.encode)(updated_child));
+                                    new.set_ptr(idx, self.encode(updated_child));
                                     return Some(new);
                                 };
-                                node.set_ptr(idx, (tree.encode)(updated_child));
+                                node.set_ptr(idx, self.encode(updated_child));
                                 debug!("key deleted without merge");
                                 Some(node)
                             }
@@ -261,12 +280,7 @@ impl BTree {
         }
     }
 
-    pub fn search(&self, key: &str) -> Option<String> {
-        info!("searching for {key}...");
-        BTree::tree_search(self, (self.decode)(self.root_ptr?), key)
-    }
-
-    fn tree_search(tree: &BTree, node: TreeNode, key: &str) -> Option<String> {
+    fn tree_search(&self, node: TreeNode, key: &str) -> Option<String> {
         let idx = node.lookupidx(key);
         match node.get_type() {
             NodeType::Leaf => {
@@ -288,13 +302,13 @@ impl BTree {
                     debug!(idx = i, key = node.get_key(i).unwrap(), "-- keys in node:");
                 }
                 let kptr = node.get_ptr(idx);
-                BTree::tree_search(tree, (tree.decode)(kptr), key)
+                BTree::tree_search(self, self.decode(kptr), key)
             }
         }
     }
 }
 
-impl Debug for BTree {
+impl<P: Pager> Debug for BTree<P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BTree")
             .field("root_ptr", &self.root_ptr)

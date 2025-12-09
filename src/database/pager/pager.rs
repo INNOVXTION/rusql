@@ -1,49 +1,19 @@
+use crate::database::{
+    errors::Error,
+    helper::input_valid,
+    types::{Node, Pointer},
+};
 use std::{
     cell::RefCell,
     rc::{Rc, Weak},
 };
-use crate::database::{errors::Error, types::{Node, Pointer}};
 
-struct Pager<C, T, FL>
-where
-    C: Codec,
-    T: Tree,
-    FL: GC,
-{
-    codec: Rc<C>,
-    freelist: FL,
-    btree: T,
+trait Pager {
+    fn get();
+    fn set();
+    fn del();
 }
 
-impl<C, T, FL> Paging for Pager<C, T, FL>
-where
-    C: Codec,
-    T: Tree,
-    FL: GC,
-{
-    fn get(key: &str) -> Result<(), Error> {
-        todo!()
-    }
-
-    fn set(key: &str, value: &str) -> Result<(), Error> {
-        todo!()
-    }
-
-    fn del(key: &str) -> Result<(), Error> {
-        todo!()
-    }
-}
-
-trait Paging {
-    fn get(key: &str) -> Result<(), Error>;
-    fn set(key: &str, value: &str) -> Result<(), Error>;
-    fn del(key: &str) -> Result<(), Error>;
-}
-
-struct DiskCodec<'a, FL: GC> {
-    freelist: &'a FL,
-    data: RefCell<Vec<u8>>,
-}
 impl<'a, FL: GC> Codec for DiskCodec<'a, FL> {
     fn encode(ptr: Pointer) -> Node {
         todo!()
@@ -57,7 +27,8 @@ impl<'a, FL: GC> Codec for DiskCodec<'a, FL> {
         todo!()
     }
 }
-trait Codec {
+
+pub trait Codec {
     fn encode(ptr: Pointer) -> Node;
     fn decode(node: Node) -> Pointer;
     fn dalloc(ptr: Pointer);
@@ -69,23 +40,23 @@ struct BTree<C: Codec> {
 }
 
 impl<C: Codec> Tree for BTree<C> {
-    fn insert(key: &str, value: &str) -> Result<(), Error> {
+    fn insert(&mut self, key: &str, value: &str) -> Result<(), Error> {
         todo!()
     }
 
-    fn delete(key: &str) -> Result<(), Error> {
+    fn delete(&mut self, key: &str) -> Result<(), Error> {
         todo!()
     }
 
-    fn search(key: &str) -> Option<String> {
+    fn search(&self, key: &str) -> Option<String> {
         todo!()
     }
 }
 
 trait Tree {
-    fn insert(key: &str, value: &str) -> Result<(), Error>;
-    fn delete(key: &str) -> Result<(), Error>;
-    fn search(key: &str) -> Option<String>;
+    fn insert(&mut self, key: &str, value: &str) -> Result<(), Error>;
+    fn delete(&mut self, key: &str) -> Result<(), Error>;
+    fn search(&self, key: &str) -> Option<String>;
 }
 
 impl<C: Codec> BTree<C> {
@@ -99,27 +70,15 @@ struct Freelist<C: Codec> {
     codec: Weak<C>,
 }
 impl<C: Codec> GC for Freelist<C> {
-    fn get() -> Pointer {
+    fn get(&mut self) -> Pointer {
         todo!()
     }
 
-    fn append(ptr: Pointer) {
+    fn append(&mut self, ptr: Pointer) {
         todo!()
     }
 }
 trait GC {
-    fn get() -> Pointer;
-    fn append(ptr: Pointer);
-}
-
-
-fn main() {
-    let freelist = Freelist {
-        list: None,
-        codec: ,
-    }
-    let disk = Rc::new(DiskCodec {
-        freelist: todo!(),
-        data: todo!(),
-    })
+    fn get(&mut self) -> Pointer;
+    fn append(&mut self, ptr: Pointer);
 }
