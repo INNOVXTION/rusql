@@ -20,13 +20,13 @@ use crate::database::{
 
 /// indicates the encoding/decoding style of a node
 #[derive(Debug)]
-pub enum NodeFlag {
+pub(crate) enum NodeFlag {
     Tree,
     Freelist,
 }
 
 #[derive(Debug)]
-pub struct DiskPager {
+pub(crate) struct DiskPager {
     path: &'static str,
     pub database: OwnedFd,
     tree: RefCell<BTree>,
@@ -37,7 +37,7 @@ pub struct DiskPager {
 }
 
 #[derive(Debug)]
-pub struct Buffer {
+pub(crate) struct Buffer {
     pub hmap: HashMap<Pointer, Node>, // pages to be written
     pub nappend: u64,                 // number of pages to be appended
     pub npages: u64,                  // database size in number of pages

@@ -26,12 +26,12 @@ const OFFSETARR_OFFSET: usize = 2;
 
 /// types of tree nodes
 #[derive(PartialEq, Debug)]
-pub enum NodeType {
+pub(crate) enum NodeType {
     Node,
     Leaf,
 }
 /// which sibling we need to merge with
-pub enum MergeDirection {
+pub(crate) enum MergeDirection {
     Left(TreeNode),
     Right(TreeNode),
 }

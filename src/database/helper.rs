@@ -1,5 +1,5 @@
-use crate::database::errors::{Error, PagerError};
-use crate::database::types::*;
+use super::errors::{Error, PagerError};
+use super::types::*;
 use rustix::fs::{self, Mode, OFlags};
 use std::collections::HashMap;
 use std::os::fd::OwnedFd;
@@ -9,6 +9,10 @@ use tracing::{debug, error};
 
 pub trait DecodeSlice {
     fn read_u16(&self, offset: usize) -> u16;
+}
+
+fn mod_test() {
+    let tree = super::BTree::new();
 }
 
 // pub trait EncodeSlice {

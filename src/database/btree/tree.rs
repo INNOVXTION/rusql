@@ -5,7 +5,7 @@ use tracing::info;
 
 use crate::database::{btree::node::*, errors::Error, types::*};
 
-pub struct BTree {
+pub(crate) struct BTree {
     pub root_ptr: Option<Pointer>,
     // callbacks
     // receives a node from the pager
@@ -17,6 +17,10 @@ pub struct BTree {
 }
 
 impl BTree {
+    pub fn new() {
+        // only for testing purposes
+    }
+
     pub fn insert(&mut self, key: &str, val: &str) -> Result<(), Error> {
         // get root node
         let root = match self.root_ptr {

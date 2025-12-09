@@ -1,5 +1,6 @@
 mod node;
 mod tree;
 
-pub(crate) use node::TreeNode;
-pub(crate) use tree::BTree;
+// module is only visible to the database module now
+pub(super) use node::TreeNode;
+pub(super) use tree::BTree;

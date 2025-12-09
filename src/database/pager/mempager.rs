@@ -1,3 +1,6 @@
+/*
+ * in memory pager used for testing BTree implementations
+ */
 use std::{collections::HashMap, sync::OnceLock};
 
 use parking_lot::Mutex;
