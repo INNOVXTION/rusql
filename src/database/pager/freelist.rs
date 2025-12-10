@@ -17,21 +17,9 @@ pub(crate) struct FreeList<P: Pager> {
     head_seq: usize,
     tail_page: Option<Pointer>,
     tail_seq: usize,
-    // maximum amount of items in the list
+    /// maximum amount of items in the list
     pub max_seq: usize,
     pub pager: Weak<P>,
-    // // callbacks
-    // // reads page, gets page, removes from buffer if available
-    // pub decode: Box<dyn Fn(Pointer) -> FLNode>,
-    // // appends page to disk, doesnt make a buffer check
-    // pub encode: Box<dyn Fn(FLNode) -> Pointer>,
-    // /*
-    // returns ptr to node inside the allocation buffer
-    // SAFETY:
-    // needs to be called in isolation, calls to encode can resize the buffer
-    // and therefore invalidate the returning pointer, use the dedicated helper functions!
-    // */
-    // pub update: Box<dyn Fn(Pointer) ->i al *mut FLNode>,
 }
 
 pub(crate) struct FLConfig {
@@ -119,8 +107,8 @@ impl<P: Pager> GC for FreeList<P> {
         }
         Ok(())
     }
-    // retrieves sorted list of all pointers inside freelist
-    // does not interact with the buffer and should be called after the database has been written down
+    /// retrieves sorted list of all pointers inside freelist
+    /// does not interact with the buffer and should be called after the database has been written down
     fn collect_ptr(&self) -> Vec<Pointer> {
         let mut list: Vec<Pointer> = vec![];
         let mut head = self.head_seq;
@@ -169,12 +157,10 @@ impl<P: Pager> FreeList<P> {
         let strong = self.pager.upgrade().unwrap();
         strong.encode(Node::Freelist(node))
     }
-    /*
-    returns ptr to node inside the allocation buffer
-    SAFETY:
-    needs to be called in isolation, calls to encode can resize the buffer
-    and therefore invalidate the returning pointer, use the dedicated helper functions!
-    */
+    /// returns ptr to node inside the allocation buffer
+    /// # SAFETY:
+    /// needs to be called in isolation, calls to encode can resize the buffer
+    /// and therefore invalidate the returning pointer, use the dedicated helper functions!
     fn update(&self, ptr: Pointer) -> *mut FLNode {
         let strong = self.pager.upgrade().unwrap();
         strong.update(ptr)

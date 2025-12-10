@@ -44,6 +44,7 @@ pub(crate) struct Buffer {
     pub nappend: u64,                 // number of pages to be appended
     pub npages: u64,                  // database size in number of pages
 }
+
 pub(crate) trait KVEngine {
     fn get(&self, key: &str) -> Result<String, Error>;
     fn set(&self, key: &str, value: &str) -> Result<(), Error>;
