@@ -28,10 +28,11 @@ pub(crate) enum NodeFlag {
 
 pub(crate) struct EnvoyV1 {
     path: &'static str,
-    database: OwnedFd,
-    failed: Cell<bool>,
-    buffer: RefCell<Buffer>,
+    pub database: OwnedFd,
+    pub buffer: RefCell<Buffer>,
     pub mmap: RefCell<Mmap>,
+
+    failed: Cell<bool>,
 
     tree: Rc<RefCell<dyn Tree<Codec = Self>>>,
     freelist: Rc<RefCell<dyn GC<Codec = Self>>>,
@@ -43,10 +44,10 @@ pub(crate) struct Buffer {
     pub nappend: u64,                 // number of pages to be appended
     pub npages: u64,                  // database size in number of pages
 }
-trait KVEngine {
+pub(crate) trait KVEngine {
     fn get(&self, key: &str) -> Result<String, Error>;
-    fn set(&mut self, key: &str, val: &str) -> Result<(), Error>;
-    fn delete(&mut self, key: &str) -> Result<(), Error>;
+    fn set(&self, key: &str, value: &str) -> Result<(), Error>;
+    fn delete(&self, key: &str) -> Result<(), Error>;
 }
 
 impl KVEngine for EnvoyV1 {
@@ -60,11 +61,11 @@ impl KVEngine for EnvoyV1 {
     }
 
     #[instrument(skip(self))]
-    fn set(&mut self, key: &str, val: &str) -> Result<(), Error> {
-        input_valid(key, val)?;
+    fn set(&self, key: &str, value: &str) -> Result<(), Error> {
+        input_valid(key, value)?;
         let recov_page = metapage_save(self); // saving current metapage for possible rollback
         info!("inserting");
-        self.tree.borrow_mut().insert(key, val).map_err(|e| {
+        self.tree.borrow_mut().insert(key, value).map_err(|e| {
             error!(%e, "tree error");
             e
         })?;
@@ -73,7 +74,7 @@ impl KVEngine for EnvoyV1 {
     }
 
     #[instrument(skip(self))]
-    fn delete(&mut self, key: &str) -> Result<(), Error> {
+    fn delete(&self, key: &str) -> Result<(), Error> {
         input_valid(key, " ")?;
         let recov_page = metapage_save(self); // saving current metapage for possible rollback
         self.tree.borrow_mut().delete(key)?;
@@ -223,7 +224,7 @@ impl EnvoyV1 {
         Ok(pager)
     }
 
-    fn update_or_revert(&mut self, recov_page: &MetaPage) -> Result<(), Error> {
+    fn update_or_revert(&self, recov_page: &MetaPage) -> Result<(), Error> {
         if self.failed.get() {
             debug!("failed update detected...");
             // checking after previous error to see if the meta page on disk fits with page in memory
@@ -249,7 +250,7 @@ impl EnvoyV1 {
     }
 
     /// write sequence
-    fn file_update(&mut self) -> Result<(), PagerError> {
+    fn file_update(&self) -> Result<(), PagerError> {
         // updating free list for next update
         self.freelist.borrow_mut().set_max_seq();
         // flush buffer to disk
@@ -518,7 +519,7 @@ mod test {
         cleanup_file(path);
         let pager = EnvoyV1::open(path).unwrap();
         pager.set("1", "val").unwrap();
-        assert_eq!(pager.get("1").unwrap().unwrap(), "val".to_string());
+        assert_eq!(pager.get("1").unwrap(), "val".to_string());
         cleanup_file(path);
     }
 
@@ -532,7 +533,7 @@ mod test {
             pager.set(&format!("{i}"), "value").unwrap()
         }
         for i in 1u16..=300u16 {
-            assert_eq!(pager.get(&format!("{i}")).unwrap().unwrap(), "value")
+            assert_eq!(pager.get(&format!("{i}")).unwrap(), "value")
         }
         cleanup_file(path);
     }

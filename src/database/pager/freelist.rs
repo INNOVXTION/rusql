@@ -2,7 +2,8 @@ use std::fmt::Debug;
 use std::ops::{Deref, DerefMut};
 use std::rc::Weak;
 
-use crate::database::pager::diskpager::Pager;
+use crate::database::pager::diskpager::{NodeFlag, Pager};
+use crate::database::types::Node;
 use crate::database::{
     btree::TreeNode,
     errors::FLError,
@@ -30,7 +31,7 @@ pub(crate) struct FreeList<P: Pager> {
     // needs to be called in isolation, calls to encode can resize the buffer
     // and therefore invalidate the returning pointer, use the dedicated helper functions!
     // */
-    // pub update: Box<dyn Fn(Pointer) -> *mut FLNode>,
+    // pub update: Box<dyn Fn(Pointer) ->i al *mut FLNode>,
 }
 
 pub(crate) struct FLConfig {
@@ -135,6 +136,7 @@ impl<P: Pager> GC for FreeList<P> {
         list.sort();
         list
     }
+
     fn get_config(&self) -> FLConfig {
         FLConfig {
             head_page: self.head_page,
@@ -150,21 +152,32 @@ impl<P: Pager> GC for FreeList<P> {
         self.tail_page = flc.tail_page;
         self.tail_seq = flc.tail_seq;
     }
-fn set_max_seq(&mut self) {
-    self.max_seq = self.tail_seq
-}
+    fn set_max_seq(&mut self) {
+        self.max_seq = self.tail_seq
+    }
 }
 
 impl<P: Pager> FreeList<P> {
-    // updated callbacks
+    // callbacks
+    /// reads page, gets page, removes from buffer if available
     fn decode(&self, ptr: Pointer) -> FLNode {
-        todo!()
+        let strong = self.pager.upgrade().unwrap();
+        strong.page_read(ptr, NodeFlag::Tree).as_fl()
     }
+    /// appends page to disk, doesnt make a buffer check
     fn encode(&self, node: FLNode) -> Pointer {
-        todo!()
+        let strong = self.pager.upgrade().unwrap();
+        strong.encode(Node::Freelist(node))
     }
+    /*
+    returns ptr to node inside the allocation buffer
+    SAFETY:
+    needs to be called in isolation, calls to encode can resize the buffer
+    and therefore invalidate the returning pointer, use the dedicated helper functions!
+    */
     fn update(&self, ptr: Pointer) -> *mut FLNode {
-        todo!()
+        let strong = self.pager.upgrade().unwrap();
+        strong.update(ptr)
     }
 
     /// new uninitialized

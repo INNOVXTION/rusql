@@ -1,5 +1,5 @@
 /*
- * in memory pager used for testing BTree implementations
+ * in memory pager used for testing BTree implementations, does not support a freelist currently
  */
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
@@ -7,23 +7,41 @@ use tracing::{debug, error};
 
 use crate::database::{
     btree::{BTree, Tree},
-    pager::diskpager::Pager,
+    errors::Error,
+    pager::diskpager::{KVEngine, Pager},
     types::{Node, Pointer},
 };
 
 pub struct MemoryPager {
     freelist: RefCell<Vec<u64>>,
     pages: RefCell<HashMap<u64, Node>>,
-    btree: Box<dyn Tree<Codec = Self>>,
+    pub btree: Box<RefCell<BTree<MemoryPager>>>,
 }
 
 #[allow(unused)]
-pub fn mempage_tree<P: Pager>() -> Rc<MemoryPager> {
+pub fn mempage_tree() -> Rc<MemoryPager> {
     Rc::new_cyclic(|w| MemoryPager {
         freelist: RefCell::new(vec![]),
         pages: RefCell::new(HashMap::<u64, Node>::new()),
-        btree: Box::new(BTree::<MemoryPager>::new(w.clone())),
+        btree: Box::new(RefCell::new(BTree::<MemoryPager>::new(w.clone()))),
     })
+}
+
+impl KVEngine for MemoryPager {
+    fn get(&self, key: &str) -> Result<String, Error> {
+        self.btree
+            .borrow()
+            .search(key)
+            .ok_or(Error::SearchError("value not found".to_string()))
+    }
+
+    fn set(&self, key: &str, value: &str) -> Result<(), Error> {
+        self.btree.borrow_mut().insert(key, value)
+    }
+
+    fn delete(&self, key: &str) -> Result<(), Error> {
+        self.btree.borrow_mut().delete(key)
+    }
 }
 
 impl Pager for MemoryPager {
