@@ -21,7 +21,7 @@ pub struct MemoryPager {
 #[allow(unused)]
 pub fn mempage_tree() -> Rc<MemoryPager> {
     Rc::new_cyclic(|w| MemoryPager {
-        freelist: RefCell::new(vec![]),
+        freelist: RefCell::new(Vec::from_iter((1..=100).rev())),
         pages: RefCell::new(HashMap::<u64, Node>::new()),
         btree: Box::new(RefCell::new(BTree::<MemoryPager>::new(w.clone()))),
     })

@@ -347,11 +347,12 @@ mod test {
     #[test]
     fn simple_insert() {
         let tree = mempage_tree();
-        let t_ref = tree.btree.borrow();
         info!("help i just want to log :(");
 
         tree.set("1", "hello").unwrap();
         tree.set("2", "world").unwrap();
+
+        let t_ref = tree.btree.borrow();
 
         assert_eq!(tree.get("1").unwrap(), "hello");
         assert_eq!(tree.get("2").unwrap(), "world");
@@ -365,19 +366,22 @@ mod test {
     #[test]
     fn simple_delete() {
         let tree = mempage_tree();
-        let t_ref = tree.btree.borrow();
 
         tree.set("1", "hello").unwrap();
         tree.set("2", "world").unwrap();
         tree.set("3", "bonjour").unwrap();
-        assert_eq!(
-            t_ref.decode(t_ref.get_root().unwrap()).get_type(),
-            NodeType::Leaf
-        );
+        {
+            let t_ref = tree.btree.borrow();
+            assert_eq!(
+                t_ref.decode(t_ref.get_root().unwrap()).get_type(),
+                NodeType::Leaf
+            );
 
-        assert_eq!(t_ref.decode(t_ref.get_root().unwrap()).get_nkeys(), 4);
+            assert_eq!(t_ref.decode(t_ref.get_root().unwrap()).get_nkeys(), 4);
+        }
+
         tree.delete("2").unwrap();
-
+        let t_ref = tree.btree.borrow();
         assert_eq!(tree.get("1").unwrap(), "hello");
         assert_eq!(tree.get("3").unwrap(), "bonjour");
         assert_eq!(t_ref.decode(t_ref.get_root().unwrap()).get_nkeys(), 3);
@@ -386,11 +390,11 @@ mod test {
     #[test]
     fn insert_split1() {
         let tree = mempage_tree();
-        let t_ref = tree.btree.borrow();
 
         for i in 1u16..=200u16 {
             tree.set(&format!("{i}"), "value").unwrap()
         }
+        let t_ref = tree.btree.borrow();
         assert_eq!(
             t_ref.decode(t_ref.get_root().unwrap()).get_type(),
             NodeType::Node
@@ -405,11 +409,11 @@ mod test {
     #[test]
     fn insert_split2() {
         let tree = mempage_tree();
-        let t_ref = tree.btree.borrow();
 
         for i in 1u16..=400u16 {
             tree.set(&format!("{i}"), "value").unwrap()
         }
+        let t_ref = tree.btree.borrow();
         assert_eq!(
             t_ref.decode(t_ref.get_root().unwrap()).get_type(),
             NodeType::Node
@@ -426,7 +430,6 @@ mod test {
     #[test]
     fn merge_delete1() {
         let tree = mempage_tree();
-        let t_ref = tree.btree.borrow();
 
         let span = span!(Level::DEBUG, "test span");
         let _guard = span.enter();
@@ -437,6 +440,7 @@ mod test {
         for i in 1u16..=200u16 {
             tree.delete(&format!("{i}")).unwrap()
         }
+        let t_ref = tree.btree.borrow();
         assert_eq!(
             t_ref.decode(t_ref.get_root().unwrap()).get_type(),
             NodeType::Leaf
@@ -447,7 +451,6 @@ mod test {
     #[test]
     fn merge_delete_left_right() {
         let tree = mempage_tree();
-        let t_ref = tree.btree.borrow();
 
         for i in 1u16..=400u16 {
             tree.set(&format!("{i}"), "value").unwrap()
@@ -455,6 +458,7 @@ mod test {
         for i in 1u16..=400u16 {
             tree.delete(&format!("{i}")).unwrap()
         }
+        let t_ref = tree.btree.borrow();
         assert_eq!(
             t_ref.decode(t_ref.get_root().unwrap()).get_type(),
             NodeType::Leaf
@@ -465,7 +469,6 @@ mod test {
     #[test]
     fn merge_delete_right_left() {
         let tree = mempage_tree();
-        let t_ref = tree.btree.borrow();
 
         for i in 1u16..=400u16 {
             tree.set(&format!("{i}"), "value").unwrap()
@@ -473,6 +476,7 @@ mod test {
         for i in (1..=400u16).rev() {
             tree.delete(&format!("{i}")).unwrap()
         }
+        let t_ref = tree.btree.borrow();
         assert_eq!(
             t_ref.decode(t_ref.get_root().unwrap()).get_type(),
             NodeType::Leaf
@@ -483,7 +487,6 @@ mod test {
     #[test]
     fn merge_delete3() {
         let tree = mempage_tree();
-        let t_ref = tree.btree.borrow();
         let span = span!(Level::DEBUG, "test span");
         let _guard = span.enter();
 
@@ -494,21 +497,24 @@ mod test {
             tree.delete(&format!("{i}")).unwrap()
         }
         tree.delete("").unwrap();
+        let t_ref = tree.btree.borrow();
         assert_eq!(t_ref.get_root(), None);
     }
 
     #[test]
     fn insert_big() {
         let tree = mempage_tree();
-        let t_ref = tree.btree.borrow();
 
         for i in 1u16..=1000u16 {
             tree.set(&format!("{i}"), "value").unwrap()
         }
-        assert_eq!(
-            t_ref.decode(t_ref.get_root().unwrap()).get_type(),
-            NodeType::Node
-        );
+        {
+            let t_ref = tree.btree.borrow();
+            assert_eq!(
+                t_ref.decode(t_ref.get_root().unwrap()).get_type(),
+                NodeType::Node
+            );
+        }
         for i in 1u16..=1000u16 {
             assert_eq!(tree.get(&format!("{i}")).unwrap(), "value")
         }
@@ -517,7 +523,6 @@ mod test {
     #[test]
     fn random_1k() {
         let tree = mempage_tree();
-        let t_ref = tree.btree.borrow();
 
         for _ in 1u16..=1000 {
             tree.set(&format!("{:?}", rand::rng().random_range(1..1000)), "val")
