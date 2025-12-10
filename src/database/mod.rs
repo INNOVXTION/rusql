@@ -1,8 +1,8 @@
 mod btree;
 mod errors;
 mod helper;
-mod interface;
 mod pager;
+mod tables;
 mod types;
 
 // example of reexport

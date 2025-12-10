@@ -108,6 +108,7 @@ impl<P: Pager> GC for FreeList<P> {
         Ok(())
     }
     /// retrieves sorted list of all pointers inside freelist
+    ///
     /// does not interact with the buffer and should be called after the database has been written down
     fn collect_ptr(&self) -> Vec<Pointer> {
         let mut list: Vec<Pointer> = vec![];

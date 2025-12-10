@@ -45,6 +45,7 @@ pub(crate) struct Buffer {
     pub npages: u64,                  // database size in number of pages
 }
 
+/// outward facing api
 pub(crate) trait KVEngine {
     fn get(&self, key: &str) -> Result<String, Error>;
     fn set(&self, key: &str, value: &str) -> Result<(), Error>;
@@ -54,6 +55,7 @@ pub(crate) trait KVEngine {
 impl KVEngine for EnvoyV1 {
     #[instrument(skip(self))]
     fn get(&self, key: &str) -> Result<String, Error> {
+        info!("getting...");
         input_valid(key, " ")?;
         self.tree
             .borrow()
@@ -65,17 +67,17 @@ impl KVEngine for EnvoyV1 {
     fn set(&self, key: &str, value: &str) -> Result<(), Error> {
         input_valid(key, value)?;
         let recov_page = metapage_save(self); // saving current metapage for possible rollback
-        info!("inserting");
+        info!("inserting...");
         self.tree.borrow_mut().insert(key, value).map_err(|e| {
             error!(%e, "tree error");
             e
         })?;
-        debug!("updating file");
         self.update_or_revert(&recov_page)
     }
 
     #[instrument(skip(self))]
     fn delete(&self, key: &str) -> Result<(), Error> {
+        info!("deleting...");
         input_valid(key, " ")?;
         let recov_page = metapage_save(self); // saving current metapage for possible rollback
         self.tree.borrow_mut().delete(key)?;
@@ -83,7 +85,7 @@ impl KVEngine for EnvoyV1 {
     }
 }
 
-// internal API
+/// internal callback API
 pub(crate) trait Pager {
     // tree callbacks
     fn page_read(&self, ptr: Pointer, flag: NodeFlag) -> Node; //tree decode
@@ -226,6 +228,7 @@ impl EnvoyV1 {
     }
 
     fn update_or_revert(&self, recov_page: &MetaPage) -> Result<(), Error> {
+        debug!("tree operation complete, updating file");
         if self.failed.get() {
             debug!("failed update detected...");
             // checking after previous error to see if the meta page on disk fits with page in memory
@@ -345,7 +348,6 @@ impl EnvoyV1 {
     fn cleanup(&self) {
         let list = self.freelist.borrow().collect_ptr();
         let npages = self.buffer.borrow().npages;
-        ()
     }
 }
 

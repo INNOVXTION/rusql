@@ -130,14 +130,6 @@ pub(crate) fn input_valid(key: &str, value: &str) -> Result<(), Error> {
         error!("key cant be empty");
         return Err(Error::InvalidInput("key cant be empty"));
     }
-    let key_num = key.parse::<u64>().map_err(|e| {
-        error!(%e, key, "key parse error");
-        Error::InvalidInput("key parse error")
-    })?;
-    if key_num <= 0 {
-        error!("key cant be zero or negative!");
-        return Err(Error::InvalidInput("key cant be zero or negative!"));
-    };
     Ok(())
 }
 
