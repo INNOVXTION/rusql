@@ -8,18 +8,24 @@ use crate::database::pager::diskpager::NodeFlag;
 use crate::database::pager::diskpager::Pager;
 use crate::database::{btree::node::*, errors::Error, types::*};
 
-pub(crate) trait Tree {
-    fn insert(&mut self, key: &str, value: &str) -> Result<(), Error>;
-    fn delete(&mut self, key: &str) -> Result<(), Error>;
-    fn search(&self, key: &str) -> Option<String>;
-}
-
 pub(crate) struct BTree<P: Pager> {
-    pub root_ptr: Option<Pointer>,
+    root_ptr: Option<Pointer>,
     pager: Weak<P>,
 }
 
+pub(crate) trait Tree {
+    type Codec: Pager;
+
+    fn insert(&mut self, key: &str, value: &str) -> Result<(), Error>;
+    fn delete(&mut self, key: &str) -> Result<(), Error>;
+    fn search(&self, key: &str) -> Option<String>;
+
+    fn set_root(&mut self, ptr: Option<Pointer>);
+    fn get_root(&self) -> Option<Pointer>;
+}
+
 impl<P: Pager> Tree for BTree<P> {
+    type Codec = P;
     fn insert(&mut self, key: &str, val: &str) -> Result<(), Error> {
         // get root node
         let root = match self.root_ptr {
@@ -111,19 +117,31 @@ impl<P: Pager> Tree for BTree<P> {
         info!("searching for {key}...");
         BTree::tree_search(self, self.decode(self.root_ptr?), key)
     }
+    fn get_root(&self) -> Option<Pointer> {
+        self.root_ptr
+    }
+    fn set_root(&mut self, ptr: Option<Pointer>) {
+        self.root_ptr = ptr
+    }
 }
 
 impl<P: Pager> BTree<P> {
-    // new callbakcs
-    fn decode(&self, ptr: Pointer) -> TreeNode {
+    pub fn new(pager: Weak<P>) -> Self {
+        BTree {
+            root_ptr: None,
+            pager: pager,
+        }
+    }
+    // callbacks
+    pub fn decode(&self, ptr: Pointer) -> TreeNode {
         let strong = self.pager.upgrade().unwrap();
         strong.page_read(ptr, NodeFlag::Tree).as_tree()
     }
-    fn encode(&self, node: TreeNode) -> Pointer {
+    pub fn encode(&self, node: TreeNode) -> Pointer {
         let strong = self.pager.upgrade().unwrap();
         strong.page_alloc(Node::Tree(node))
     }
-    fn dealloc(&self, ptr: Pointer) {
+    pub fn dealloc(&self, ptr: Pointer) {
         let strong = self.pager.upgrade().unwrap();
         strong.dealloc(ptr);
     }

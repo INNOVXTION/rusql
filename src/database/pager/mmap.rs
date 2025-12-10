@@ -4,7 +4,7 @@ use rustix::mm::{MapFlags, ProtFlags};
 use tracing::{debug, error};
 
 use crate::database::{
-    errors::PagerError, helper::as_mb, pager::diskpager::DiskPager, types::PAGE_SIZE,
+    errors::PagerError, helper::as_mb, pager::diskpager::EnvoyV1, types::PAGE_SIZE,
 };
 
 #[derive(Debug)]
@@ -82,7 +82,7 @@ fn mmap_new(fd: &OwnedFd, offset: u64, length: usize) -> Result<Chunk, PagerErro
 }
 
 /// checks for sufficient space, exponentially extends the mmap
-pub fn mmap_extend(db: &DiskPager, size: usize) -> Result<(), PagerError> {
+pub fn mmap_extend(db: &EnvoyV1, size: usize) -> Result<(), PagerError> {
     let mmap_ref = db.mmap.borrow();
     let buf_ref = db.buffer.borrow();
     if size <= mmap_ref.total {

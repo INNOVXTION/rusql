@@ -16,24 +16,27 @@ pub enum Error {
     PagerSetError,
     InvalidInput(&'static str),
     FreeListError(FLError),
+    SearchError(String),
 }
 
 impl Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use Error as E;
         match self {
-            Error::IndexError => write!(f, "Index error"),
-            Error::FileError(e) => write!(f, "File error: {e}"),
-            Error::IntCastError(Some(e)) => write!(f, "Type casting error, {e}"),
-            Error::IntCastError(None) => write!(f, "Type casting error"),
-            Error::StrCastError(e) => write!(f, "Casting from String error, {e}"),
-            Error::SplitError(e) => write!(f, "Error when splitting, {e}"),
-            Error::InsertError(e) => write!(f, "Error when inserting, {e}"),
-            Error::MergeError(e) => write!(f, "Error when merging, {e}"),
-            Error::DeleteError(e) => write!(f, "Error when deleting {e}"),
-            Error::PagerError(e) => write!(f, "Error when calling pager {e}"),
-            Error::PagerSetError => write!(f, "Attempting to set global pager again!"),
-            Error::InvalidInput(e) => write!(f, "invalid input!, {e}"),
-            Error::FreeListError(e) => write!(f, "Free List Error {e}"),
+            E::IndexError => write!(f, "Index error"),
+            E::FileError(e) => write!(f, "File error: {e}"),
+            E::IntCastError(Some(e)) => write!(f, "Type casting error, {e}"),
+            E::IntCastError(None) => write!(f, "Type casting error"),
+            E::StrCastError(e) => write!(f, "Casting from String error, {e}"),
+            E::SplitError(e) => write!(f, "Error when splitting, {e}"),
+            E::InsertError(e) => write!(f, "Error when inserting, {e}"),
+            E::MergeError(e) => write!(f, "Error when merging, {e}"),
+            E::DeleteError(e) => write!(f, "Error when deleting {e}"),
+            E::PagerError(e) => write!(f, "Error when calling pager {e}"),
+            E::PagerSetError => write!(f, "Attempting to set global pager again!"),
+            E::InvalidInput(e) => write!(f, "invalid input!, {e}"),
+            E::FreeListError(e) => write!(f, "Free List Error {e}"),
+            E::SearchError(e) => write!(f, "Search Error {e}"),
         }
     }
 }

@@ -1,74 +1,73 @@
 /*
  * in memory pager used for testing BTree implementations
  */
-use std::{collections::HashMap, sync::OnceLock};
+use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
-use parking_lot::Mutex;
 use tracing::{debug, error};
 
 use crate::database::{
-    btree::{BTree, TreeNode},
-    types::{PAGE_SIZE, Pointer},
+    btree::{BTree, Tree},
+    pager::diskpager::Pager,
+    types::{Node, Pointer},
 };
 
-pub static GLOBAL_PAGER: OnceLock<Mutex<MemoryPager>> = OnceLock::new();
-
-#[derive(Debug)]
 pub struct MemoryPager {
-    freelist: Vec<u64>,
-    pages: HashMap<u64, TreeNode>,
-}
-
-impl MemoryPager {
-    pub fn new() -> Self {
-        MemoryPager {
-            freelist: Vec::from_iter((1..=100).rev()),
-            pages: HashMap::new(),
-        }
-    }
+    freelist: RefCell<Vec<u64>>,
+    pages: RefCell<HashMap<u64, Node>>,
+    btree: Box<dyn Tree<Codec = Self>>,
 }
 
 #[allow(unused)]
-pub fn mempage_tree() -> BTree {
-    GLOBAL_PAGER.set(Mutex::new(MemoryPager::new()));
-    BTree {
-        root_ptr: None,
-        decode: Box::new(decode),
-        encode: Box::new(encode),
-        dealloc: Box::new(dealloc),
+pub fn mempage_tree<P: Pager>() -> Rc<MemoryPager> {
+    Rc::new_cyclic(|w| MemoryPager {
+        freelist: RefCell::new(vec![]),
+        pages: RefCell::new(HashMap::<u64, Node>::new()),
+        btree: Box::new(BTree::<MemoryPager>::new(w.clone())),
+    })
+}
+
+impl Pager for MemoryPager {
+    fn page_read(&self, ptr: Pointer, flag: super::diskpager::NodeFlag) -> Node {
+        self.pages
+            .borrow_mut()
+            .get(&ptr.0)
+            .unwrap_or_else(|| {
+                error!("couldnt retrieve page at ptr {}", ptr);
+                panic!("page decode error")
+            })
+            .clone()
     }
-}
 
-/// callbacks for memory pager
-fn decode(ptr: Pointer) -> TreeNode {
-    let pager = GLOBAL_PAGER.get().unwrap().lock();
-    pager
-        .pages
-        .get(&ptr.0)
-        .unwrap_or_else(|| {
-            error!("couldnt retrieve page at ptr {}", ptr);
-            panic!("page decode error")
-        })
-        .clone()
-}
-
-fn encode(node: TreeNode) -> Pointer {
-    if node.get_nkeys() > PAGE_SIZE as u16 {
-        panic!("trying to encode node exceeding page size");
+    fn page_alloc(&self, node: Node) -> Pointer {
+        if !node.fits_page() {
+            panic!("trying to encode node exceeding page size");
+        }
+        let free_page = self
+            .freelist
+            .borrow_mut()
+            .pop()
+            .expect("no free page available");
+        debug!("encoding node at ptr {}", free_page);
+        self.pages.borrow_mut().insert(free_page, node);
+        Pointer(free_page)
     }
-    let mut pager = GLOBAL_PAGER.get().unwrap().lock();
-    let free_page = pager.freelist.pop().expect("no free page available");
-    debug!("encoding node at ptr {}", free_page);
-    pager.pages.insert(free_page, node);
-    Pointer(free_page)
-}
 
-fn dealloc(ptr: Pointer) {
-    debug!("deleting node at ptr {}", ptr.0);
-    let mut pager = GLOBAL_PAGER.get().unwrap().lock();
-    pager.freelist.push(ptr.0);
-    pager
-        .pages
-        .remove(&ptr.0)
-        .expect("couldnt remove() page number");
+    fn dealloc(&self, ptr: Pointer) {
+        debug!("deleting node at ptr {}", ptr.0);
+        self.freelist.borrow_mut().push(ptr.0);
+        self.pages
+            .borrow_mut()
+            .remove(&ptr.0)
+            .expect("couldnt remove() page number");
+    }
+
+    fn encode(&self, node: Node) -> Pointer {
+        unreachable!()
+        // not needed for in memory pager
+    }
+
+    fn update(&self, ptr: Pointer) -> *mut super::freelist::FLNode {
+        unreachable!()
+        // not needed for in memory pager
+    }
 }

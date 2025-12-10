@@ -11,27 +11,6 @@ pub trait DecodeSlice {
     fn read_u16(&self, offset: usize) -> u16;
 }
 
-fn mod_test() {
-    let tree = super::BTree::new();
-}
-
-// pub trait EncodeSlice {
-//     fn write_ptr(&mut self, ptr: Pointer, offset: usize);
-// }
-
-// impl<T> EncodeSlice for T
-// where
-//     T: DerefMut<Target = [u8]>,
-// {
-//     fn write_ptr(&mut self, ptr: Pointer, offset: usize) {
-//         if offset > NODE_SIZE {
-//             error!("offset idx {} exceeded node size", offset);
-//             panic!()
-//         }
-//         self[offset..offset + PTR_SIZE].copy_from_slice(&ptr.as_slice());
-//     }
-// }
-
 /// assumes little endian
 ///
 /// reads a [u8] slice to u16 starting at offset

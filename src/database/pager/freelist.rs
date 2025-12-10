@@ -1,6 +1,8 @@
 use std::fmt::Debug;
 use std::ops::{Deref, DerefMut};
+use std::rc::Weak;
 
+use crate::database::pager::diskpager::Pager;
 use crate::database::{
     btree::TreeNode,
     errors::FLError,
@@ -9,34 +11,50 @@ use crate::database::{
 };
 use tracing::debug;
 
-pub(crate) trait GC {
-    fn get(&mut self) -> Option<Pointer>;
-    fn append(&mut self, ptr: Pointer) -> Result<(), FLError>;
+pub(crate) struct FreeList<P: Pager> {
+    head_page: Option<Pointer>,
+    head_seq: usize,
+    tail_page: Option<Pointer>,
+    tail_seq: usize,
+    // maximum amount of items in the list
+    pub max_seq: usize,
+    pub pager: Weak<P>,
+    // // callbacks
+    // // reads page, gets page, removes from buffer if available
+    // pub decode: Box<dyn Fn(Pointer) -> FLNode>,
+    // // appends page to disk, doesnt make a buffer check
+    // pub encode: Box<dyn Fn(FLNode) -> Pointer>,
+    // /*
+    // returns ptr to node inside the allocation buffer
+    // SAFETY:
+    // needs to be called in isolation, calls to encode can resize the buffer
+    // and therefore invalidate the returning pointer, use the dedicated helper functions!
+    // */
+    // pub update: Box<dyn Fn(Pointer) -> *mut FLNode>,
 }
 
-pub(crate) struct FreeList {
+pub(crate) struct FLConfig {
     pub head_page: Option<Pointer>,
     pub head_seq: usize,
     pub tail_page: Option<Pointer>,
     pub tail_seq: usize,
-    // maximum amount of items in the list
-    max_seq: usize,
-    //
-    // callbacks
-    // reads page, gets page, removes from buffer if available
-    pub decode: Box<dyn Fn(Pointer) -> FLNode>,
-    // appends page to disk, doesnt make a buffer check
-    pub encode: Box<dyn Fn(FLNode) -> Pointer>,
-    /*
-    returns ptr to node inside the allocation buffer
-    SAFETY:
-    needs to be called in isolation, calls to encode can resize the buffer
-    and therefore invalidate the returning pointer, use the dedicated helper functions!
-    */
-    pub update: Box<dyn Fn(Pointer) -> *mut FLNode>,
 }
 
-impl GC for FreeList {
+pub(crate) trait GC {
+    type Codec: Pager;
+
+    fn get(&mut self) -> Option<Pointer>;
+    fn append(&mut self, ptr: Pointer) -> Result<(), FLError>;
+
+    fn get_config(&self) -> FLConfig;
+    fn set_config(&mut self, flc: &FLConfig);
+
+    fn collect_ptr(&self) -> Vec<Pointer>;
+    fn set_max_seq(&mut self);
+}
+
+impl<P: Pager> GC for FreeList<P> {
+    type Codec = P;
     /// removes a page from the head, decrement head seq
     /// PopHead
     fn get(&mut self) -> Option<Pointer> {
@@ -71,7 +89,7 @@ impl GC for FreeList {
                 // head page is empty
                 (None, None) => {
                     debug!("head node empty!");
-                    let new_node = (self.encode)(FLNode::new()); // this stays as encode
+                    let new_node = self.encode(FLNode::new()); // this stays as encode
                     self.set_next(self.tail_page.unwrap(), new_node);
                     self.tail_page = Some(new_node);
                 }
@@ -100,25 +118,64 @@ impl GC for FreeList {
         }
         Ok(())
     }
+    // retrieves sorted list of all pointers inside freelist
+    // does not interact with the buffer and should be called after the database has been written down
+    fn collect_ptr(&self) -> Vec<Pointer> {
+        let mut list: Vec<Pointer> = vec![];
+        let mut head = self.head_seq;
+        let max = self.max_seq;
+        let mut node = self.decode(self.head_page.unwrap());
+        while head < max {
+            list.push(node.get_ptr(seq_to_idx(head)));
+            head += 1;
+            if seq_to_idx(head) == 0 {
+                node = self.decode(node.get_next());
+            }
+        }
+        list.sort();
+        list
+    }
+    fn get_config(&self) -> FLConfig {
+        FLConfig {
+            head_page: self.head_page,
+            head_seq: self.head_seq,
+            tail_page: self.tail_page,
+            tail_seq: self.tail_seq,
+        }
+    }
+
+    fn set_config(&mut self, flc: &FLConfig) {
+        self.head_page = flc.head_page;
+        self.head_seq = flc.head_seq;
+        self.tail_page = flc.tail_page;
+        self.tail_seq = flc.tail_seq;
+    }
+fn set_max_seq(&mut self) {
+    self.max_seq = self.tail_seq
+}
 }
 
-impl FreeList {
+impl<P: Pager> FreeList<P> {
     // updated callbacks
-    fn decode() {}
-    fn encode() {}
-    fn update() {}
+    fn decode(&self, ptr: Pointer) -> FLNode {
+        todo!()
+    }
+    fn encode(&self, node: FLNode) -> Pointer {
+        todo!()
+    }
+    fn update(&self, ptr: Pointer) -> *mut FLNode {
+        todo!()
+    }
 
     /// new uninitialized
-    pub fn new() -> Self {
+    pub fn new(pager: Weak<P>) -> Self {
         FreeList {
             head_page: None,
             head_seq: 0,
             tail_page: None,
             tail_seq: 0,
             max_seq: 0,
-            decode: Box::new(|_| panic!("not initialized")),
-            encode: Box::new(|_| panic!("not initialized")),
-            update: Box::new(|_| panic!("not initialized")),
+            pager: pager,
         }
     }
 
@@ -144,16 +201,12 @@ impl FreeList {
         }
         (Some(ptr), None)
     }
-
-    pub fn set_max_seq(&mut self) {
-        self.max_seq = self.tail_seq
-    }
     /// safety function to call update()
     /// gets pointer from idx
     fn get_ptr(&self, node: Pointer, idx: u16) -> Pointer {
         // SAFETY: see callback at the top
         unsafe {
-            let node_ptr = (self.update)(node);
+            let node_ptr = self.update(node);
             (*node_ptr).get_ptr(idx)
         }
     }
@@ -163,7 +216,7 @@ impl FreeList {
     fn set_ptr_buf(&self, node: Pointer, ptr: Pointer, idx: u16) {
         // SAFETY: see callback at the top
         unsafe {
-            let node_ptr = (self.update)(node);
+            let node_ptr = self.update(node);
             (*node_ptr).set_ptr(idx, ptr);
         }
     }
@@ -173,7 +226,7 @@ impl FreeList {
     fn get_next(&self, node: Pointer) -> Pointer {
         // SAFETY: see callback at the top
         unsafe {
-            let node_ptr = (self.update)(node);
+            let node_ptr = self.update(node);
             (*node_ptr).get_next()
         }
     }
@@ -183,27 +236,9 @@ impl FreeList {
     fn set_next(&self, node: Pointer, ptr: Pointer) {
         // SAFETY: see callback at the top
         unsafe {
-            let node_ptr = (self.update)(node);
+            let node_ptr = self.update(node);
             (*node_ptr).set_next(ptr);
         }
-    }
-
-    // retrieves sorted list of all pointers inside freelist
-    // does not interact with the buffer and should be called after the database has been written down
-    pub fn collect_ptr(&self) -> Vec<Pointer> {
-        let mut list: Vec<Pointer> = vec![];
-        let mut head = self.head_seq;
-        let max = self.max_seq;
-        let mut node = (self.decode)(self.head_page.unwrap());
-        while head < max {
-            list.push(node.get_ptr(seq_to_idx(head)));
-            head += 1;
-            if seq_to_idx(head) == 0 {
-                node = (self.decode)(node.get_next());
-            }
-        }
-        list.sort();
-        list
     }
 }
 
@@ -277,7 +312,7 @@ impl DerefMut for FLNode {
     }
 }
 
-impl Debug for FreeList {
+impl<P: Pager> Debug for FreeList<P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FreeList")
             .field("head page", &self.head_page)

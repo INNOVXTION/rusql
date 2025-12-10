@@ -3,13 +3,15 @@ use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 use std::os::fd::OwnedFd;
 use std::ptr;
-use std::rc::{Rc, Weak};
+use std::rc::Rc;
 use std::str::FromStr;
 
 use tracing::{debug, error, info, instrument, warn};
 
+use crate::create_file_sync;
+use crate::database::BTree;
 use crate::database::helper::{as_page, input_valid, print_buffer};
-use crate::database::pager::freelist::{FLNode, GC};
+use crate::database::pager::freelist::{FLConfig, FLNode, FreeList, GC};
 use crate::database::pager::mmap::*;
 use crate::database::{
     btree::{Tree, TreeNode},
@@ -24,20 +26,15 @@ pub(crate) enum NodeFlag {
     Freelist,
 }
 
-#[derive(Debug)]
-pub(crate) struct DiskPager<T, FL>
-where
-    T: Tree,
-    FL: GC,
-{
+pub(crate) struct EnvoyV1 {
     path: &'static str,
-    pub database: OwnedFd,
+    database: OwnedFd,
     failed: Cell<bool>,
-    pub buffer: RefCell<Buffer>,
+    buffer: RefCell<Buffer>,
     pub mmap: RefCell<Mmap>,
 
-    tree: T,
-    freelist: FL,
+    tree: Rc<RefCell<dyn Tree<Codec = Self>>>,
+    freelist: Rc<RefCell<dyn GC<Codec = Self>>>,
 }
 
 #[derive(Debug)]
@@ -46,12 +43,42 @@ pub(crate) struct Buffer {
     pub nappend: u64,                 // number of pages to be appended
     pub npages: u64,                  // database size in number of pages
 }
+trait KVEngine {
+    fn get(&self, key: &str) -> Result<String, Error>;
+    fn set(&mut self, key: &str, val: &str) -> Result<(), Error>;
+    fn delete(&mut self, key: &str) -> Result<(), Error>;
+}
 
-// outward API
-trait PagerAPI {
-    fn get(&self, key: &str) -> Result<Option<String>, Error>;
-    fn set(&self, key: &str, val: &str) -> Result<(), Error>;
-    fn delete(&self, key: &str) -> Result<(), Error>;
+impl KVEngine for EnvoyV1 {
+    #[instrument(skip(self))]
+    fn get(&self, key: &str) -> Result<String, Error> {
+        input_valid(key, " ")?;
+        self.tree
+            .borrow()
+            .search(key)
+            .ok_or(Error::SearchError("value not found".to_string()))
+    }
+
+    #[instrument(skip(self))]
+    fn set(&mut self, key: &str, val: &str) -> Result<(), Error> {
+        input_valid(key, val)?;
+        let recov_page = metapage_save(self); // saving current metapage for possible rollback
+        info!("inserting");
+        self.tree.borrow_mut().insert(key, val).map_err(|e| {
+            error!(%e, "tree error");
+            e
+        })?;
+        debug!("updating file");
+        self.update_or_revert(&recov_page)
+    }
+
+    #[instrument(skip(self))]
+    fn delete(&mut self, key: &str) -> Result<(), Error> {
+        input_valid(key, " ")?;
+        let recov_page = metapage_save(self); // saving current metapage for possible rollback
+        self.tree.borrow_mut().delete(key)?;
+        self.update_or_revert(&recov_page)
+    }
 }
 
 // internal API
@@ -65,44 +92,7 @@ pub(crate) trait Pager {
     fn update(&self, ptr: Pointer) -> *mut FLNode; // FL update
 }
 
-impl<T, FL> PagerAPI for DiskPager<T, FL>
-where
-    T: Tree,
-    FL: GC,
-{
-    #[instrument(skip(self))]
-    fn get(&self, key: &str) -> Result<Option<String>, Error> {
-        input_valid(key, " ")?;
-        Ok(self.tree.borrow().search(key))
-    }
-
-    #[instrument(skip(self))]
-    fn set(&self, key: &str, val: &str) -> Result<(), Error> {
-        input_valid(key, val)?;
-        let recov_page = metapage_save(self); // saving current metapage for possible rollback
-        info!("inserting");
-        self.tree.borrow_mut().insert(key, val).map_err(|e| {
-            error!(%e, "tree error");
-            e
-        })?;
-        debug!("updating file");
-        self.update_or_revert(&recov_page)
-    }
-
-    #[instrument(skip(self))]
-    fn delete(&self, key: &str) -> Result<(), Error> {
-        input_valid(key, " ")?;
-        let recov_page = metapage_save(self); // saving current metapage for possible rollback
-        self.tree.borrow_mut().delete(key)?;
-        self.update_or_revert(&recov_page)
-    }
-}
-
-impl<T, FL> Pager for DiskPager<T, FL>
-where
-    T: Tree,
-    FL: GC,
-{
+impl Pager for EnvoyV1 {
     // decodes a page, checks buffer before reading disk
     // `BTree.get`, reads a page possibly from buffer or disk
     fn page_read(&self, ptr: Pointer, flag: NodeFlag) -> Node {
@@ -193,16 +183,28 @@ where
     }
 }
 
-impl<T, FL> DiskPager<T, FL>
-where
-    T: Tree,
-    FL: GC,
-{
+impl EnvoyV1 {
     /// initializes pager
     ///
     /// opens file, and sets up callbacks for the tree
     #[instrument]
-    fn open(path: &'static str) -> Result<Rc<Self>, Error> {
+    pub fn open(path: &'static str) -> Result<Rc<Self>, Error> {
+        let mut pager = Rc::new_cyclic(|w| EnvoyV1 {
+            path,
+            database: create_file_sync(path).expect("file open error"),
+            failed: Cell::new(false),
+            buffer: RefCell::new(Buffer {
+                hmap: HashMap::<Pointer, Node>::new(),
+                nappend: 0,
+                npages: 0,
+            }),
+            mmap: RefCell::new(Mmap {
+                total: 0,
+                chunks: vec![],
+            }),
+            tree: Rc::new(RefCell::new(BTree::<Self>::new(w.clone()))),
+            freelist: Rc::new(RefCell::new(FreeList::<Self>::new(w.clone()))),
+        });
         let fd_size = rustix::fs::fstat(&pager.database)
             .map_err(|e| {
                 error!("Error when getting file size");
@@ -211,7 +213,7 @@ where
             .unwrap()
             .st_size as u64;
         mmap_extend(&pager, PAGE_SIZE).expect("mmap extend error");
-        metapage_read(&pager, fd_size);
+        metapage_read(&mut pager, fd_size);
         debug!(
             "\npager initialized:\nmmap.total {}\nn_pages {}\nchunks.len {}",
             pager.mmap.borrow().total,
@@ -221,7 +223,7 @@ where
         Ok(pager)
     }
 
-    fn update_or_revert(&self, recov_page: &MetaPage) -> Result<(), Error> {
+    fn update_or_revert(&mut self, recov_page: &MetaPage) -> Result<(), Error> {
         if self.failed.get() {
             debug!("failed update detected...");
             // checking after previous error to see if the meta page on disk fits with page in memory
@@ -247,7 +249,7 @@ where
     }
 
     /// write sequence
-    fn file_update(&self) -> Result<(), PagerError> {
+    fn file_update(&mut self) -> Result<(), PagerError> {
         // updating free list for next update
         self.freelist.borrow_mut().set_max_seq();
         // flush buffer to disk
@@ -256,8 +258,8 @@ where
         // write currently loaded metapage to disk
         metapage_write(self, &metapage_save(self))?;
         rustix::fs::fsync(&self.database)?;
-        assert!(self.tree.borrow().root_ptr != self.freelist.borrow().head_page);
-        assert!(self.tree.borrow().root_ptr != self.freelist.borrow().tail_page);
+        // assert!(self.tree.root_ptr != self.freelist.head_page);
+        // assert!(self.tree.root_ptr != self.freelist.tail_page);
         Ok(())
     }
 
@@ -410,59 +412,67 @@ impl DerefMut for MetaPage {
 }
 
 /// returns metapage object of current pager state
-fn metapage_save(pager: &DiskPager) -> MetaPage {
-    let fl_ref = pager.freelist.borrow();
+fn metapage_save(pager: &EnvoyV1) -> MetaPage {
+    let flc = pager.freelist.borrow().get_config();
+    let tr_ref = pager.tree.borrow();
     let mut data = MetaPage::new();
     debug!(
         sig = DB_SIG,
-        root_ptr = ?pager.tree.borrow().root_ptr,
+        root_ptr = ?tr_ref.get_root(),
         npages = pager.buffer.borrow().npages,
-        fl_head_ptr = ?fl_ref.head_page,
-        fl_head_seq = fl_ref.head_seq,
-        fl_tail_ptr = ?fl_ref.tail_page,
-        fl_tail_seq = fl_ref.tail_seq,
+        fl_head_ptr = ?flc.head_page,
+        fl_head_seq = flc.head_seq,
+        fl_tail_ptr = ?flc.tail_page,
+        fl_tail_seq = flc.tail_seq,
         "saving meta page:"
     );
     use MpField as M;
     data.set_sig(DB_SIG);
-    data.set_ptr(M::RootPtr, pager.tree.borrow().root_ptr);
+    data.set_ptr(M::RootPtr, tr_ref.get_root());
     data.set_ptr(M::Npages, Some(pager.buffer.borrow().npages.into()));
 
-    data.set_ptr(M::HeadPage, fl_ref.head_page);
-    data.set_ptr(M::HeadSeq, Some(fl_ref.head_seq.into()));
-    data.set_ptr(M::TailPage, fl_ref.tail_page);
-    data.set_ptr(M::TailSeq, Some(fl_ref.tail_seq.into()));
+    data.set_ptr(M::HeadPage, flc.head_page);
+    data.set_ptr(M::HeadSeq, Some(flc.head_seq.into()));
+    data.set_ptr(M::TailPage, flc.tail_page);
+    data.set_ptr(M::TailSeq, Some(flc.tail_seq.into()));
     data
 }
 
 /// loads meta page object into pager
 ///
 /// panics when called without initialized mmap
-fn metapage_load(pager: &DiskPager, meta: &MetaPage) {
+fn metapage_load(pager: &EnvoyV1, meta: &MetaPage) {
     debug!("loading metapage");
-    let mut buf_ref = pager.buffer.borrow_mut();
-    pager.tree.borrow_mut().root_ptr = match meta.read_ptr(MpField::RootPtr) {
-        Pointer(0) => None,
-        n => Some(n),
+    let mut tr_ref = pager.tree.borrow_mut();
+    match meta.read_ptr(MpField::RootPtr) {
+        Pointer(0) => tr_ref.set_root(None),
+        n => tr_ref.set_root(Some(n)),
     };
-    buf_ref.npages = meta.read_ptr(MpField::Npages).get();
+    pager.buffer.borrow_mut().npages = meta.read_ptr(MpField::Npages).get();
 
-    let mut fl_ref = pager.freelist.borrow_mut();
-    fl_ref.head_page = Some(meta.read_ptr(MpField::HeadPage));
-    fl_ref.head_seq = meta.read_ptr(MpField::HeadSeq).get() as usize;
-    fl_ref.tail_page = Some(meta.read_ptr(MpField::TailPage));
-    fl_ref.tail_seq = meta.read_ptr(MpField::TailSeq).get() as usize;
+    let flc = FLConfig {
+        head_page: Some(meta.read_ptr(MpField::HeadPage)),
+        head_seq: meta.read_ptr(MpField::HeadSeq).get() as usize,
+        tail_page: Some(meta.read_ptr(MpField::TailPage)),
+        tail_seq: meta.read_ptr(MpField::TailSeq).get() as usize,
+    };
+    pager.freelist.borrow_mut().set_config(&flc);
 }
 
 /// loads meta page from disk,
 /// formerly root_read
-fn metapage_read(pager: &DiskPager, file_size: u64) {
+fn metapage_read(pager: &EnvoyV1, file_size: u64) {
     if file_size == 0 {
         // empty file
         debug!("root read: empty file...");
         pager.buffer.borrow_mut().npages = 2; // reserved for meta page and one free list node
-        pager.freelist.borrow_mut().head_page = Some(Pointer::from(1u64));
-        pager.freelist.borrow_mut().tail_page = Some(Pointer::from(1u64));
+        let flc = FLConfig {
+            head_page: Some(Pointer::from(1u64)),
+            head_seq: 0,
+            tail_page: Some(Pointer::from(1u64)),
+            tail_seq: 0,
+        };
+        pager.freelist.borrow_mut().set_config(&flc);
         return;
     }
     debug!("root read: loading meta page");
@@ -473,7 +483,7 @@ fn metapage_read(pager: &DiskPager, file_size: u64) {
 }
 
 /// writes meta page to disk
-fn metapage_write(pager: &DiskPager, meta: &MetaPage) -> Result<(), PagerError> {
+fn metapage_write(pager: &EnvoyV1, meta: &MetaPage) -> Result<(), PagerError> {
     debug!("writing metapage to disk...");
     let r = rustix::io::pwrite(&pager.database, meta, 0)?;
     Ok(())
@@ -497,7 +507,7 @@ mod test {
     fn open_pager() {
         let path = "test-files/open_pager.rdb";
         cleanup_file(path);
-        let pager = DiskPager::open(path).unwrap();
+        let pager = EnvoyV1::open(path).unwrap();
         assert_eq!(pager.buffer.borrow().npages, 2);
         cleanup_file(path);
     }
@@ -506,7 +516,7 @@ mod test {
     fn disk_insert1() {
         let path = "test-files/disk_insert1.rdb";
         cleanup_file(path);
-        let pager = DiskPager::open(path).unwrap();
+        let pager = EnvoyV1::open(path).unwrap();
         pager.set("1", "val").unwrap();
         assert_eq!(pager.get("1").unwrap().unwrap(), "val".to_string());
         cleanup_file(path);
@@ -516,7 +526,7 @@ mod test {
     fn disk_insert2() {
         let path = "test-files/disk_insert2.rdb";
         cleanup_file(path);
-        let pager = DiskPager::open(path).unwrap();
+        let pager = EnvoyV1::open(path).unwrap();
 
         for i in 1u16..=300u16 {
             pager.set(&format!("{i}"), "value").unwrap()
@@ -531,7 +541,7 @@ mod test {
     fn disk_delete1() {
         let path = "test-files/disk_delete1.rdb";
         cleanup_file(path);
-        let pager = DiskPager::open(path).unwrap();
+        let pager = EnvoyV1::open(path).unwrap();
 
         for i in 1u16..=300u16 {
             pager.set(&format!("{i}"), "value").unwrap()
@@ -546,7 +556,7 @@ mod test {
     fn disk_random1() {
         let path = "test-files/disk_random1.rdb";
         cleanup_file(path);
-        let pager = DiskPager::open(path).unwrap();
+        let pager = EnvoyV1::open(path).unwrap();
 
         for _ in 1u16..=1000 {
             pager
@@ -560,7 +570,7 @@ mod test {
     fn disk_delete2() {
         let path = "test-files/disk_delete2.rdb";
         cleanup_file(path);
-        let pager = DiskPager::open(path).unwrap();
+        let pager = EnvoyV1::open(path).unwrap();
 
         for k in 1u16..=1000 {
             pager.set(&format!("{}", k), "val").unwrap()

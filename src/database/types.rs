@@ -98,6 +98,15 @@ impl DerefMut for Node {
     }
 }
 
+impl Clone for Node {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Tree(arg0) => Self::Tree(arg0.clone()),
+            Self::Freelist(arg0) => Self::Freelist(arg0.clone()),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Eq, Hash, Ord)]
 pub(crate) struct Pointer(pub u64);
 
