@@ -133,6 +133,7 @@ pub(crate) fn input_valid(key: &str, value: &str) -> Result<(), Error> {
     Ok(())
 }
 
+/// helper function for debugging purposes
 pub fn print_buffer(buf: &HashMap<Pointer, Node>) {
     debug!("current buffer:");
     debug!("---------");

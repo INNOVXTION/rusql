@@ -125,6 +125,7 @@ impl Pager for EnvoyV1 {
         // check freelist first
         debug!("allocating ...");
         if let Some(ptr) = self.freelist.borrow_mut().get() {
+            // loading page into buffer
             self.buffer.borrow_mut().hmap.insert(ptr, node);
             print_buffer(&self.buffer.borrow().hmap);
             assert_ne!(ptr.0, 0);
@@ -166,13 +167,14 @@ impl Pager for EnvoyV1 {
     /// checks buffer for allocated page and returns pointer
     fn update(&self, ptr: Pointer) -> *mut FLNode {
         let buf = &mut self.buffer.borrow_mut();
-        // checking buffer, decoding a page if needed
+        // checking buffer,...
         let entry = match buf.hmap.get_mut(&ptr) {
             Some(n) => {
                 debug!("updating {} in buffer", ptr);
                 n
             }
             None => {
+                // decoding page from disk and loading it into buffer
                 debug!(%ptr, "reading free list from disk...");
                 buf.hmap.insert(ptr, self.decode(ptr, NodeFlag::Freelist));
                 buf.hmap.get_mut(&ptr).expect("we just inserted it")
@@ -347,10 +349,57 @@ impl EnvoyV1 {
         panic!()
     }
 
-    // WIP
-    fn cleanup(&self) {
-        let list = self.freelist.borrow().collect_ptr();
+    fn cleanup(&self) -> Result<(), Error> {
+        let list: Vec<Pointer> = self.freelist.borrow().peek_ptr();
         let npages = self.buffer.borrow().npages;
+        match Self::cleanup_check(npages, &list) {
+            Some(count) => {
+                for i in 0..count {
+                    // removing items from freelist
+                    let ptr = self.freelist.borrow_mut().get().unwrap();
+                    assert_eq!(list[i as usize], ptr.get());
+                }
+                self.update_or_revert(metapage_save(self))
+                rustix::fs::ftruncate(&self.database, (npages - count) * PAGE_SIZE as u64)
+                    .expect("truncate failed");
+                rustix::fs::fsync(&self.database);
+                Ok(())
+            }
+            None => Ok(()),
+        }
+    }
+
+    /// returns the number of pages that can be truncated, by evaluating a contiguous sequence at the end of the freelist
+    fn cleanup_check(npages: u64, list: &[Pointer]) -> Option<u64> {
+        if list.is_empty() || npages == 2 {
+            return None;
+        }
+        let mut iter = list.iter().map(|ptr| ptr.get());
+        let mut count: u64 = 1;
+        let mut first = iter.next().unwrap();
+        assert_ne!(first, 0);
+        for i in iter {
+            // base case, smaller non adjacent
+            if i + 1 < first {
+                break;
+            }
+            // smaller adjacent number
+            if i == first - 1 {
+                first = i;
+            }
+            // number is larger
+            count += 1;
+        }
+        if first + count == npages {
+            // hit, we can truncate count pages
+            Some(count)
+        } else {
+            None
+        }
+    }
+
+    fn truncate_to(&self, page: u64) {
+        rustix::fs::ftruncate(&self.database, page * PAGE_SIZE as u64).expect("truncate failed")
     }
 }
 
@@ -586,5 +635,28 @@ mod test {
             pager.delete(&format!("{}", k)).unwrap()
         }
         cleanup_file(path);
+    }
+
+    #[test]
+    fn cleanup_mock1() {
+        let list: Vec<Pointer> = vec![Pointer(6), Pointer(9), Pointer(8), Pointer(7), Pointer(4)];
+        let res = EnvoyV1::cleanup_check(10, &list);
+        assert_eq!(res, Some(4));
+
+        let list: Vec<Pointer> = vec![Pointer(6), Pointer(9), Pointer(8), Pointer(4), Pointer(7)];
+        let res = EnvoyV1::cleanup_check(10, &list);
+        assert_eq!(res, None);
+
+        let list: Vec<Pointer> = vec![Pointer(9), Pointer(8), Pointer(7), Pointer(6), Pointer(5)];
+        let res = EnvoyV1::cleanup_check(10, &list);
+        assert_eq!(res, Some(5));
+
+        let list: Vec<Pointer> = vec![Pointer(9), Pointer(4), Pointer(7), Pointer(6), Pointer(5)];
+        let res = EnvoyV1::cleanup_check(10, &list);
+        assert_eq!(res, Some(1));
+
+        let list: Vec<Pointer> = vec![Pointer(1), Pointer(4), Pointer(7), Pointer(6), Pointer(5)];
+        let res = EnvoyV1::cleanup_check(10, &list);
+        assert_eq!(res, None);
     }
 }

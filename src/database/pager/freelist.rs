@@ -38,7 +38,7 @@ pub(crate) trait GC {
     fn get_config(&self) -> FLConfig;
     fn set_config(&mut self, flc: &FLConfig);
 
-    fn collect_ptr(&self) -> Vec<Pointer>;
+    fn peek_ptr(&self) -> Vec<Pointer>;
     fn set_max_seq(&mut self);
 }
 
@@ -110,22 +110,26 @@ impl<P: Pager> GC for FreeList<P> {
         }
         Ok(())
     }
-    /// retrieves sorted list of all pointers inside freelist
+    /// retrieves list of all pointers inside freelist, as if popped by head
     ///
-    /// does not interact with the buffer and should be called after the database has been written down
-    fn collect_ptr(&self) -> Vec<Pointer> {
+    /// calls encode and does not interact with the buffer so it should be called after the database has been written down
+    fn peek_ptr(&self) -> Vec<Pointer> {
         let mut list: Vec<Pointer> = vec![];
         let mut head = self.head_seq;
+
+        let head_page = self.head_page;
+        let tail_page = self.tail_page;
+
         let max = self.max_seq;
         let mut node = self.decode(self.head_page.unwrap());
-        while head < max {
+        while head < max && head_page != tail_page {
             list.push(node.get_ptr(seq_to_idx(head)));
             head += 1;
             if seq_to_idx(head) == 0 {
                 node = self.decode(node.get_next());
+                head = 0;
             }
         }
-        list.sort();
         list
     }
 
