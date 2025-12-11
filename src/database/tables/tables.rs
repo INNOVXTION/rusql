@@ -105,12 +105,18 @@ enum DataCell {
     Int(i64),
 }
 
+trait TableInterface {
+    fn insert_record();
+    fn insert_table();
+    fn lookup_table();
+}
+
 trait DataCodec {
     fn encode(data: &DataCell) -> Rc<[u8]>;
     fn decode(data: &[u8]) -> DataCell;
 }
 
-trait TableInterface {
+trait TableAPI {
     type KVStore: KVEngine;
 
     fn create_table(pager: &Self::KVStore);

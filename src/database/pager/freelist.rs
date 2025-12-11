@@ -81,6 +81,7 @@ impl<P: Pager> GC for FreeList<P> {
                     let new_node = self.encode(FLNode::new()); // this stays as encode
                     self.update_set_next(self.tail_page.unwrap(), new_node);
                     self.tail_page = Some(new_node);
+                    self.tail_seq = 0; // experimental
                 }
                 // setting new page
                 (Some(next), None) => {
@@ -88,6 +89,7 @@ impl<P: Pager> GC for FreeList<P> {
                     assert_ne!(next.0, 0);
                     self.update_set_next(self.tail_page.unwrap(), next);
                     self.tail_page = Some(next);
+                    self.tail_seq = 0; // experimental
                 }
                 // getting the last item of the head node and the head node itself
                 (Some(next), Some(head)) => {
@@ -100,6 +102,7 @@ impl<P: Pager> GC for FreeList<P> {
                     self.tail_page = Some(next);
                     // appending the empty head
                     self.update_set_ptr(self.tail_page.unwrap(), head, 0);
+                    self.tail_seq = 0; // experimental
                     self.tail_seq += 1; // accounting for re-added head
                 }
                 _ => unreachable!(),
@@ -162,7 +165,7 @@ impl<P: Pager> FreeList<P> {
     /// # SAFETY:
     /// needs to be called in isolation, calls to encode can resize the buffer
     /// and therefore invalidate the returning pointer, use the dedicated helper functions!
-    fn update(&self, ptr: Pointer) -> *mut FLNode {
+    unsafe fn update(&self, ptr: Pointer) -> *mut FLNode {
         let strong = self.pager.upgrade().unwrap();
         strong.update(ptr)
     }
@@ -181,7 +184,9 @@ impl<P: Pager> FreeList<P> {
 
     /// flPop
     fn pop_head(&mut self) -> (Option<Pointer>, Option<Pointer>) {
-        if self.head_seq == self.max_seq {
+        // experimental
+        // head seq cant overtake max seq when on the same page as tail
+        if self.head_seq == self.max_seq && self.head_page == self.tail_page {
             // no free page available
             return (None, None);
         }
@@ -197,6 +202,7 @@ impl<P: Pager> FreeList<P> {
             let head = self.head_page.unwrap();
             // self.head_page = Some(node.get_next());
             self.head_page = Some(self.update_get_next(self.head_page.unwrap()));
+            self.head_seq = 0; // experimental
             return (Some(ptr), Some(head));
         }
         (Some(ptr), None)
