@@ -158,7 +158,7 @@ impl<P: Pager> FreeList<P> {
     /// reads page, gets page, removes from buffer if available
     fn decode(&self, ptr: Pointer) -> FLNode {
         let strong = self.pager.upgrade().unwrap();
-        strong.page_read(ptr, NodeFlag::Tree).as_fl()
+        strong.page_read(ptr, NodeFlag::Freelist).as_fl()
     }
     /// appends page to disk, doesnt make a buffer check
     fn encode(&self, node: FLNode) -> Pointer {

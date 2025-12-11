@@ -349,6 +349,8 @@ impl EnvoyV1 {
         panic!()
     }
 
+    #[instrument(skip(self))]
+    /// still WIP api
     fn cleanup(&self) -> Result<(), Error> {
         let list: Vec<Pointer> = self.freelist.borrow().peek_ptr();
         let npages = self.buffer.borrow().npages;
@@ -359,7 +361,7 @@ impl EnvoyV1 {
                     let ptr = self.freelist.borrow_mut().get().unwrap();
                     assert_eq!(list[i as usize], ptr);
                 }
-                self.update_or_revert(metapage_save(self));
+                self.update_or_revert(&metapage_save(self));
                 rustix::fs::ftruncate(&self.database, (npages - count) * PAGE_SIZE as u64)
                     .expect("truncate failed");
                 rustix::fs::fsync(&self.database);
@@ -654,5 +656,29 @@ mod test {
         let list: Vec<Pointer> = vec![Pointer(1), Pointer(4), Pointer(7), Pointer(6), Pointer(5)];
         let res = EnvoyV1::cleanup_check(10, &list);
         assert_eq!(res, None);
+    }
+
+    #[test]
+    fn cleanup_test() {
+        let path = "test-files/disk_cleanup.rdb";
+        cleanup_file(path);
+        let pager = EnvoyV1::open(path).unwrap();
+        // assert_eq!(fd_size, PAGE_SIZE as u64 * 2);
+        for k in 1u16..=500 {
+            pager.set(&format!("{}", k), "val").unwrap()
+        }
+        for k in 1u16..=500 {
+            pager.delete(&format!("{}", k)).unwrap()
+        }
+        pager.cleanup();
+        let fd_size = rustix::fs::fstat(&pager.database)
+            .map_err(|e| {
+                error!("Error when getting file size");
+                Error::PagerError(PagerError::FDError(e))
+            })
+            .unwrap()
+            .st_size as u64;
+        assert_eq!(fd_size, PAGE_SIZE as u64 * 2);
+        cleanup_file(path);
     }
 }
