@@ -105,15 +105,43 @@ enum DataCell {
     Int(i64),
 }
 
+impl DataCell {
+    fn into_bytes(self) -> Rc<[u8]> {
+        match self {
+            DataCell::Str(s) => {
+                let len = s.len();
+                let mut buf = Vec::<u8>::with_capacity(len + 4);
+                buf[..4].copy_from_slice(&(len as u32).to_be_bytes());
+                buf[4..].copy_from_slice(&s.into_bytes());
+                Rc::from(buf)
+            }
+            DataCell::Int(i) => Rc::from(i.to_le_bytes()),
+        }
+    }
+    fn from_bytes(data: &[u8], encode_type: TypeCol) -> DataCell {
+        match encode_type {
+            TypeCol::BYTES => {
+                let mut buf = [0u8; 4];
+                buf.copy_from_slice(&data[..4]);
+                let len = u32::from_le_bytes(buf) as usize;
+                assert_eq!(data.len(), len + 4);
+                // SAFETY: we encode in UTF-8
+                DataCell::Str(unsafe { String::from_utf8_unchecked(data[4..4 + len].to_vec()) })
+            }
+            TypeCol::INTEGER => {
+                assert_eq!(data.len(), 8);
+                let mut buf = [0u8; 8];
+                buf.copy_from_slice(data);
+                DataCell::Int(i64::from_le_bytes(buf))
+            }
+        }
+    }
+}
+
 trait TableInterface {
     fn insert_record();
     fn insert_table();
     fn lookup_table();
-}
-
-trait DataCodec {
-    fn encode(data: &DataCell) -> Rc<[u8]>;
-    fn decode(data: &[u8]) -> DataCell;
 }
 
 trait TableAPI {

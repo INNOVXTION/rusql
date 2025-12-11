@@ -332,37 +332,6 @@ impl TreeNode {
             return 0;
         }
         lo - 1
-        // // converts idx to key as usize
-        // let key_num = |idx| {
-        //     let key = self.get_key(idx as u16).unwrap();
-        //     match key.is_empty() {
-        //         // handling edge case for empty key
-        //         true => 0,
-        //         false => key.parse().unwrap(),
-        //     }
-        // };
-        // let n: usize = match key.is_empty() {
-        //     true => 0,
-        //     false => key.parse().unwrap(),
-        // };
-        // let mut lo: usize = 0;
-        // let mut hi = nkeys as usize;
-        // while hi > lo {
-        //     let m = (hi + lo) / 2;
-        //     let v = key_num(m);
-        //     // debug!(key, lo, hi, v = key_num(m), m);
-        //     if v == n {
-        //         return m as u16;
-        //     };
-        //     if v > n {
-        //         hi = m;
-        //     } else if m + 1 < nkeys as usize && key_num(m + 1) > n {
-        //         return m as u16;
-        //     } else {
-        //         lo = m + 1;
-        //     }
-        // }
-        // nkeys - 1
     }
 
     /// abstracted API over leaf_kvinsert and leaf_kvupdate

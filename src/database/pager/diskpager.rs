@@ -636,7 +636,7 @@ mod test {
     }
 
     #[test]
-    fn cleanup_mock1() {
+    fn cleanup_helper1() {
         let list: Vec<Pointer> = vec![Pointer(6), Pointer(9), Pointer(8), Pointer(7), Pointer(4)];
         let res = EnvoyV1::cleanup_check(10, &list);
         assert_eq!(res, Some(4));
@@ -678,7 +678,7 @@ mod test {
             })
             .unwrap()
             .st_size as u64;
-        assert_eq!(fd_size, PAGE_SIZE as u64 * 2);
         cleanup_file(path);
+        assert_eq!(fd_size, PAGE_SIZE as u64 * 2);
     }
 }

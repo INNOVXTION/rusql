@@ -79,13 +79,13 @@ impl Pager for MemoryPager {
             .expect("couldnt remove() page number");
     }
 
+    // not needed for in memory pager
     fn encode(&self, node: Node) -> Pointer {
         unreachable!()
-        // not needed for in memory pager
     }
 
+    // not needed for in memory pager
     fn update(&self, ptr: Pointer) -> *mut super::freelist::FLNode {
         unreachable!()
-        // not needed for in memory pager
     }
 }
