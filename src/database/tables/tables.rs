@@ -1,6 +1,7 @@
 use std::rc::Rc;
 
 use crate::database::{pager::diskpager::KVEngine, types::Pointer};
+use serde::{Deserialize, Serialize};
 
 // naming for tdef table
 const DEF_TABLE_NAME: &'static str = "tdef";
@@ -17,6 +18,7 @@ const META_TABLE_ID: u64 = 2;
 const META_TABLE_PKEYS: u16 = 1;
 
 // serialize to json
+#[derive(Serialize, Deserialize)]
 struct Table {
     name: String,
     id: u64,
@@ -81,11 +83,13 @@ impl Table {
     }
 }
 
+#[derive(Serialize, Deserialize)]
 struct Column {
     title: String,
     data_type: TypeCol,
 }
 
+#[derive(Serialize, Deserialize)]
 enum TypeCol {
     BYTES = 1,
     INTEGER = 2,

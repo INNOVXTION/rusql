@@ -36,6 +36,9 @@ pub(crate) struct EnvoyV1 {
 
     tree: Rc<RefCell<dyn Tree<Codec = Self>>>,
     freelist: Rc<RefCell<dyn GC<Codec = Self>>>,
+    // WIP
+    // clean factor
+    // counter after deletion for cleanup
 }
 
 #[derive(Debug)]

@@ -69,7 +69,7 @@ impl<P: Pager> GC for FreeList<P> {
         // updating appending the pointer
         debug!("appending {} to free list...", ptr);
         assert!(self.tail_page.is_some());
-        self.set_ptr_buf(self.tail_page.unwrap(), ptr, seq_to_idx(self.tail_seq));
+        self.update_set_ptr(self.tail_page.unwrap(), ptr, seq_to_idx(self.tail_seq));
         self.tail_seq += 1;
         // allocating new node if the the node is full
         if seq_to_idx(self.tail_seq) == 0 {
@@ -79,14 +79,14 @@ impl<P: Pager> GC for FreeList<P> {
                 (None, None) => {
                     debug!("head node empty!");
                     let new_node = self.encode(FLNode::new()); // this stays as encode
-                    self.set_next(self.tail_page.unwrap(), new_node);
+                    self.update_set_next(self.tail_page.unwrap(), new_node);
                     self.tail_page = Some(new_node);
                 }
                 // setting new page
                 (Some(next), None) => {
                     debug!("got page from head...");
                     assert_ne!(next.0, 0);
-                    self.set_next(self.tail_page.unwrap(), next);
+                    self.update_set_next(self.tail_page.unwrap(), next);
                     self.tail_page = Some(next);
                 }
                 // getting the last item of the head node and the head node itself
@@ -95,11 +95,11 @@ impl<P: Pager> GC for FreeList<P> {
                     assert_ne!(next.0, 0);
                     assert_ne!(head.0, 0);
                     // sets current tail next to new page
-                    self.set_next(self.tail_page.unwrap(), next);
+                    self.update_set_next(self.tail_page.unwrap(), next);
                     // moves tail to new empty page
                     self.tail_page = Some(next);
                     // appending the empty head
-                    self.set_ptr_buf(self.tail_page.unwrap(), head, 0);
+                    self.update_set_ptr(self.tail_page.unwrap(), head, 0);
                     self.tail_seq += 1; // accounting for re-added head
                 }
                 _ => unreachable!(),
@@ -185,7 +185,7 @@ impl<P: Pager> FreeList<P> {
             // no free page available
             return (None, None);
         }
-        let ptr = self.get_ptr(self.head_page.unwrap(), seq_to_idx(self.head_seq));
+        let ptr = self.update_get_ptr(self.head_page.unwrap(), seq_to_idx(self.head_seq));
         debug!(
             "getting ptr {} from head at {}",
             ptr,
@@ -196,14 +196,14 @@ impl<P: Pager> FreeList<P> {
         if seq_to_idx(self.head_seq) == 0 {
             let head = self.head_page.unwrap();
             // self.head_page = Some(node.get_next());
-            self.head_page = Some(self.get_next(self.head_page.unwrap()));
+            self.head_page = Some(self.update_get_next(self.head_page.unwrap()));
             return (Some(ptr), Some(head));
         }
         (Some(ptr), None)
     }
     /// safety function to call update()
     /// gets pointer from idx
-    fn get_ptr(&self, node: Pointer, idx: u16) -> Pointer {
+    fn update_get_ptr(&self, node: Pointer, idx: u16) -> Pointer {
         // SAFETY: see callback at the top
         unsafe {
             let node_ptr = self.update(node);
@@ -213,7 +213,7 @@ impl<P: Pager> FreeList<P> {
 
     /// safety function to call update()
     /// sets ptr at idx for free list node
-    fn set_ptr_buf(&self, node: Pointer, ptr: Pointer, idx: u16) {
+    fn update_set_ptr(&self, node: Pointer, ptr: Pointer, idx: u16) {
         // SAFETY: see callback at the top
         unsafe {
             let node_ptr = self.update(node);
@@ -223,7 +223,7 @@ impl<P: Pager> FreeList<P> {
 
     /// safety function to call update()
     /// gets next ptr from free list node
-    fn get_next(&self, node: Pointer) -> Pointer {
+    fn update_get_next(&self, node: Pointer) -> Pointer {
         // SAFETY: see callback at the top
         unsafe {
             let node_ptr = self.update(node);
@@ -233,7 +233,7 @@ impl<P: Pager> FreeList<P> {
 
     /// safety function to call update()
     /// sets next ptr for free list node
-    fn set_next(&self, node: Pointer, ptr: Pointer) {
+    fn update_set_next(&self, node: Pointer, ptr: Pointer) {
         // SAFETY: see callback at the top
         unsafe {
             let node_ptr = self.update(node);

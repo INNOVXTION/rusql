@@ -9,7 +9,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"] }
 thiserror = { version = "2.0" }
 rustix = {version = "1.1.0", features = ["fs", "mm", "param"]}
 parking_lot = "0.12"
-slotmap = "1.1.0"
+serde_json = "1.0.145"
+serde = { version = "1.0.228", features = ["derive"] }
 
 [dev-dependencies]
 test-log = {version = "0.2", default-features = false, features = ["trace"]}
