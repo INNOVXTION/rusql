@@ -357,9 +357,9 @@ impl EnvoyV1 {
                 for i in 0..count {
                     // removing items from freelist
                     let ptr = self.freelist.borrow_mut().get().unwrap();
-                    assert_eq!(list[i as usize], ptr.get());
+                    assert_eq!(list[i as usize], ptr);
                 }
-                self.update_or_revert(metapage_save(self))
+                self.update_or_revert(metapage_save(self));
                 rustix::fs::ftruncate(&self.database, (npages - count) * PAGE_SIZE as u64)
                     .expect("truncate failed");
                 rustix::fs::fsync(&self.database);
@@ -396,10 +396,6 @@ impl EnvoyV1 {
         } else {
             None
         }
-    }
-
-    fn truncate_to(&self, page: u64) {
-        rustix::fs::ftruncate(&self.database, page * PAGE_SIZE as u64).expect("truncate failed")
     }
 }
 
