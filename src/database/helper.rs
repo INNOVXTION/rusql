@@ -157,10 +157,13 @@ mod test {
 
     #[test]
     fn create_file() -> Result<(), Box<dyn Error>> {
-        let path = PathBuf::from("./test-files/database.rdb");
-        create_file_sync(path.to_str().unwrap())?;
+        let path_str = "./test-files/database.rdb";
+        let path = PathBuf::from(path_str);
+        cleanup_file(path_str);
+        create_file_sync(path_str)?;
         assert!(path.is_file());
         assert!(path.parent().unwrap().is_dir());
+        cleanup_file(path_str);
         Ok(())
     }
 }
