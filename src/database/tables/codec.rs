@@ -32,10 +32,12 @@ pub(super) trait StringCodec {
 impl StringCodec for String {
     fn encode(&self) -> Rc<[u8]> {
         let len = self.len();
-        let mut buf: Vec<u8> = vec![0; len + STR_PRE_LEN];
-        buf[..STR_PRE_LEN].copy_from_slice(&(len as u32).to_le_bytes());
-        buf[STR_PRE_LEN..].copy_from_slice(self.as_bytes());
-        buf.into()
+        let buf = Rc::<[u8]>::new_zeroed_slice(len + STR_PRE_LEN);
+        let mut buf = unsafe { buf.assume_init() };
+        let buf_ref = Rc::get_mut(&mut buf).unwrap();
+        buf_ref[..STR_PRE_LEN].copy_from_slice(&(len as u32).to_le_bytes());
+        buf_ref[STR_PRE_LEN..].copy_from_slice(self.as_bytes());
+        buf
     }
     fn into_cell(self) -> DataCell {
         DataCell::Str(self)
@@ -107,10 +109,12 @@ mod test {
         assert_eq!(v2, 9);
         assert_eq!(v3, 13);
 
-        let mut buf: Vec<u8> = vec![0; INT_LEN + 11 + STR_PRE_LEN];
+        let str = "primary key";
         let id: i64 = -10;
+        let mut buf: Vec<u8> = vec![0; INT_LEN + str.len() + STR_PRE_LEN];
+
         buf[..INT_LEN].copy_from_slice(&(*id.encode()));
-        buf[INT_LEN..].copy_from_slice(&"primary key".to_string().encode());
+        buf[INT_LEN..].copy_from_slice(&str.to_string().encode());
         let decode = format!(
             "{}{}",
             i64::decode(&buf[0..INT_LEN]),
