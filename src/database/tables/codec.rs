@@ -6,7 +6,25 @@ use std::rc::Rc;
 
 // converts a String to bytes with a 4 byte length number + utf8 character
 pub(super) trait StringCodec {
+    /// converts a String to bytes with a 4 byte length number + utf8 character
+    /// ```
+    /// let key = format!("{}{}{}", 5, "column1", "column2").encode();
+    /// let val = format!("{}", "some data").encode();
+    /// assert_eq!(key.len(), 19);
+    /// assert_eq!(val.len(), 13);
+    /// assert_eq!(String::decode(&key), "5column1column2");
+    /// assert_eq!(String::decode(&val), "some data");
+    /// ```
     fn encode(self) -> Rc<[u8]>;
+    /// converts a String to bytes with a 4 byte length number + utf8 character
+    /// ```
+    /// let key = format!("{}{}{}", 5, "column1", "column2").encode();
+    /// let val = format!("{}", "some data").encode();
+    /// assert_eq!(key.len(), 19);
+    /// assert_eq!(val.len(), 13);
+    /// assert_eq!(String::decode(&key), "5column1column2");
+    /// assert_eq!(String::decode(&val), "some data");
+    /// ```
     fn decode(data: &[u8]) -> String;
 }
 
@@ -60,21 +78,30 @@ mod test {
         assert_eq!(String::decode(&key), "5column1column2");
         assert_eq!(String::decode(&val), "some data");
 
-        let mut block = [0u8; 24];
+        let mut buf = [0u8; 24];
         let v1 = 5i64;
         let v2 = 9i64;
         let v3 = 13i64;
 
-        block[0..8].copy_from_slice(&(*v1.encode()));
-        block[8..16].copy_from_slice(&(*v2.encode()));
-        block[16..].copy_from_slice(&(*v3.encode()));
+        buf[0..8].copy_from_slice(&(*v1.encode()));
+        buf[8..16].copy_from_slice(&(*v2.encode()));
+        buf[16..].copy_from_slice(&(*v3.encode()));
 
-        let v1 = i64::decode(&block[..8]);
-        let v2 = i64::decode(&block[8..16]);
-        let v3 = i64::decode(&block[16..]);
+        let v1 = i64::decode(&buf[..8]);
+        let v2 = i64::decode(&buf[8..16]);
+        let v3 = i64::decode(&buf[16..]);
 
         assert_eq!(v1, 5);
         assert_eq!(v2, 9);
         assert_eq!(v3, 13);
+
+        let mut buf: Vec<u8> = vec![];
+        let mut id: i64 = 10;
+        buf.copy_from_slice(&(*id.encode()));
+        buf.copy_from_slice(&"primary key".to_string().encode());
+        assert_eq!(
+            format!("{}{}", i64::decode(&buf[0..4]), String::decode(&buf[4..])),
+            "10primary key"
+        );
     }
 }
