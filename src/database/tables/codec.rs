@@ -59,5 +59,22 @@ mod test {
         assert_eq!(val.len(), 13);
         assert_eq!(String::decode(&key), "5column1column2");
         assert_eq!(String::decode(&val), "some data");
+
+        let mut block = [0u8; 24];
+        let v1 = 5i64;
+        let v2 = 9i64;
+        let v3 = 13i64;
+
+        block[0..8].copy_from_slice(&(*v1.encode()));
+        block[8..16].copy_from_slice(&(*v2.encode()));
+        block[16..].copy_from_slice(&(*v3.encode()));
+
+        let v1 = i64::decode(&block[..8]);
+        let v2 = i64::decode(&block[8..16]);
+        let v3 = i64::decode(&block[16..]);
+
+        assert_eq!(v1, 5);
+        assert_eq!(v2, 9);
+        assert_eq!(v3, 13);
     }
 }
