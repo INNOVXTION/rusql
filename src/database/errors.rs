@@ -130,3 +130,24 @@ impl Display for FLError {
 }
 
 impl std::error::Error for FLError {}
+
+#[derive(Debug)]
+pub(crate) enum TableError<S: Into<String>> {
+    RecordError(S),
+    TableError(S),
+    CellError(S),
+    CodecError(S),
+}
+
+impl<S: Into<String> + std::fmt::Display> Display for TableError<S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TableError::RecordError(s) => write!(f, "Error Record {}", s),
+            TableError::TableError(s) => write!(f, "Table Record {}", s),
+            TableError::CellError(s) => write!(f, "Cell Record {}", s),
+            TableError::CodecError(s) => write!(f, "Codec Record {}", s),
+        }
+    }
+}
+
+impl<S: Into<String> + std::fmt::Debug + std::fmt::Display> std::error::Error for TableError<S> {}

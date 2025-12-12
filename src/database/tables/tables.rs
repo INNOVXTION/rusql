@@ -1,9 +1,9 @@
-use std::{collections::HashMap, rc::Rc};
+use std::rc::Rc;
 
 use crate::database::{
+    errors::TableError,
     pager::diskpager::KVEngine,
     tables::codec::{IntegerCodec, StringCodec},
-    types::Pointer,
 };
 use serde::{Deserialize, Serialize};
 
@@ -28,13 +28,14 @@ const META_TABLE_PKEYS: u16 = 1;
  * |[TABLE ID][PK1 ][PK2 ]..|[ v1 ][ v2 ]..|
  *
  * Tdef:
- * |---KEY-----|---Val----|
+ * |-----KEY---|----Val---|
  * |   [ Col1 ]|[  Col2  ]|
  * |[1][ name ]|[  def   ]|
  */
 
-struct TableBuffer {
-    tables: HashMap<u64, Table>,
+struct TableBuffer<P: KVEngine> {
+    tables: TDefTable,
+    pager: P,
 }
 
 struct TDefTable(Table);
@@ -117,18 +118,6 @@ impl Table {
     // some function to add an auto incremending id
     fn set_id() {}
 
-    // decode a table from disk
-    fn decode(ptr: Pointer) -> Self {
-        todo!()
-    }
-
-    fn encode(self) -> (Rc<[u8]>, Rc<[u8]>) {
-        let id = self.id;
-        let key = format!("{}{}", DEF_TABLE_ID, &self.name).encode();
-        let val = format!("{}", serde_json::to_string(&self).unwrap()).encode();
-        (key, val)
-    }
-
     // encode schema to json
     fn to_json(self) -> String {
         serde_json::to_string(&self).unwrap()
@@ -148,16 +137,85 @@ enum TypeCol {
 }
 
 struct Record {
-    key: Vec<DataCell>,
-    val: Vec<DataCell>,
+    data: Vec<DataCell>,
 }
 
-enum DataCell {
+impl Record {
+    fn from(data: Vec<DataCell>, schema: &Table) -> Result<Self, TableError<impl Into<String>>> {
+        if schema.cols.len() != data.len() {
+            return Err(TableError::RecordError("input doesnt match column count"));
+        }
+        Ok(Record { data })
+    }
+
+    // encodes a Record according to a schema into a key value pair
+    fn encode(
+        row: Record,
+        schema: &Table,
+    ) -> Result<(Rc<[u8]>, Rc<[u8]>), TableError<impl Into<String>>> {
+        let mut buf = Vec::<u8>::new();
+        let mut cursor: usize = 0;
+        buf[..8].copy_from_slice(&schema.id.to_le_bytes());
+        cursor += 8;
+
+        // composing key by iterating through all columns designated as primary key
+        for col in schema.cols[0..schema.pkeys as usize].iter().enumerate() {
+            match col.1.data_type {
+                TypeCol::BYTES => {
+                    if let DataCell::Str(s) = &row.data[col.0] {
+                        let len = s.len() + 4;
+                        buf[cursor..cursor + len].copy_from_slice(&s.encode());
+                        cursor += len;
+                    } else {
+                        return Err(TableError::RecordError("expected str, got int"));
+                    }
+                }
+                TypeCol::INTEGER => {
+                    if let DataCell::Str(s) = &row.data[col.0] {
+                        let len = 8;
+                        buf[cursor..cursor + len].copy_from_slice(&s.encode());
+                        cursor += len;
+                    } else {
+                        return Err(TableError::RecordError("expected int, got str"));
+                    }
+                }
+            }
+        }
+        let key_idx = cursor;
+        // iterating through the remaining data for the value
+        for col in schema.cols[schema.pkeys as usize..].iter().enumerate() {
+            match col.1.data_type {
+                TypeCol::BYTES => {
+                    if let DataCell::Str(s) = &row.data[col.0] {
+                        let len = s.len() + 4;
+                        buf[cursor..cursor + len].copy_from_slice(&s.encode());
+                        cursor += len;
+                    } else {
+                        return Err(TableError::RecordError("expected str, got int"));
+                    }
+                }
+                TypeCol::INTEGER => {
+                    if let DataCell::Str(s) = &row.data[col.0] {
+                        let len = 8;
+                        buf[cursor..cursor + len].copy_from_slice(&s.encode());
+                        cursor += len;
+                    } else {
+                        return Err(TableError::RecordError("expected int, got str"));
+                    }
+                }
+            }
+        }
+        Ok((Rc::from(&buf[..key_idx]), Rc::from(&buf[key_idx..])))
+    }
+}
+
+pub(crate) enum DataCell {
     Str(String),
     Int(i64),
 }
 
 impl DataCell {
+    /// turns data cell into encoded byte array according to Codec (str: 2B + str.len())
     fn into_bytes(self) -> Rc<[u8]> {
         match self {
             DataCell::Str(s) => s.encode(),
