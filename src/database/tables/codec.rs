@@ -6,6 +6,12 @@ use std::rc::Rc;
 
 use crate::database::tables::tables::DataCell;
 
+/// length prefix for strings is u32
+pub(crate) const STR_PRE_LEN: usize = 4;
+/// length of integer it 8 bytes
+pub(crate) const INT_LEN: usize = 8;
+pub(crate) const IDX_LEN: usize = 8;
+
 /// converts a String to bytes with a 4 byte length number + utf8 character
 /// ```
 /// let key = format!("{}{}{}", 5, "column1", "column2").encode();
@@ -26,9 +32,9 @@ pub(super) trait StringCodec {
 impl StringCodec for String {
     fn encode(&self) -> Rc<[u8]> {
         let len = self.len();
-        let mut buf = Vec::<u8>::with_capacity(len + 4);
-        buf[..4].copy_from_slice(&(len as u32).to_be_bytes());
-        buf[4..].copy_from_slice(self.as_bytes());
+        let mut buf: Vec<u8> = vec![0; len + STR_PRE_LEN];
+        buf[..STR_PRE_LEN].copy_from_slice(&(len as u32).to_le_bytes());
+        buf[STR_PRE_LEN..].copy_from_slice(self.as_bytes());
         buf.into()
     }
     fn into_cell(self) -> DataCell {
@@ -36,12 +42,12 @@ impl StringCodec for String {
     }
 
     fn decode(data: &[u8]) -> String {
-        let mut buf = [0u8; 4];
-        buf.copy_from_slice(&data[..4]);
+        let mut buf = [0u8; STR_PRE_LEN];
+        buf.copy_from_slice(&data[0..STR_PRE_LEN]);
         let len = u32::from_le_bytes(buf) as usize;
-        assert_eq!(data.len(), len + 4);
+        assert_eq!(data.len(), len + STR_PRE_LEN);
         // SAFETY: we encode in UTF-8
-        unsafe { String::from_utf8_unchecked(data[4..4 + len].to_vec()) }
+        unsafe { String::from_utf8_unchecked(data[STR_PRE_LEN..STR_PRE_LEN + len].to_vec()) }
     }
     fn from_cell(cell: DataCell) -> String {
         if let DataCell::Str(s) = cell {
@@ -54,18 +60,18 @@ impl StringCodec for String {
 
 // converts an Integer to little endian bytes
 pub(super) trait IntegerCodec {
-    fn encode(&self) -> Rc<[u8; 8]>;
+    fn encode(&self) -> Rc<[u8; INT_LEN]>;
     fn decode(data: &[u8]) -> Self;
 }
 
 impl IntegerCodec for i64 {
-    fn encode(&self) -> Rc<[u8; 8]> {
+    fn encode(&self) -> Rc<[u8; INT_LEN]> {
         Rc::from(self.to_le_bytes())
     }
 
     fn decode(data: &[u8]) -> Self {
-        assert_eq!(data.len(), 8);
-        let mut buf = [0u8; 8];
+        assert_eq!(data.len(), INT_LEN);
+        let mut buf = [0u8; INT_LEN];
         buf.copy_from_slice(data);
         i64::from_le_bytes(buf)
     }
@@ -75,6 +81,7 @@ impl IntegerCodec for i64 {
 mod test {
     use super::*;
 
+    #[test]
     fn codec_test() {
         let key = format!("{}{}{}", 5, "column1", "column2").encode();
         let val = format!("{}", "some data").encode();
@@ -100,13 +107,15 @@ mod test {
         assert_eq!(v2, 9);
         assert_eq!(v3, 13);
 
-        let mut buf: Vec<u8> = vec![];
-        let mut id: i64 = 10;
-        buf.copy_from_slice(&(*id.encode()));
-        buf.copy_from_slice(&"primary key".to_string().encode());
-        assert_eq!(
-            format!("{}{}", i64::decode(&buf[0..4]), String::decode(&buf[4..])),
-            "10primary key"
+        let mut buf: Vec<u8> = vec![0; INT_LEN + 11 + STR_PRE_LEN];
+        let id: i64 = -10;
+        buf[..INT_LEN].copy_from_slice(&(*id.encode()));
+        buf[INT_LEN..].copy_from_slice(&"primary key".to_string().encode());
+        let decode = format!(
+            "{}{}",
+            i64::decode(&buf[0..INT_LEN]),
+            String::decode(&buf[INT_LEN..])
         );
+        assert_eq!(decode, "-10primary key");
     }
 }

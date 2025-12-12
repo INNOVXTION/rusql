@@ -3,7 +3,7 @@ use std::rc::Rc;
 use crate::database::{
     errors::TableError,
     pager::diskpager::KVEngine,
-    tables::codec::{IntegerCodec, StringCodec},
+    tables::codec::{INT_LEN, IntegerCodec, STR_PRE_LEN, StringCodec},
 };
 use serde::{Deserialize, Serialize};
 
@@ -163,7 +163,7 @@ impl Record {
             match col.1.data_type {
                 TypeCol::BYTES => {
                     if let DataCell::Str(s) = &row.data[col.0] {
-                        let len = s.len() + 4;
+                        let len = s.len() + STR_PRE_LEN;
                         buf[cursor..cursor + len].copy_from_slice(&s.encode());
                         cursor += len;
                     } else {
@@ -172,7 +172,7 @@ impl Record {
                 }
                 TypeCol::INTEGER => {
                     if let DataCell::Str(s) = &row.data[col.0] {
-                        let len = 8;
+                        let len = INT_LEN;
                         buf[cursor..cursor + len].copy_from_slice(&s.encode());
                         cursor += len;
                     } else {
@@ -187,7 +187,7 @@ impl Record {
             match col.1.data_type {
                 TypeCol::BYTES => {
                     if let DataCell::Str(s) = &row.data[col.0] {
-                        let len = s.len() + 4;
+                        let len = s.len() + STR_PRE_LEN;
                         buf[cursor..cursor + len].copy_from_slice(&s.encode());
                         cursor += len;
                     } else {
@@ -196,7 +196,7 @@ impl Record {
                 }
                 TypeCol::INTEGER => {
                     if let DataCell::Str(s) = &row.data[col.0] {
-                        let len = 8;
+                        let len = INT_LEN;
                         buf[cursor..cursor + len].copy_from_slice(&s.encode());
                         cursor += len;
                     } else {
