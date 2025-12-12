@@ -17,6 +17,18 @@ const META_TABLE_COL2: &'static str = "val";
 const META_TABLE_ID: u64 = 2;
 const META_TABLE_PKEYS: u16 = 1;
 
+/*
+ * Encoding Layout:
+ * |-----------KEY----------|----Value-----|
+ * |          [Col1][Col2]..|[Col3][Col4]..|
+ * |[TABLE ID][PK1 ][PK2 ]..|[ v1 ][ v2 ]..|
+ *
+ * Tdef:
+ * |-------KEY--------|---Val----|
+ * |       [   Col1  ]|[  Col2  ]|
+ * |[TID:1][PK1: name]|[  def   ]|
+ */
+
 // serialize to json
 #[derive(Serialize, Deserialize)]
 struct Table {
@@ -36,7 +48,7 @@ impl Table {
         }
     }
 
-    fn tdef_new() -> Self {
+    fn new_tdef() -> Self {
         Table {
             name: DEF_TABLE_NAME.to_string(),
             id: DEF_TABLE_ID,
@@ -54,7 +66,7 @@ impl Table {
         }
     }
 
-    fn meta_new() -> Self {
+    fn new_meta() -> Self {
         Table {
             name: META_TABLE_NAME.to_string(),
             id: META_TABLE_ID,
@@ -72,14 +84,16 @@ impl Table {
         }
     }
 
+    // some function to add an auto incremending id
+    fn set_id() {}
+
     // decode a table from disk
     fn decode(ptr: Pointer) -> Self {
         todo!()
     }
 
-    // encode table to disk
-    fn encode(self) {
-        todo!()
+    fn to_json(self) -> serde_json::Value {
+        serde_json::to_value(self).unwrap()
     }
 }
 
@@ -139,9 +153,13 @@ impl DataCell {
 }
 
 trait TableInterface {
-    fn insert_record();
-    fn insert_table();
-    fn lookup_table();
+    type KVStore: KVEngine;
+
+    fn insert_row(records: &[Record], schema: &Table, pager: &Self::KVStore);
+
+    fn insert_table(table: Table, pager: &Self::KVStore);
+
+    fn lookup_table(id: u64, pager: &Self::KVStore) -> Table;
 }
 
 trait TableAPI {
@@ -158,16 +176,26 @@ trait TableAPI {
 
 #[cfg(test)]
 mod test {
-    use crate::database::pager::EnvoyV1;
+    use crate::database::pager::{EnvoyV1, mempage_tree};
 
     use super::*;
+    use crate::database::helper::cleanup_file;
     use test_log::test;
     use tracing::{Level, info, span};
 
     #[test]
     fn meta_page() {
-        let tdef = Table::tdef_new();
-        let meta = Table::meta_new();
-        let envoy = EnvoyV1::open("table1.rdb").unwrap();
+        let path = "table1.rdb";
+        cleanup_file(path);
+        let tdef = Table::new_tdef();
+        let meta = Table::new_meta();
+        let envoy = EnvoyV1::open(path).unwrap();
+    }
+
+    #[test]
+    fn json_test() {
+        let tree = mempage_tree();
+        let tdef = Table::new_tdef();
+        let meta = Table::new_meta();
     }
 }

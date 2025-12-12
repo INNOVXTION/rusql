@@ -350,8 +350,11 @@ impl EnvoyV1 {
     }
 
     #[instrument(skip(self))]
-    /// still WIP api
-    fn cleanup(&self) -> Result<(), Error> {
+    /// WIP
+    ///
+    /// attempts to truncate the file. Makes call to and modifies freelist. This function should therefore be called
+    /// after tree operations. Truncation amount is based on cleanup_check algorithm
+    fn truncate(&self) -> Result<(), Error> {
         let list: Vec<Pointer> = self.freelist.borrow().peek_ptr();
         let npages = self.buffer.borrow().npages;
         match Self::cleanup_check(npages, &list) {
@@ -371,7 +374,8 @@ impl EnvoyV1 {
         }
     }
 
-    /// returns the number of pages that can be truncated, by evaluating a contiguous sequence at the end of the freelist
+    /// returns the number of pages that can be truncated, by evaluating a contiguous sequence at the end of the freelist.
+    /// Doesnt capture the full sequence as of now and has O(n) performance. See unit test below for sample behaviour.
     fn cleanup_check(npages: u64, list: &[Pointer]) -> Option<u64> {
         if list.is_empty() || npages == 2 {
             return None;
@@ -545,17 +549,11 @@ fn metapage_write(pager: &EnvoyV1, meta: &MetaPage) -> Result<(), PagerError> {
 
 #[cfg(test)]
 mod test {
-    use std::path::Path;
 
     use super::*;
+    use crate::database::helper::cleanup_file;
     use rand::Rng;
     use test_log::test;
-
-    fn cleanup_file(path: &str) {
-        if Path::new(path).exists() {
-            std::fs::remove_file(path).unwrap()
-        }
-    }
 
     #[test]
     fn open_pager() {
@@ -670,7 +668,7 @@ mod test {
         for k in 1u16..=500 {
             pager.delete(&format!("{}", k)).unwrap()
         }
-        pager.cleanup();
+        pager.truncate();
         let fd_size = rustix::fs::fstat(&pager.database)
             .map_err(|e| {
                 error!("Error when getting file size");

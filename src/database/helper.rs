@@ -3,7 +3,7 @@ use super::types::*;
 use rustix::fs::{self, Mode, OFlags};
 use std::collections::HashMap;
 use std::os::fd::OwnedFd;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use tracing::{debug, error};
 
@@ -141,6 +141,12 @@ pub fn print_buffer(buf: &HashMap<Pointer, Node>) {
         debug!("{}, {:?}", kv.0, kv.1.get_type())
     }
     debug!("---------")
+}
+
+pub fn cleanup_file(path: &str) {
+    if Path::new(path).exists() {
+        std::fs::remove_file(path).unwrap()
+    }
 }
 
 #[cfg(test)]
