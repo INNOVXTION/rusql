@@ -49,7 +49,7 @@ pub(super) trait StringCodec {
 impl StringCodec for String {
     /// encodes a string to the following format:
     ///
-    /// [1B Type] [2B len] [nB str]
+    /// [1B Type] [4B len] [nB str]
     fn encode(&self) -> Rc<[u8]> {
         let len = self.len();
         let buf = Rc::<[u8]>::new_zeroed_slice(TYPE_LEN + len + STR_PRE_LEN);
@@ -72,7 +72,7 @@ impl StringCodec for String {
         let len =
             u32::from_le_bytes(data[TYPE_LEN..TYPE_LEN + STR_PRE_LEN].try_into().unwrap()) as usize;
 
-        assert_eq!(data.len(), TYPE_LEN + len + STR_PRE_LEN);
+        assert!(data.len() >= TYPE_LEN + len + STR_PRE_LEN);
         // SAFETY: we encode in UTF-8
         unsafe {
             String::from_utf8_unchecked(
@@ -102,7 +102,7 @@ impl IntegerCodec for i64 {
     /// input assumes presence of type byte
     fn decode(data: &[u8]) -> Self {
         assert_eq!(data[0], TypeCol::INTEGER as u8);
-        assert_eq!(data.len(), TYPE_LEN + INT_LEN);
+        assert!(data.len() >= TYPE_LEN + INT_LEN);
         i64::from_le_bytes(data[TYPE_LEN..TYPE_LEN + INT_LEN].try_into().unwrap())
     }
 }

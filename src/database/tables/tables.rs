@@ -1,11 +1,12 @@
-use std::{collections::HashMap, hash::Hash, rc::Rc};
+use std::{collections::HashMap, marker::PhantomData, rc::Rc};
 
 use crate::database::{
     errors::TableError,
     pager::diskpager::KVEngine,
-    tables::codec::{INT_LEN, IntegerCodec, STR_PRE_LEN, StringCodec},
+    tables::codec::{INT_LEN, IntegerCodec, STR_PRE_LEN, StringCodec, TYPE_LEN},
 };
 use serde::{Deserialize, Serialize};
+use tracing_subscriber::filter::targets::Iter;
 
 // fixed table which holds all the schemas
 const DEF_TABLE_NAME: &'static str = "tdef";
@@ -116,17 +117,65 @@ struct Column {
     data_type: TypeCol,
 }
 
+#[repr(u8)]
 #[derive(Serialize, Deserialize)]
 pub(crate) enum TypeCol {
     BYTES = 1,
     INTEGER = 2,
 }
 
+impl TypeCol {
+    fn from_u8(v: u8) -> Option<Self> {
+        match v {
+            1 => Some(TypeCol::BYTES),
+            2 => Some(TypeCol::INTEGER),
+            _ => None,
+        }
+    }
+}
+
 struct Record {
     data: Vec<DataCell>,
 }
 
-struct Key(Rc<[u8]>);
+struct Key {
+    data: Rc<[u8]>,
+    count: usize,
+}
+
+impl Key {
+    fn from_slice(data: &[u8]) -> Self {
+        Key {
+            data: Rc::from(data),
+            count: 0,
+        }
+    }
+}
+
+impl Iterator for Key {
+    type Item = DataCell;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.data.len() == self.count {
+            return None;
+        }
+        match TypeCol::from_u8(self.data[self.count]) {
+            Some(TypeCol::BYTES) => {
+                let int = i64::decode(&self.data[self.count..]);
+                self.count += TYPE_LEN + INT_LEN;
+
+                Some(DataCell::Int(int))
+            }
+            Some(TypeCol::INTEGER) => {
+                let str = String::decode(&self.data[self.count..]);
+                self.count += TYPE_LEN + STR_PRE_LEN + str.len();
+
+                Some(DataCell::Str(str))
+            }
+            None => None,
+        }
+    }
+}
 struct Value(Rc<[u8]>);
 
 impl Record {
@@ -188,7 +237,7 @@ impl Record {
             }
         }
         Ok((
-            Key(Rc::from(&buf[..key_idx])),
+            Key::from_slice(&buf[..key_idx]),
             Value(Rc::from(&buf[key_idx..])),
         ))
     }
