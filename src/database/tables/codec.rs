@@ -64,9 +64,8 @@ impl StringCodec for String {
     fn decode(data: &[u8]) -> String {
         assert_eq!(data[0], TypeCol::BYTES as u8);
 
-        let mut len_buf = [0u8; STR_PRE_LEN];
-        len_buf.copy_from_slice(&data[TYPE_LEN..TYPE_LEN + STR_PRE_LEN]);
-        let len = u32::from_le_bytes(len_buf) as usize;
+        let len =
+            u32::from_le_bytes(data[TYPE_LEN..TYPE_LEN + STR_PRE_LEN].try_into().unwrap()) as usize;
 
         assert_eq!(data.len(), TYPE_LEN + len + STR_PRE_LEN);
         // SAFETY: we encode in UTF-8
