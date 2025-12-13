@@ -96,7 +96,7 @@ impl IntegerCodec for i64 {
         let mut buf = [0u8; TYPE_LEN + INT_LEN];
 
         buf[0] = TypeCol::INTEGER as u8;
-        buf[1..].copy_from_slice(&self.to_le_bytes());
+        buf[TYPE_LEN..].copy_from_slice(&self.to_le_bytes());
 
         Rc::from(buf)
     }
@@ -105,10 +105,7 @@ impl IntegerCodec for i64 {
     fn decode(data: &[u8]) -> Self {
         assert_eq!(data[0], TypeCol::INTEGER as u8);
         assert_eq!(data.len(), TYPE_LEN + INT_LEN);
-
-        let mut buf = [0u8; INT_LEN];
-        buf.copy_from_slice(&data[1..]);
-        i64::from_le_bytes(buf)
+        i64::from_le_bytes(data[TYPE_LEN..TYPE_LEN + INT_LEN].try_into().unwrap())
     }
 }
 
