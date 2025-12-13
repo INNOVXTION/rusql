@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::{collections::HashMap, hash::Hash, rc::Rc};
 
 use crate::database::{
     errors::TableError,
@@ -36,6 +36,28 @@ const META_TABLE_PKEYS: u16 = 1;
 struct TableBuffer<P: KVEngine> {
     tables: TDefTable,
     pager: P,
+}
+
+struct MetaTable(Table);
+
+impl MetaTable {
+    fn new_meta() -> Self {
+        MetaTable(Table {
+            name: META_TABLE_NAME.to_string(),
+            id: META_TABLE_ID,
+            cols: vec![
+                Column {
+                    title: META_TABLE_COL1.to_string(),
+                    data_type: TypeCol::BYTES,
+                },
+                Column {
+                    title: META_TABLE_COL2.to_string(),
+                    data_type: TypeCol::BYTES,
+                },
+            ],
+            pkeys: META_TABLE_PKEYS,
+        })
+    }
 }
 
 struct TDefTable(Table);
@@ -79,48 +101,12 @@ impl Table {
         }
     }
 
-    fn new_tdef() -> Self {
-        Table {
-            name: DEF_TABLE_NAME.to_string(),
-            id: DEF_TABLE_ID,
-            cols: vec![
-                Column {
-                    title: DEF_TABLE_COL1.to_string(),
-                    data_type: TypeCol::BYTES,
-                },
-                Column {
-                    title: DEF_TABLE_COL2.to_string(),
-                    data_type: TypeCol::BYTES,
-                },
-            ],
-            pkeys: DEF_TABLE_PKEYS,
-        }
-    }
-
-    fn new_meta() -> Self {
-        Table {
-            name: META_TABLE_NAME.to_string(),
-            id: META_TABLE_ID,
-            cols: vec![
-                Column {
-                    title: META_TABLE_COL1.to_string(),
-                    data_type: TypeCol::BYTES,
-                },
-                Column {
-                    title: META_TABLE_COL2.to_string(),
-                    data_type: TypeCol::BYTES,
-                },
-            ],
-            pkeys: META_TABLE_PKEYS,
-        }
-    }
-
     // some function to add an auto incremending id
     fn set_id() {}
 
-    // encode schema to json
-    fn to_json(self) -> String {
-        serde_json::to_string(&self).unwrap()
+    /// encode schema to json
+    fn encode(self) -> Value {
+        Value(Rc::from(serde_json::to_string(&self).unwrap().into_bytes()))
     }
 }
 
@@ -140,19 +126,37 @@ struct Record {
     data: Vec<DataCell>,
 }
 
+struct Key(Rc<[u8]>);
+struct Value(Rc<[u8]>);
+
 impl Record {
-    // encodes a Record according to a schema into a key value pair
-    fn encode(
-        row: Record,
-        schema: &Table,
-    ) -> Result<(Rc<[u8]>, Rc<[u8]>), TableError<impl Into<String>>> {
-        if schema.cols.len() != row.data.len() {
+    fn new() -> Self {
+        Record { data: vec![] }
+    }
+
+    fn push(&mut self, data: DataCell) {
+        self.data.push(data)
+    }
+
+    fn push_strings(&mut self, data: &[&str]) {
+        for s in data {
+            self.push(s.to_string().into());
+        }
+    }
+
+    /// encodes a Record according to a schema into a key value pair starting with table id
+    ///
+    /// validates that record matches with column in schema
+    fn encode(self, schema: &Table) -> Result<(Key, Value), TableError<impl Into<String>>> {
+        if schema.cols.len() != self.data.len() {
             return Err(TableError::RecordError("input doesnt match column count"));
         }
+
         let mut buf = Vec::<u8>::new();
         let mut idx: usize = 0;
         let mut key_idx: usize = 0;
 
+        // starting with table id
         buf.extend_from_slice(&schema.id.to_le_bytes());
         idx += 8;
 
@@ -164,7 +168,7 @@ impl Record {
             }
             match col.1.data_type {
                 TypeCol::BYTES => {
-                    if let DataCell::Str(s) = &row.data[col.0] {
+                    if let DataCell::Str(s) = &self.data[col.0] {
                         let len = s.len() + STR_PRE_LEN;
                         buf.extend_from_slice(&s.encode());
                         idx += len;
@@ -173,7 +177,7 @@ impl Record {
                     }
                 }
                 TypeCol::INTEGER => {
-                    if let DataCell::Str(s) = &row.data[col.0] {
+                    if let DataCell::Str(s) = &self.data[col.0] {
                         let len = INT_LEN;
                         buf.extend_from_slice(&s.encode());
                         idx += len;
@@ -183,7 +187,10 @@ impl Record {
                 }
             }
         }
-        Ok((Rc::from(&buf[..key_idx]), Rc::from(&buf[key_idx..])))
+        Ok((
+            Key(Rc::from(&buf[..key_idx])),
+            Value(Rc::from(&buf[key_idx..])),
+        ))
     }
 }
 
@@ -193,7 +200,9 @@ pub(crate) enum DataCell {
 }
 
 impl DataCell {
-    /// turns data cell into encoded byte array according to Codec (str: 2B + str.len())
+    /// turns data cell into encoded byte array according to Codec
+    ///
+    /// for a string: 1B Type + 2B len + str.len()
     fn into_bytes(self) -> Rc<[u8]> {
         match self {
             DataCell::Str(s) => s.encode(),
@@ -220,25 +229,33 @@ impl From<i64> for DataCell {
     }
 }
 
+struct Database<KV: KVEngine> {
+    tdef: TDefTable,
+    buffer: HashMap<String, Table>,
+    kv_engine: KV,
+}
+
+// internal API
 trait TableInterface {
     type KVStore: KVEngine;
 
+    fn init();
     fn insert_row(records: &[Record], schema: &Table, pager: &Self::KVStore);
     fn insert_table(table: Table, pager: &Self::KVStore);
-    fn lookup_table(id: u64, pager: &Self::KVStore) -> Table;
-    fn get_schema();
+    fn get_table(id: u64, pager: &Self::KVStore) -> Table;
 }
 
-trait TableAPI {
-    type KVStore: KVEngine;
+// outward API
+trait DatabaseAPI {
+    type DB: TableInterface;
 
-    fn create_table(pager: &Self::KVStore);
-    fn drop_table(pager: &Self::KVStore);
+    fn create_table(pager: &Self::DB);
+    fn drop_table(pager: &Self::DB);
 
-    fn get(pager: &Self::KVStore);
-    fn insert(pager: &Self::KVStore);
-    fn update(pager: &Self::KVStore);
-    fn delete(pager: &Self::KVStore);
+    fn get(pager: &Self::DB);
+    fn insert(pager: &Self::DB);
+    fn update(pager: &Self::DB);
+    fn delete(pager: &Self::DB);
 }
 
 #[cfg(test)]
@@ -254,15 +271,11 @@ mod test {
     fn meta_page() {
         let path = "table1.rdb";
         cleanup_file(path);
-        let tdef = Table::new_tdef();
-        let meta = Table::new_meta();
         let envoy = EnvoyV1::open(path).unwrap();
     }
 
     #[test]
     fn json_test() {
         let tree = mempage_tree();
-        let tdef = Table::new_tdef();
-        let meta = Table::new_meta();
     }
 }

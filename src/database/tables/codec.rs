@@ -7,15 +7,24 @@ use std::rc::Rc;
 use crate::database::tables::tables::{DataCell, TypeCol};
 
 /*
-Key-Value LayoutV2:
+Key-Value LayoutV2 (WIP):
 --------KEY---------|-----VAL----|
 [HEADER][KEY1][KEY2]|[VAL1][VAL2]|
 
 HEADER:
 [2B Header Size][1B K1 type][1B K2 type][...]
+
+Key-Value LayoutV1 (current):
+-----KEY----|-----VAL----|
+[KEY1][KEY2]|[VAL1][VAL2]|
+
+example:
+[INT ][STR ]
+[1B TYPE][8B INT][1B TYPE][2B STRLEN][nB STR]
  */
 
 pub const TYPE_LEN: usize = 1;
+pub const HEADER_SIZE: usize = 2;
 
 /// length prefix for strings is u32
 pub(crate) const STR_PRE_LEN: usize = 4;
@@ -34,14 +43,13 @@ pub(crate) const IDX_LEN: usize = 8;
 /// ```
 pub(super) trait StringCodec {
     fn encode(&self) -> Rc<[u8]>;
-    fn into_cell(self) -> DataCell;
-
     fn decode(data: &[u8]) -> String;
-    fn from_cell(cell: DataCell) -> String;
 }
 
 impl StringCodec for String {
-    // encodes a string to the following forma: [1B Type][2B len][nB str...]
+    /// encodes a string to the following format:
+    ///
+    /// [1B Type] [2B len] [nB str]
     fn encode(&self) -> Rc<[u8]> {
         let len = self.len();
         let buf = Rc::<[u8]>::new_zeroed_slice(TYPE_LEN + len + STR_PRE_LEN);
@@ -55,9 +63,6 @@ impl StringCodec for String {
 
         assert_eq!(buf.len(), TYPE_LEN + len + STR_PRE_LEN);
         buf
-    }
-    fn into_cell(self) -> DataCell {
-        DataCell::Str(self)
     }
 
     /// input assumes presence of type byte, doesnt include it in the output
@@ -73,13 +78,6 @@ impl StringCodec for String {
             String::from_utf8_unchecked(
                 data[TYPE_LEN + STR_PRE_LEN..TYPE_LEN + STR_PRE_LEN + len].to_vec(),
             )
-        }
-    }
-    fn from_cell(cell: DataCell) -> String {
-        if let DataCell::Str(s) = cell {
-            s
-        } else {
-            unreachable!()
         }
     }
 }
