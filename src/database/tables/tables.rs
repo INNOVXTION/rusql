@@ -131,7 +131,7 @@ struct Column {
 }
 
 #[derive(Serialize, Deserialize)]
-enum TypeCol {
+pub(crate) enum TypeCol {
     BYTES = 1,
     INTEGER = 2,
 }
@@ -152,7 +152,8 @@ impl Record {
         let mut buf = Vec::<u8>::new();
         let mut idx: usize = 0;
         let mut key_idx: usize = 0;
-        buf[..8].copy_from_slice(&schema.id.to_le_bytes());
+
+        buf.extend_from_slice(&schema.id.to_le_bytes());
         idx += 8;
 
         // composing byte array by iterating through all columns design ated as primary key
@@ -165,7 +166,7 @@ impl Record {
                 TypeCol::BYTES => {
                     if let DataCell::Str(s) = &row.data[col.0] {
                         let len = s.len() + STR_PRE_LEN;
-                        buf[idx..idx + len].copy_from_slice(&s.encode());
+                        buf.extend_from_slice(&s.encode());
                         idx += len;
                     } else {
                         return Err(TableError::RecordError("expected str, got int"));
@@ -174,7 +175,7 @@ impl Record {
                 TypeCol::INTEGER => {
                     if let DataCell::Str(s) = &row.data[col.0] {
                         let len = INT_LEN;
-                        buf[idx..idx + len].copy_from_slice(&s.encode());
+                        buf.extend_from_slice(&s.encode());
                         idx += len;
                     } else {
                         return Err(TableError::RecordError("expected int, got str"));
