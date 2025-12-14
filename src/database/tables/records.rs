@@ -41,14 +41,33 @@ impl Key {
     fn from_slice(data: &[u8]) -> Self {
         Key(Rc::from(data))
     }
+}
 
-    pub fn cmp_key(&self, key_b: &Key) -> Ordering {
-        match self.get_tid().cmp(&key_b.get_tid()) {
+impl Eq for Key {}
+
+impl PartialEq for Key {
+    fn eq(&self, other: &Self) -> bool {
+        if let Ordering::Equal = self.cmp(other) {
+            return true;
+        }
+        false
+    }
+}
+
+impl PartialOrd for Key {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Key {
+    fn cmp(&self, other: &Self) -> Ordering {
+        match self.get_tid().cmp(&other.get_tid()) {
             Ordering::Equal => {}
             o => return o,
         }
         let mut key_a = &self.0[TID_LEN..]; // self
-        let mut key_b = &key_b.0[TID_LEN..];
+        let mut key_b = &other.0[TID_LEN..];
 
         loop {
             if key_a.is_empty() && key_b.is_empty() {
@@ -61,36 +80,27 @@ impl Key {
                 return Ordering::Greater;
             }
 
-            match TypeCol::from_u8(key_a[0]) {
+            match TypeCol::from_u8(read_u8(&mut key_a)) {
                 Some(TypeCol::BYTES) => {
-                    let len_a = u32::from_le_bytes(
-                        key_a[TYPE_LEN..TYPE_LEN + STR_PRE_LEN].try_into().unwrap(),
-                    ) as usize;
-                    let len_b = u32::from_le_bytes(
-                        key_b[TYPE_LEN..TYPE_LEN + STR_PRE_LEN].try_into().unwrap(),
-                    ) as usize;
+                    let len_a = read_u32(&mut key_a) as usize;
+                    let len_b = read_u32(&mut key_a) as usize;
                     let min = min(len_a, len_b);
 
-                    match key_a[TYPE_LEN + STR_PRE_LEN..TYPE_LEN + STR_PRE_LEN + min]
-                        .cmp(&key_b[TYPE_LEN + STR_PRE_LEN..TYPE_LEN + STR_PRE_LEN + min])
-                    {
+                    match key_a[..min].cmp(&key_b[..min]) {
                         Ordering::Equal => {
-                            key_a = &key_a[TYPE_LEN + STR_PRE_LEN + len_a..];
-                            key_b = &key_b[TYPE_LEN + STR_PRE_LEN + len_b..];
+                            key_a = &key_a[len_a..];
+                            key_b = &key_b[len_b..];
                         }
                         o => return o,
                     }
                 }
                 Some(TypeCol::INTEGER) => {
                     // flipping the sign bit for comparison
-                    let int_a = (i64::decode(&key_a[TYPE_LEN..]) as u64) ^ 0x8000_0000_0000_0000;
-                    let int_b = (i64::decode(&key_b[TYPE_LEN..]) as u64) ^ 0x8000_0000_0000_0000;
+                    let int_a = read_i64(&mut key_a) as u64 ^ 0x8000_0000_0000_0000;
+                    let int_b = read_i64(&mut key_b) as u64 ^ 0x8000_0000_0000_0000;
 
                     match int_a.cmp(&int_b) {
-                        Ordering::Equal => {
-                            key_a = &key_a[TYPE_LEN + INT_LEN..];
-                            key_b = &key_b[TYPE_LEN + INT_LEN..];
-                        }
+                        Ordering::Equal => {}
                         o => return o,
                     }
                 }

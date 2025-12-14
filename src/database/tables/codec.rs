@@ -105,6 +105,27 @@ impl Codec for i64 {
     }
 }
 
+/// reads u64 for data, moves the slice like a cursor
+pub(super) fn read_i64(data: &mut &[u8]) -> i64 {
+    let (head, tail) = data.split_at(std::mem::size_of::<u64>());
+    *data = tail;
+    i64::from_le_bytes(head.try_into().expect("cast error read_u64"))
+}
+
+/// reads u64 for data, moves the slice like a cursor
+pub(super) fn read_u32(data: &mut &[u8]) -> u32 {
+    let (head, tail) = data.split_at(std::mem::size_of::<u32>());
+    *data = tail;
+    u32::from_le_bytes(head.try_into().expect("cast error read_u32"))
+}
+
+/// reads u64 for data, moves the slice like a cursor
+pub(super) fn read_u8(data: &mut &[u8]) -> u8 {
+    let (head, tail) = data.split_at(std::mem::size_of::<u8>());
+    *data = tail;
+    head[0]
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
