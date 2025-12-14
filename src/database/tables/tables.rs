@@ -137,7 +137,9 @@ impl TypeCol {
 
 /// encoded and parsed key for the pager, should only be created from encoding a record
 ///
-/// layout: 1B TID: 1B TYPE: nB TYPE ...
+// ----------------------KEY--------------------------|
+// [ TID][      INT      ][            STR           ]|
+// [ 8B ][1B TYPE][8B INT][1B TYPE][2B STRLEN][nB STR]|
 struct Key(Rc<[u8]>);
 
 struct KeyIter {
@@ -153,6 +155,7 @@ impl Key {
     /// turns key into string
     pub fn into_string(self) -> String {
         let mut st = String::new();
+        write!(st, "{}", self.get_id()).unwrap();
         for cell in self {
             match cell {
                 DataCell::Str(s) => write!(st, "{}", s).unwrap(),
@@ -160,6 +163,10 @@ impl Key {
             };
         }
         st
+    }
+
+    fn get_id(&self) -> u64 {
+        u64::from_le_bytes(self.0[..TID_LEN].try_into().unwrap())
     }
 }
 
@@ -227,10 +234,6 @@ impl Record {
     /// encodes a Record according to a schema into a key value pair starting with table id
     ///
     /// validates that record matches with column in schema
-    //
-    // ----------------------KEY--------------------------|
-    // [ TID][      INT      ][            STR           ]|
-    // [ 8B ][1B TYPE][8B INT][1B TYPE][2B STRLEN][nB STR]|
     fn encode(self, schema: &Table) -> Result<(Key, Value), TableError> {
         if schema.cols.len() != self.data.len() {
             return Err(TableError::RecordError(
@@ -415,6 +418,6 @@ mod test {
 
         let (key, value) = rec.encode(&table).unwrap();
         let key_string = key.into_string();
-        assert_eq!(key_string, "hello10")
+        assert_eq!(key_string, "2hello10")
     }
 }
