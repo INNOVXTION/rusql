@@ -23,14 +23,15 @@ example:
 [1B TYPE][8B INT][1B TYPE][2B STRLEN][nB STR]
  */
 
-pub const TYPE_LEN: usize = 1;
-pub const HEADER_SIZE: usize = 2;
+pub const TYPE_LEN: usize = std::mem::size_of::<u8>();
+pub const HEADER_SIZE: usize = std::mem::size_of::<u16>();
 
 /// length prefix for strings is u32
-pub(crate) const STR_PRE_LEN: usize = 4;
+pub(crate) const STR_PRE_LEN: usize = std::mem::size_of::<u32>();
 /// length of integer it 8 bytes
-pub(crate) const INT_LEN: usize = 8;
-pub(crate) const IDX_LEN: usize = 8;
+pub(crate) const INT_LEN: usize = std::mem::size_of::<u64>();
+pub(crate) const IDX_LEN: usize = std::mem::size_of::<u64>();
+pub(crate) const TID_LEN: usize = std::mem::size_of::<u64>();
 
 /// converts a String to bytes with a 4 byte length number + utf8 character
 /// ```
@@ -54,12 +55,13 @@ impl Codec for String {
         let len = self.len();
         let buf = Rc::<[u8]>::new_zeroed_slice(TYPE_LEN + len + STR_PRE_LEN);
 
+        // SAFETY: array of u8 set to 0 qualifies as initialized
         let mut buf = unsafe { buf.assume_init() };
         let buf_ref = Rc::get_mut(&mut buf).unwrap();
 
         buf_ref[0] = TypeCol::BYTES as u8;
-        buf_ref[1..1 + STR_PRE_LEN].copy_from_slice(&(len as u32).to_le_bytes());
-        buf_ref[1 + STR_PRE_LEN..].copy_from_slice(self.as_bytes());
+        buf_ref[TYPE_LEN..TYPE_LEN + STR_PRE_LEN].copy_from_slice(&(len as u32).to_le_bytes());
+        buf_ref[TYPE_LEN + STR_PRE_LEN..].copy_from_slice(self.as_bytes());
 
         assert_eq!(buf.len(), TYPE_LEN + len + STR_PRE_LEN);
         buf

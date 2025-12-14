@@ -1,6 +1,7 @@
 use std::fmt::Write;
 use std::{collections::HashMap, rc::Rc};
 
+use crate::database::tables::codec::TID_LEN;
 use crate::database::{
     errors::TableError,
     pager::diskpager::KVEngine,
@@ -154,8 +155,8 @@ impl Key {
         let mut st = String::new();
         for cell in self {
             match cell {
-                DataCell::Str(s) => write!(st, "{s}").unwrap(),
-                DataCell::Int(i) => write!(st, "{i}").unwrap(),
+                DataCell::Str(s) => write!(st, "{}", s).unwrap(),
+                DataCell::Int(i) => write!(st, "{}", i).unwrap(),
             };
         }
         st
@@ -171,14 +172,14 @@ impl Iterator for KeyIter {
         }
         match TypeCol::from_u8(self.data.0[self.count]) {
             Some(TypeCol::BYTES) => {
-                let int = i64::decode(&self.data.0[self.count..]);
-                self.count += TYPE_LEN + INT_LEN;
-                Some(DataCell::Int(int))
-            }
-            Some(TypeCol::INTEGER) => {
                 let str = String::decode(&self.data.0[self.count..]);
                 self.count += TYPE_LEN + STR_PRE_LEN + str.len();
                 Some(DataCell::Str(str))
+            }
+            Some(TypeCol::INTEGER) => {
+                let int = i64::decode(&self.data.0[self.count..]);
+                self.count += TYPE_LEN + INT_LEN;
+                Some(DataCell::Int(int))
             }
             None => None,
         }
@@ -192,7 +193,7 @@ impl IntoIterator for Key {
     fn into_iter(self) -> Self::IntoIter {
         KeyIter {
             data: self,
-            count: 1, // skipping the table id
+            count: TID_LEN, // skipping the table id
         }
     }
 }
@@ -226,6 +227,10 @@ impl Record {
     /// encodes a Record according to a schema into a key value pair starting with table id
     ///
     /// validates that record matches with column in schema
+    //
+    // ----------------------KEY--------------------------|
+    // [ TID][      INT      ][            STR           ]|
+    // [ 8B ][1B TYPE][8B INT][1B TYPE][2B STRLEN][nB STR]|
     fn encode(self, schema: &Table) -> Result<(Key, Value), TableError> {
         if schema.cols.len() != self.data.len() {
             return Err(TableError::RecordError(
@@ -239,7 +244,7 @@ impl Record {
 
         // starting with table id
         buf.extend_from_slice(&schema.id.to_le_bytes());
-        idx += 8;
+        idx += TID_LEN;
 
         // composing byte array by iterating through all columns design ated as primary key
         for col in schema.cols.iter().enumerate() {
@@ -250,7 +255,7 @@ impl Record {
             match col.1.data_type {
                 TypeCol::BYTES => {
                     if let DataCell::Str(s) = &self.data[col.0] {
-                        let len = s.len() + STR_PRE_LEN;
+                        let len = TYPE_LEN + STR_PRE_LEN + s.len();
                         buf.extend_from_slice(&s.encode());
                         idx += len;
                     } else {
@@ -258,9 +263,9 @@ impl Record {
                     }
                 }
                 TypeCol::INTEGER => {
-                    if let DataCell::Str(s) = &self.data[col.0] {
-                        let len = INT_LEN;
-                        buf.extend_from_slice(&s.encode());
+                    if let DataCell::Int(i) = &self.data[col.0] {
+                        let len = TYPE_LEN + INT_LEN;
+                        buf.extend_from_slice(&i.encode());
                         idx += len;
                     } else {
                         return Err(TableError::RecordError("expected int, got str".to_string()));
