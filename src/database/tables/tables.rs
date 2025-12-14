@@ -1,12 +1,12 @@
-use std::{collections::HashMap, marker::PhantomData, rc::Rc};
+use std::fmt::Write;
+use std::{collections::HashMap, rc::Rc};
 
 use crate::database::{
     errors::TableError,
     pager::diskpager::KVEngine,
-    tables::codec::{INT_LEN, IntegerCodec, STR_PRE_LEN, StringCodec, TYPE_LEN},
+    tables::codec::{Codec, INT_LEN, STR_PRE_LEN, TYPE_LEN},
 };
 use serde::{Deserialize, Serialize};
-use tracing_subscriber::filter::targets::Iter;
 
 // fixed table which holds all the schemas
 const DEF_TABLE_NAME: &'static str = "tdef";
@@ -42,7 +42,7 @@ struct TableBuffer<P: KVEngine> {
 struct MetaTable(Table);
 
 impl MetaTable {
-    fn new_meta() -> Self {
+    fn new() -> Self {
         MetaTable(Table {
             name: META_TABLE_NAME.to_string(),
             id: META_TABLE_ID,
@@ -134,49 +134,79 @@ impl TypeCol {
     }
 }
 
-struct Record {
-    data: Vec<DataCell>,
-}
+/// encoded and parsed key for the pager, should only be created from encoding a record
+///
+/// layout: 1B TID: 1B TYPE: nB TYPE ...
+struct Key(Rc<[u8]>);
 
-struct Key {
-    data: Rc<[u8]>,
+struct KeyIter {
+    data: Key,
     count: usize,
 }
 
 impl Key {
     fn from_slice(data: &[u8]) -> Self {
-        Key {
-            data: Rc::from(data),
-            count: 0,
+        Key(Rc::from(data))
+    }
+
+    /// turns key into string
+    pub fn into_string(self) -> String {
+        let mut st = String::new();
+        for cell in self {
+            match cell {
+                DataCell::Str(s) => write!(st, "{s}").unwrap(),
+                DataCell::Int(i) => write!(st, "{i}").unwrap(),
+            };
         }
+        st
     }
 }
 
-impl Iterator for Key {
+impl Iterator for KeyIter {
     type Item = DataCell;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.data.len() == self.count {
+        if self.data.0.len() == self.count {
             return None;
         }
-        match TypeCol::from_u8(self.data[self.count]) {
+        match TypeCol::from_u8(self.data.0[self.count]) {
             Some(TypeCol::BYTES) => {
-                let int = i64::decode(&self.data[self.count..]);
+                let int = i64::decode(&self.data.0[self.count..]);
                 self.count += TYPE_LEN + INT_LEN;
-
                 Some(DataCell::Int(int))
             }
             Some(TypeCol::INTEGER) => {
-                let str = String::decode(&self.data[self.count..]);
+                let str = String::decode(&self.data.0[self.count..]);
                 self.count += TYPE_LEN + STR_PRE_LEN + str.len();
-
                 Some(DataCell::Str(str))
             }
             None => None,
         }
     }
 }
+
+impl IntoIterator for Key {
+    type Item = DataCell;
+    type IntoIter = KeyIter;
+
+    fn into_iter(self) -> Self::IntoIter {
+        KeyIter {
+            data: self,
+            count: 1, // skipping the table id
+        }
+    }
+}
 struct Value(Rc<[u8]>);
+
+impl Value {
+    fn from_slice(data: &[u8]) -> Self {
+        Value(Rc::from(data))
+    }
+}
+
+struct Record {
+    data: Vec<DataCell>,
+}
 
 impl Record {
     fn new() -> Self {
@@ -196,9 +226,11 @@ impl Record {
     /// encodes a Record according to a schema into a key value pair starting with table id
     ///
     /// validates that record matches with column in schema
-    fn encode(self, schema: &Table) -> Result<(Key, Value), TableError<impl Into<String>>> {
+    fn encode(self, schema: &Table) -> Result<(Key, Value), TableError> {
         if schema.cols.len() != self.data.len() {
-            return Err(TableError::RecordError("input doesnt match column count"));
+            return Err(TableError::RecordError(
+                "input doesnt match column count".to_string(),
+            ));
         }
 
         let mut buf = Vec::<u8>::new();
@@ -222,7 +254,7 @@ impl Record {
                         buf.extend_from_slice(&s.encode());
                         idx += len;
                     } else {
-                        return Err(TableError::RecordError("expected str, got int"));
+                        return Err(TableError::RecordError("expected str, got int".to_string()));
                     }
                 }
                 TypeCol::INTEGER => {
@@ -231,14 +263,14 @@ impl Record {
                         buf.extend_from_slice(&s.encode());
                         idx += len;
                     } else {
-                        return Err(TableError::RecordError("expected int, got str"));
+                        return Err(TableError::RecordError("expected int, got str".to_string()));
                     }
                 }
             }
         }
         Ok((
             Key::from_slice(&buf[..key_idx]),
-            Value(Rc::from(&buf[key_idx..])),
+            Value::from_slice(&buf[key_idx..]),
         ))
     }
 }
@@ -266,9 +298,24 @@ impl DataCell {
     }
 }
 
+impl From<DataCell> for String {
+    fn from(value: DataCell) -> Self {
+        match value {
+            DataCell::Str(s) => s,
+            DataCell::Int(i) => i.to_string(),
+        }
+    }
+}
+
 impl From<String> for DataCell {
     fn from(value: String) -> Self {
         DataCell::Str(value)
+    }
+}
+
+impl From<&str> for DataCell {
+    fn from(value: &str) -> Self {
+        DataCell::Str(value.to_string())
     }
 }
 
@@ -289,9 +336,13 @@ trait TableInterface {
     type KVStore: KVEngine;
 
     fn init();
-    fn insert_row(records: &[Record], schema: &Table, pager: &Self::KVStore);
-    fn insert_table(table: Table, pager: &Self::KVStore);
+    fn get_record();
+    fn insert_record(records: &[Record], schema: &Table, pager: &Self::KVStore);
+    fn delete_record();
+
     fn get_table(id: u64, pager: &Self::KVStore) -> Table;
+    fn insert_table(table: Table, pager: &Self::KVStore);
+    fn delet_table();
 }
 
 // outward API
@@ -326,5 +377,39 @@ mod test {
     #[test]
     fn json_test() {
         let tree = mempage_tree();
+    }
+
+    #[test]
+    fn record1() {
+        let mut table = Table::new("mytable");
+        let mut cols = Vec::<Column>::new();
+        cols.push(Column {
+            title: "greeter".into(),
+            data_type: TypeCol::BYTES,
+        });
+        cols.push(Column {
+            title: "number".into(),
+            data_type: TypeCol::INTEGER,
+        });
+        cols.push(Column {
+            title: "greetee".into(),
+            data_type: TypeCol::BYTES,
+        });
+        table.id = 2;
+        table.cols = cols;
+        table.pkeys = 2;
+
+        let s1 = "hello";
+        let i1 = 10;
+        let s2 = "world";
+
+        let mut rec = Record::new();
+        rec.push(s1.into());
+        rec.push(i1.into());
+        rec.push(s2.into());
+
+        let (key, value) = rec.encode(&table).unwrap();
+        let key_string = key.into_string();
+        assert_eq!(key_string, "hello10")
     }
 }

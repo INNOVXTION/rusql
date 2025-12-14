@@ -4,6 +4,7 @@ use std::rc::Weak;
 use tracing::debug;
 use tracing::info;
 
+use crate::database::helper::debug_print_tree;
 use crate::database::pager::diskpager::NodeFlag;
 use crate::database::pager::diskpager::{KVEngine, Pager};
 use crate::database::{btree::node::*, errors::Error, types::*};
@@ -153,10 +154,8 @@ impl<P: Pager> BTree<P> {
         let idx = node.lookupidx(key);
         match node.get_type() {
             NodeType::Leaf => {
-                // debug!(idx, "looking through leaf...");
-                // for i in 0..node.get_nkeys() {
-                //     debug!(idx = i, key = node.get_key(i).unwrap(), "-- keys in node:");
-                // }
+                debug_print_tree(&node, idx);
+
                 // updating or inserting kv
                 new.insert(node, key, val, idx);
             }
@@ -186,10 +185,8 @@ impl<P: Pager> BTree<P> {
         let idx = node.lookupidx(key);
         match node.get_type() {
             NodeType::Leaf => {
-                // debug!(idx, "looking through leaf...");
-                // for i in 0..node.get_nkeys() {
-                //     debug!(idx = i, key = node.get_key(i).unwrap(), "-- keys in node:");
-                // }
+                debug_print_tree(&node, idx);
+
                 if node.get_key(idx).unwrap() == key {
                     debug!("deleting key {key} at idx {idx}");
                     let mut new = TreeNode::new();
@@ -303,10 +300,8 @@ impl<P: Pager> BTree<P> {
         let idx = node.lookupidx(key);
         match node.get_type() {
             NodeType::Leaf => {
-                // debug!(idx, "looking through leaf...");
-                // for i in 0..node.get_nkeys() {
-                //     debug!(idx = i, key = node.get_key(i).unwrap(), "-- keys in node:");
-                // }
+                debug_print_tree(&node, idx);
+
                 if node.get_key(idx).unwrap() == key {
                     debug!("key {key} found!");
                     return Some(node.get_val(idx).unwrap().to_string());

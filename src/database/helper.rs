@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use tracing::{debug, error};
 
+use crate::database::btree::TreeNode;
+
 pub trait DecodeSlice {
     fn read_u16(&self, offset: usize) -> u16;
 }
@@ -134,13 +136,31 @@ pub(crate) fn input_valid(key: &str, value: &str) -> Result<(), Error> {
 }
 
 /// helper function for debugging purposes
-pub fn print_buffer(buf: &HashMap<Pointer, Node>) {
-    debug!("current buffer:");
-    debug!("---------");
-    for kv in buf {
-        debug!("{}, {:?}", kv.0, kv.1.get_type())
+pub fn debug_print_buffer(buf: &HashMap<Pointer, Node>) {
+    if let Some("debug") = option_env!("RUSQL_DEBUG") {
+        debug!("current buffer:");
+        debug!("---------");
+        for kv in buf {
+            debug!("{}, {:?}", kv.0, kv.1.get_type())
+        }
+        debug!("---------")
+    } else {
+        ()
     }
-    debug!("---------")
+}
+
+/// helper function for debugging purposes
+pub fn debug_print_tree(node: &TreeNode, idx: u16) {
+    if let Some("debug") = option_env!("RUSQL_DEBUG") {
+        debug!(idx, "looking through leaf...");
+        debug!("---------");
+        for i in 0..node.get_nkeys() {
+            debug!(idx = i, key = node.get_key(i).unwrap(), "-- keys in node:");
+        }
+        debug!("---------");
+    } else {
+        ()
+    }
 }
 
 pub fn cleanup_file(path: &str) {

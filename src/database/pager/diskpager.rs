@@ -10,7 +10,7 @@ use tracing::{debug, error, info, instrument, warn};
 
 use crate::create_file_sync;
 use crate::database::BTree;
-use crate::database::helper::{as_page, input_valid, print_buffer};
+use crate::database::helper::{as_page, debug_print_buffer, input_valid};
 use crate::database::pager::freelist::{FLConfig, FLNode, FreeList, GC};
 use crate::database::pager::mmap::*;
 use crate::database::{
@@ -127,7 +127,7 @@ impl Pager for EnvoyV1 {
         if let Some(ptr) = self.freelist.borrow_mut().get() {
             // loading page into buffer
             self.buffer.borrow_mut().hmap.insert(ptr, node);
-            print_buffer(&self.buffer.borrow().hmap);
+            debug_print_buffer(&self.buffer.borrow().hmap);
             assert_ne!(ptr.0, 0);
             ptr
         } else {
@@ -159,7 +159,7 @@ impl Pager for EnvoyV1 {
             ptr.0
         );
         buf_ref.hmap.insert(ptr, node);
-        print_buffer(&buf_ref.hmap);
+        debug_print_buffer(&buf_ref.hmap);
         assert_ne!(ptr.0, 0);
         ptr
     }
@@ -183,7 +183,7 @@ impl Pager for EnvoyV1 {
         match entry {
             Node::Freelist(flnode) => {
                 let ptr = ptr::from_mut(flnode);
-                print_buffer(&buf.hmap);
+                debug_print_buffer(&buf.hmap);
                 ptr
             }
             // only the freelist calls this function

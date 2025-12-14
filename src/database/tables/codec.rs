@@ -36,17 +36,17 @@ pub(crate) const IDX_LEN: usize = 8;
 /// ```
 /// let key = format!("{}{}{}", 5, "column1", "column2").encode();
 /// let val = format!("{}", "some data").encode();
-/// assert_eq!(key.len(), 19);
-/// assert_eq!(val.len(), 13);
+/// assert_eq!(key.len(), 20);
+/// assert_eq!(val.len(), 14);
 /// assert_eq!(String::decode(&key), "5column1column2");
 /// assert_eq!(String::decode(&val), "some data");
 /// ```
-pub(super) trait StringCodec {
+pub(super) trait Codec {
     fn encode(&self) -> Rc<[u8]>;
-    fn decode(data: &[u8]) -> String;
+    fn decode(data: &[u8]) -> Self;
 }
 
-impl StringCodec for String {
+impl Codec for String {
     /// encodes a string to the following format:
     ///
     /// [1B Type] [4B len] [nB str]
@@ -82,15 +82,9 @@ impl StringCodec for String {
     }
 }
 
-// converts an Integer to little endian bytes
-pub(super) trait IntegerCodec {
-    fn encode(&self) -> Rc<[u8; TYPE_LEN + INT_LEN]>;
-    fn decode(data: &[u8]) -> Self;
-}
-
-impl IntegerCodec for i64 {
+impl Codec for i64 {
     // encodes a string to the following forma: [1B Type][8B i64 le Int]
-    fn encode(&self) -> Rc<[u8; TYPE_LEN + INT_LEN]> {
+    fn encode(&self) -> Rc<[u8]> {
         let mut buf = [0u8; TYPE_LEN + INT_LEN];
 
         buf[0] = TypeCol::INTEGER as u8;

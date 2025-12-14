@@ -1,4 +1,9 @@
-use std::{fmt::Display, io, num::TryFromIntError, str::Utf8Error};
+use std::{
+    fmt::{Debug, Display},
+    io,
+    num::TryFromIntError,
+    str::Utf8Error,
+};
 
 use rustix::io::Errno;
 
@@ -132,14 +137,14 @@ impl Display for FLError {
 impl std::error::Error for FLError {}
 
 #[derive(Debug)]
-pub(crate) enum TableError<S: Into<String>> {
-    RecordError(S),
-    TableError(S),
-    CellError(S),
-    CodecError(S),
+pub(crate) enum TableError {
+    RecordError(String),
+    TableError(String),
+    CellError(String),
+    CodecError(String),
 }
 
-impl<S: Into<String> + std::fmt::Display> Display for TableError<S> {
+impl Display for TableError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             TableError::RecordError(s) => write!(f, "Error Record {}", s),
@@ -150,4 +155,4 @@ impl<S: Into<String> + std::fmt::Display> Display for TableError<S> {
     }
 }
 
-impl<S: Into<String> + std::fmt::Debug + std::fmt::Display> std::error::Error for TableError<S> {}
+impl std::error::Error for TableError {}
