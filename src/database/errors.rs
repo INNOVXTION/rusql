@@ -147,10 +147,10 @@ pub(crate) enum TableError {
 impl Display for TableError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            TableError::RecordError(s) => write!(f, "Error Record {}", s),
-            TableError::TableError(s) => write!(f, "Table Record {}", s),
-            TableError::CellError(s) => write!(f, "Cell Record {}", s),
-            TableError::CodecError(s) => write!(f, "Codec Record {}", s),
+            TableError::RecordError(s) => write!(f, "Record Error {}", s),
+            TableError::TableError(s) => write!(f, "Table Error {}", s),
+            TableError::CellError(s) => write!(f, "Cell Error {}", s),
+            TableError::CodecError(s) => write!(f, "Codec Error {}", s),
         }
     }
 }

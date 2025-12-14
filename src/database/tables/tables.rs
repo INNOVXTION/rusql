@@ -142,12 +142,8 @@ impl TypeCol {
 // [ 8B ][1B TYPE][8B INT][1B TYPE][2B STRLEN][nB STR]|
 struct Key(Rc<[u8]>);
 
-struct KeyIter {
-    data: Key,
-    count: usize,
-}
-
 impl Key {
+    /// creates key from properly encoded data
     fn from_slice(data: &[u8]) -> Self {
         Key(Rc::from(data))
     }
@@ -155,7 +151,7 @@ impl Key {
     /// turns key into string
     pub fn into_string(self) -> String {
         let mut st = String::new();
-        write!(st, "{}", self.get_id()).unwrap();
+        write!(st, "{}", self.get_tid()).unwrap();
         for cell in self {
             match cell {
                 DataCell::Str(s) => write!(st, "{}", s).unwrap(),
@@ -165,9 +161,14 @@ impl Key {
         st
     }
 
-    fn get_id(&self) -> u64 {
+    fn get_tid(&self) -> u64 {
         u64::from_le_bytes(self.0[..TID_LEN].try_into().unwrap())
     }
+}
+
+struct KeyIter {
+    data: Key,
+    count: usize,
 }
 
 impl Iterator for KeyIter {
@@ -209,6 +210,57 @@ struct Value(Rc<[u8]>);
 impl Value {
     fn from_slice(data: &[u8]) -> Self {
         Value(Rc::from(data))
+    }
+    /// turns value into string
+    pub fn into_string(self) -> String {
+        let mut st = String::new();
+        for cell in self {
+            match cell {
+                DataCell::Str(s) => write!(st, "{}", s).unwrap(),
+                DataCell::Int(i) => write!(st, "{}", i).unwrap(),
+            };
+        }
+        st
+    }
+}
+
+struct ValueIter {
+    data: Value,
+    count: usize,
+}
+
+impl Iterator for ValueIter {
+    type Item = DataCell;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.data.0.len() == self.count {
+            return None;
+        }
+        match TypeCol::from_u8(self.data.0[self.count]) {
+            Some(TypeCol::BYTES) => {
+                let str = String::decode(&self.data.0[self.count..]);
+                self.count += TYPE_LEN + STR_PRE_LEN + str.len();
+                Some(DataCell::Str(str))
+            }
+            Some(TypeCol::INTEGER) => {
+                let int = i64::decode(&self.data.0[self.count..]);
+                self.count += TYPE_LEN + INT_LEN;
+                Some(DataCell::Int(int))
+            }
+            None => None,
+        }
+    }
+}
+
+impl IntoIterator for Value {
+    type Item = DataCell;
+    type IntoIter = ValueIter;
+
+    fn into_iter(self) -> Self::IntoIter {
+        ValueIter {
+            data: self,
+            count: 0,
+        }
     }
 }
 
@@ -344,13 +396,14 @@ trait TableInterface {
     type KVStore: KVEngine;
 
     fn init();
+
     fn get_record();
     fn insert_record(records: &[Record], schema: &Table, pager: &Self::KVStore);
     fn delete_record();
 
     fn get_table(id: u64, pager: &Self::KVStore) -> Table;
     fn insert_table(table: Table, pager: &Self::KVStore);
-    fn delet_table();
+    fn delete_table();
 }
 
 // outward API
@@ -390,6 +443,7 @@ mod test {
     #[test]
     fn record1() {
         let mut table = Table::new("mytable");
+
         let mut cols = Vec::<Column>::new();
         cols.push(Column {
             title: "greeter".into(),
@@ -403,6 +457,7 @@ mod test {
             title: "greetee".into(),
             data_type: TypeCol::BYTES,
         });
+
         table.id = 2;
         table.cols = cols;
         table.pkeys = 2;
@@ -417,7 +472,7 @@ mod test {
         rec.push(s2.into());
 
         let (key, value) = rec.encode(&table).unwrap();
-        let key_string = key.into_string();
-        assert_eq!(key_string, "2hello10")
+        assert_eq!(key.into_string(), "2hello10");
+        assert_eq!(value.into_string(), "world");
     }
 }
