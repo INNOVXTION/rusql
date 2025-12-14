@@ -27,6 +27,12 @@ pub(crate) fn read_u16(data: &[u8], offset: usize) -> Result<u16, Error> {
         .ok_or(Error::IntCastError(None))
 }
 
+fn read_cursor_u16(input: &mut &[u8]) -> u16 {
+    let (head, tail) = input.split_at(2);
+    *input = tail; // <-- move the cursor
+    u16::from_le_bytes(head.try_into().unwrap())
+}
+
 /// assumes little endian
 ///
 /// reads a [u8] slice to Pointer starting at offset

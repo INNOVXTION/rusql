@@ -1,5 +1,6 @@
-use std::fmt::Write;
+use std::cmp::min;
 use std::rc::Rc;
+use std::{cmp::Ordering, fmt::Write};
 
 use super::codec::*;
 use crate::database::{
@@ -15,6 +16,7 @@ use crate::database::{
 // ----------------------KEY--------------------------|
 // [ TID][      INT      ][            STR           ]|
 // [ 8B ][1B TYPE][8B INT][1B TYPE][2B STRLEN][nB STR]|
+#[derive(Debug)]
 pub(crate) struct Key(Rc<[u8]>);
 
 impl Key {
@@ -38,6 +40,63 @@ impl Key {
     /// creates key from properly encoded data
     fn from_slice(data: &[u8]) -> Self {
         Key(Rc::from(data))
+    }
+
+    pub fn cmp_key(&self, key_b: &Key) -> Ordering {
+        match self.get_tid().cmp(&key_b.get_tid()) {
+            Ordering::Equal => {}
+            o => return o,
+        }
+        let mut key_a = &self.0[TID_LEN..]; // self
+        let mut key_b = &key_b.0[TID_LEN..];
+
+        loop {
+            if key_a.is_empty() && key_b.is_empty() {
+                return Ordering::Equal;
+            }
+            if key_a.is_empty() {
+                return Ordering::Less;
+            }
+            if key_b.is_empty() {
+                return Ordering::Greater;
+            }
+
+            match TypeCol::from_u8(key_a[0]) {
+                Some(TypeCol::BYTES) => {
+                    let len_a = u32::from_le_bytes(
+                        key_a[TYPE_LEN..TYPE_LEN + STR_PRE_LEN].try_into().unwrap(),
+                    ) as usize;
+                    let len_b = u32::from_le_bytes(
+                        key_b[TYPE_LEN..TYPE_LEN + STR_PRE_LEN].try_into().unwrap(),
+                    ) as usize;
+                    let min = min(len_a, len_b);
+
+                    match key_a[TYPE_LEN + STR_PRE_LEN..TYPE_LEN + STR_PRE_LEN + min]
+                        .cmp(&key_b[TYPE_LEN + STR_PRE_LEN..TYPE_LEN + STR_PRE_LEN + min])
+                    {
+                        Ordering::Equal => {
+                            key_a = &key_a[TYPE_LEN + STR_PRE_LEN + len_a..];
+                            key_b = &key_b[TYPE_LEN + STR_PRE_LEN + len_b..];
+                        }
+                        o => return o,
+                    }
+                }
+                Some(TypeCol::INTEGER) => {
+                    // flipping the sign bit for comparison
+                    let int_a = (i64::decode(&key_a[TYPE_LEN..]) as u64) ^ 0x8000_0000_0000_0000;
+                    let int_b = (i64::decode(&key_b[TYPE_LEN..]) as u64) ^ 0x8000_0000_0000_0000;
+
+                    match int_a.cmp(&int_b) {
+                        Ordering::Equal => {
+                            key_a = &key_a[TYPE_LEN + INT_LEN..];
+                            key_b = &key_b[TYPE_LEN + INT_LEN..];
+                        }
+                        o => return o,
+                    }
+                }
+                None => unreachable!(),
+            }
+        }
     }
 }
 
@@ -80,6 +139,7 @@ impl IntoIterator for Key {
         }
     }
 }
+
 pub(crate) struct Value(Rc<[u8]>);
 
 impl Value {

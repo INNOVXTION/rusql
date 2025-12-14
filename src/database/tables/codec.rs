@@ -1,5 +1,5 @@
 /*
- * helper functions for decoding purposes
+ * helper functions for encoding/decoding of strings and integer
  */
 
 use std::rc::Rc;
@@ -68,6 +68,8 @@ impl Codec for String {
     }
 
     /// input assumes presence of type byte, doesnt include it in the output
+    ///
+    /// makes an allocation
     fn decode(data: &[u8]) -> String {
         assert_eq!(data[0], TypeCol::BYTES as u8);
 
