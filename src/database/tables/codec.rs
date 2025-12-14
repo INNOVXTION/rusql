@@ -4,7 +4,7 @@
 
 use std::rc::Rc;
 
-use crate::database::tables::tables::{DataCell, TypeCol};
+use crate::database::tables::tables::TypeCol;
 
 /*
 Key-Value LayoutV2 (WIP):
