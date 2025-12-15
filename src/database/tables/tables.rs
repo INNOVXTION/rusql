@@ -1,10 +1,11 @@
 use std::collections::HashMap;
 
 use crate::database::{
+    errors::TableError,
     pager::diskpager::KVEngine,
     tables::records::{Record, Value},
 };
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::value::Error};
 
 // fixed table which holds all the schemas
 const DEF_TABLE_NAME: &'static str = "tdef";
@@ -78,7 +79,7 @@ impl TDefTable {
     }
 }
 
-struct TableBuilder {
+pub(crate) struct TableBuilder {
     name: Option<String>,
     id: Option<u64>,
     cols: Vec<Column>,
@@ -86,7 +87,7 @@ struct TableBuilder {
 }
 
 impl TableBuilder {
-    fn new() -> Self {
+    pub fn new() -> Self {
         TableBuilder {
             name: None,
             id: None,
@@ -95,17 +96,17 @@ impl TableBuilder {
         }
     }
 
-    fn name(&mut self, name: &str) -> &mut Self {
+    pub fn name(mut self, name: &str) -> Self {
         self.name = Some(name.to_string());
         self
     }
 
-    fn id(&mut self, id: u64) -> &mut Self {
+    pub fn id(mut self, id: u64) -> Self {
         self.id = Some(id);
         self
     }
 
-    fn add_col(&mut self, title: &str, data_type: TypeCol) -> &mut Self {
+    pub fn add_col(mut self, title: &str, data_type: TypeCol) -> Self {
         self.cols.push(Column {
             title: title.to_string(),
             data_type,
@@ -113,13 +114,32 @@ impl TableBuilder {
         self
     }
 
-    fn pkey(&mut self, nkeys: u16) -> &mut Self {
+    pub fn pkey(mut self, nkeys: u16) -> Self {
         self.pkeys = Some(nkeys);
         self
     }
 
-    fn build(&self) -> Table {
-        todo!()
+    pub fn build(self) -> Result<Table, TableError> {
+        let name = match self.name {
+            Some(n) => n,
+            None => return Err(TableError::TableError("invalid name".to_string())),
+        };
+        // TODO: check meta table for unique id
+        let id = match self.id {
+            Some(id) => id,
+            None => return Err(TableError::TableError("invalid id".to_string())),
+        };
+        let cols = self.cols;
+        let pkeys = match self.pkeys {
+            Some(pk) => pk,
+            None => return Err(TableError::TableError("invalid pkeys".to_string())),
+        };
+        Ok(Table {
+            name,
+            id,
+            cols,
+            pkeys,
+        })
     }
 }
 

@@ -262,7 +262,7 @@ impl Record {
         buf.extend_from_slice(&schema.id.to_le_bytes());
         idx += TID_LEN;
 
-        // composing byte array by iterating through all columns design ated as primary key
+        // composing byte array by iterating through all columns designated as primary key
         for col in schema.cols.iter().enumerate() {
             // remembering the cutoff point between keys and values
             if col.0 == schema.pkeys as usize {
@@ -373,6 +373,7 @@ mod test {
 
     use crate::database::tables::tables::{Column, Table};
 
+    use super::super::tables::TableBuilder;
     use super::*;
     use test_log::test;
     use tracing::{Level, info, span};
@@ -418,25 +419,15 @@ mod test {
         let span = span!(Level::DEBUG, "cmp span");
         let _guard = span.enter();
 
-        let mut table = Table::new("mytable");
-
-        let mut cols = Vec::<Column>::new();
-        cols.push(Column {
-            title: "greeter".into(),
-            data_type: TypeCol::BYTES,
-        });
-        cols.push(Column {
-            title: "number".into(),
-            data_type: TypeCol::INTEGER,
-        });
-        cols.push(Column {
-            title: "greetee".into(),
-            data_type: TypeCol::BYTES,
-        });
-
-        table.id = 2;
-        table.cols = cols;
-        table.pkeys = 2;
+        let table = TableBuilder::new()
+            .name("mytable")
+            .id(2)
+            .pkey(2)
+            .add_col("greeter", TypeCol::BYTES)
+            .add_col("number", TypeCol::INTEGER)
+            .add_col("gretee", TypeCol::BYTES)
+            .build()
+            .unwrap();
 
         let (key1, value1) = Record::new()
             .add("hello")
