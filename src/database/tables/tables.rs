@@ -1,7 +1,6 @@
-use std::{collections::HashMap, rc::Rc};
+use std::collections::HashMap;
 
 use crate::database::{
-    errors::TableError,
     pager::diskpager::KVEngine,
     tables::records::{Record, Value},
 };
@@ -116,8 +115,7 @@ pub(crate) struct Column {
     pub data_type: TypeCol,
 }
 
-#[repr(u8)]
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 pub(crate) enum TypeCol {
     BYTES = 1,
     INTEGER = 2,

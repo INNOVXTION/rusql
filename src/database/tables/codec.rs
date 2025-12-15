@@ -4,7 +4,7 @@
 
 use std::rc::Rc;
 
-use crate::database::tables::tables::TypeCol;
+use super::tables::TypeCol;
 
 /*
 Key-Value LayoutV2 (WIP):
@@ -94,7 +94,9 @@ impl Codec for i64 {
         buf[0] = TypeCol::INTEGER as u8;
         buf[TYPE_LEN..].copy_from_slice(&self.to_le_bytes());
 
-        Rc::from(buf)
+        let out = Rc::new(buf);
+        assert_eq!(out.len(), TYPE_LEN + INT_LEN);
+        out
     }
 
     /// input assumes presence of type byte
@@ -104,6 +106,8 @@ impl Codec for i64 {
         i64::from_le_bytes(data[TYPE_LEN..TYPE_LEN + INT_LEN].try_into().unwrap())
     }
 }
+
+trait NumCodec {}
 
 /// reads u64 for data, moves the slice like a cursor
 pub(super) fn read_i64(data: &mut &[u8]) -> i64 {

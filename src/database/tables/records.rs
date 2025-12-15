@@ -2,6 +2,9 @@ use std::cmp::min;
 use std::rc::Rc;
 use std::{cmp::Ordering, fmt::Write};
 
+use tracing::debug;
+use tracing_subscriber::field::debug;
+
 use super::codec::*;
 use crate::database::{
     errors::TableError,
@@ -33,11 +36,12 @@ impl Key {
         st
     }
 
+    // reads the first 8 bytes
     pub fn get_tid(&self) -> u64 {
         u64::from_le_bytes(self.0[..TID_LEN].try_into().unwrap())
     }
 
-    /// creates key from properly encoded data
+    /// its up to the caller to ensure the data is properly formatted
     fn from_slice(data: &[u8]) -> Self {
         Key(Rc::from(data))
     }
@@ -45,16 +49,13 @@ impl Key {
 
 impl Eq for Key {}
 
-impl PartialEq for Key {
+impl PartialEq<Key> for Key {
     fn eq(&self, other: &Self) -> bool {
-        if let Ordering::Equal = self.cmp(other) {
-            return true;
-        }
-        false
+        self.cmp(other) == Ordering::Equal
     }
 }
 
-impl PartialOrd for Key {
+impl PartialOrd<Key> for Key {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
@@ -63,31 +64,42 @@ impl PartialOrd for Key {
 impl Ord for Key {
     fn cmp(&self, other: &Self) -> Ordering {
         match self.get_tid().cmp(&other.get_tid()) {
-            Ordering::Equal => {}
+            Ordering::Equal => {
+                debug!("table id is equal");
+            }
             o => return o,
         }
-        let mut key_a = &self.0[TID_LEN..]; // self
+        let mut key_a = &self.0[TID_LEN..];
         let mut key_b = &other.0[TID_LEN..];
+
+        debug!(bytes_a = key_a);
+        debug!(bytes_b = key_b);
 
         loop {
             if key_a.is_empty() && key_b.is_empty() {
+                debug!("both keys empty");
                 return Ordering::Equal;
             }
             if key_a.is_empty() {
+                debug!("key a empty");
                 return Ordering::Less;
             }
             if key_b.is_empty() {
+                debug!("key b empty");
                 return Ordering::Greater;
             }
-
-            match TypeCol::from_u8(read_u8(&mut key_a)) {
+            let next = read_u8(&mut key_a);
+            assert_eq!(next, read_u8(&mut key_b));
+            match TypeCol::from_u8(next) {
                 Some(TypeCol::BYTES) => {
                     let len_a = read_u32(&mut key_a) as usize;
-                    let len_b = read_u32(&mut key_a) as usize;
+                    let len_b = read_u32(&mut key_b) as usize;
                     let min = min(len_a, len_b);
 
+                    debug!(len_a, len_b, min, "comparing strings...");
                     match key_a[..min].cmp(&key_b[..min]) {
                         Ordering::Equal => {
+                            debug!("strings are equal");
                             key_a = &key_a[len_a..];
                             key_b = &key_b[len_b..];
                         }
@@ -98,9 +110,11 @@ impl Ord for Key {
                     // flipping the sign bit for comparison
                     let int_a = read_i64(&mut key_a) as u64 ^ 0x8000_0000_0000_0000;
                     let int_b = read_i64(&mut key_b) as u64 ^ 0x8000_0000_0000_0000;
-
+                    debug!(int_a, int_b, "comparing integer");
                     match int_a.cmp(&int_b) {
-                        Ordering::Equal => {}
+                        Ordering::Equal => {
+                            debug!("integer are equal");
+                        }
                         o => return o,
                     }
                 }
@@ -218,20 +232,22 @@ impl Record {
         Record { data: vec![] }
     }
 
-    fn push(&mut self, data: DataCell) {
-        self.data.push(data)
+    fn add(&mut self, data: DataCell) -> &mut Self {
+        self.data.push(data);
+        self
     }
 
-    fn push_strings(&mut self, data: &[&str]) {
+    fn push_strings(&mut self, data: &[&str]) -> &mut Self {
         for s in data {
-            self.push(s.to_string().into());
+            self.add(s.to_string().into());
         }
+        self
     }
 
     /// encodes a Record according to a schema into a key value pair starting with table id
     ///
     /// validates that record matches with column in schema
-    fn encode(self, schema: &Table) -> Result<(Key, Value), TableError> {
+    fn encode(&mut self, schema: &Table) -> Result<(Key, Value), TableError> {
         if schema.cols.len() != self.data.len() {
             return Err(TableError::RecordError(
                 "input doesnt match column count".to_string(),
@@ -258,6 +274,7 @@ impl Record {
                         let len = TYPE_LEN + STR_PRE_LEN + s.len();
                         buf.extend_from_slice(&s.encode());
                         idx += len;
+                        debug!(len, s, idx, "encoding string");
                     } else {
                         return Err(TableError::RecordError("expected str, got int".to_string()));
                     }
@@ -267,12 +284,15 @@ impl Record {
                         let len = TYPE_LEN + INT_LEN;
                         buf.extend_from_slice(&i.encode());
                         idx += len;
+                        debug!(len, i, idx, "encoding integer");
                     } else {
                         return Err(TableError::RecordError("expected int, got str".to_string()));
                     }
                 }
             }
         }
+        debug!(bytes = &buf[..key_idx], "key");
+        debug!(bytes = &buf[key_idx..], "value");
         Ok((
             Key::from_slice(&buf[..key_idx]),
             Value::from_slice(&buf[key_idx..]),
@@ -308,6 +328,10 @@ impl DataCell {
             TypeCol::INTEGER => DataCell::Int(i64::decode(data)),
         }
     }
+}
+
+trait TableCell {
+    fn into_cell(self) -> DataCell;
 }
 
 impl From<DataCell> for String {
@@ -373,12 +397,58 @@ mod test {
         let s2 = "world";
 
         let mut rec = Record::new();
-        rec.push(s1.into());
-        rec.push(i1.into());
-        rec.push(s2.into());
+        rec.add(s1.into());
+        rec.add(i1.into());
+        rec.add(s2.into());
 
         let (key, value) = rec.encode(&table).unwrap();
         assert_eq!(key.into_string(), "2hello10");
         assert_eq!(value.into_string(), "world");
+    }
+
+    #[test]
+    fn key_cmp1() {
+        let span = span!(Level::DEBUG, "cmp span");
+        let _guard = span.enter();
+
+        let mut table = Table::new("mytable");
+
+        let mut cols = Vec::<Column>::new();
+        cols.push(Column {
+            title: "greeter".into(),
+            data_type: TypeCol::BYTES,
+        });
+        cols.push(Column {
+            title: "number".into(),
+            data_type: TypeCol::INTEGER,
+        });
+        cols.push(Column {
+            title: "greetee".into(),
+            data_type: TypeCol::BYTES,
+        });
+
+        table.id = 2;
+        table.cols = cols;
+        table.pkeys = 2;
+
+        let s1 = "hello";
+        let i1 = 10;
+        let s2 = "world";
+
+        let (key1, value1) = Record::new()
+            .add(s1.into())
+            .add(i1.into())
+            .add(s2.into())
+            .encode(&table)
+            .unwrap();
+
+        let mut rec2 = Record::new();
+        rec2.add(s1.into());
+        rec2.add(i1.into());
+        rec2.add(s2.into());
+
+        let (key2, value2) = rec2.encode(&table).unwrap();
+
+        assert_eq!(key1, key2)
     }
 }
