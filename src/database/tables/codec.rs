@@ -108,7 +108,7 @@ impl Codec for i64 {
 }
 
 /// utility functions with cursor functionality
-trait NumEncode {
+pub(super) trait NumEncode {
     fn encode_i64(self, value: i64) -> Self;
 }
 impl NumEncode for &mut [u8] {
@@ -125,11 +125,17 @@ impl NumEncode for &mut [u8] {
 }
 
 /// utility functions with cursor functionality
-trait NumDecode {
+pub(super) trait NumDecode {
     fn decode_i64(&mut self) -> i64;
+    fn read_i64(&mut self) -> i64;
+    fn read_u32(&mut self) -> u32;
+    fn read_u8(&mut self) -> u8;
 }
 
 impl NumDecode for &[u8] {
+    /// moves the slice like a cursor
+    ///
+    /// considers encoding schema
     fn decode_i64(&mut self) -> i64 {
         assert_eq!(self[0], TypeCol::INTEGER as u8);
         let (head, tail) = self.split_at(std::mem::size_of::<i64>() + TYPE_LEN);
@@ -140,33 +146,32 @@ impl NumDecode for &[u8] {
                 .expect("cast error read_u64"),
         )
     }
-}
+    /// moves the slice like a cursor
+    ///
+    /// warning: this function does not consider the type bit like decode()!
+    fn read_i64(&mut self) -> i64 {
+        let (head, tail) = self.split_at(std::mem::size_of::<i64>());
+        *self = tail;
+        i64::from_le_bytes(head.try_into().expect("cast error read_u64"))
+    }
 
-/// moves the slice like a cursor
-///
-/// warning: this function does not consider the type bit like decode()!
-pub(super) fn read_i64(data: &mut &[u8]) -> i64 {
-    let (head, tail) = data.split_at(std::mem::size_of::<i64>());
-    *data = tail;
-    i64::from_le_bytes(head.try_into().expect("cast error read_u64"))
-}
+    /// moves the slice like a cursor
+    ///  
+    /// warning: this function does not consider the type bit like decode()!
+    fn read_u32(&mut self) -> u32 {
+        let (head, tail) = self.split_at(std::mem::size_of::<u32>());
+        *self = tail;
+        u32::from_le_bytes(head.try_into().expect("cast error read_u32"))
+    }
 
-/// moves the slice like a cursor
-///  
-/// warning: this function does not consider the type bit like decode()!
-pub(super) fn read_u32(data: &mut &[u8]) -> u32 {
-    let (head, tail) = data.split_at(std::mem::size_of::<u32>());
-    *data = tail;
-    u32::from_le_bytes(head.try_into().expect("cast error read_u32"))
-}
-
-/// moves the slice like a cursor
-///
-/// warning: this function does not consider the type bit like decode()!
-pub(super) fn read_u8(data: &mut &[u8]) -> u8 {
-    let (head, tail) = data.split_at(std::mem::size_of::<u8>());
-    *data = tail;
-    head[0]
+    /// moves the slice like a cursor
+    ///
+    /// warning: this function does not consider the type bit like decode()!
+    fn read_u8(&mut self) -> u8 {
+        let (head, tail) = self.split_at(std::mem::size_of::<u8>());
+        *self = tail;
+        head[0]
+    }
 }
 
 #[cfg(test)]

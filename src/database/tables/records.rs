@@ -85,12 +85,12 @@ impl Ord for Key {
                 debug!("key b empty");
                 return Ordering::Greater;
             }
-            let next = read_u8(&mut key_a);
-            assert_eq!(next, read_u8(&mut key_b));
+            let next = key_a.read_u8();
+            assert_eq!(next, key_b.read_u8());
             match TypeCol::from_u8(next) {
                 Some(TypeCol::BYTES) => {
-                    let len_a = read_u32(&mut key_a) as usize;
-                    let len_b = read_u32(&mut key_b) as usize;
+                    let len_a = key_a.read_u32() as usize;
+                    let len_b = key_b.read_u32() as usize;
                     let min = min(len_a, len_b);
 
                     debug!(len_a, len_b, min, "comparing strings...");
@@ -105,8 +105,8 @@ impl Ord for Key {
                 }
                 Some(TypeCol::INTEGER) => {
                     // flipping the sign bit for comparison
-                    let int_a = read_i64(&mut key_a) as u64 ^ 0x8000_0000_0000_0000;
-                    let int_b = read_i64(&mut key_b) as u64 ^ 0x8000_0000_0000_0000;
+                    let int_a = key_a.read_i64() as u64 ^ 0x8000_0000_0000_0000;
+                    let int_b = key_b.read_i64() as u64 ^ 0x8000_0000_0000_0000;
                     debug!(int_a, int_b, "comparing integer");
                     match int_a.cmp(&int_b) {
                         Ordering::Equal => {
