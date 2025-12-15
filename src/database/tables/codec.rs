@@ -48,9 +48,9 @@ pub(super) trait Codec {
 }
 
 impl Codec for String {
-    /// encodes a string to the following format:
+    /// output layout:
     ///
-    /// [1B Type] [4B len] [nB str]
+    /// [1B u8] [4B u32] [nB UTF8]
     fn encode(&self) -> Rc<[u8]> {
         let len = self.len();
         let buf = Rc::<[u8]>::new_zeroed_slice(TYPE_LEN + len + STR_PRE_LEN);
@@ -67,7 +67,9 @@ impl Codec for String {
         buf
     }
 
-    /// input assumes presence of type byte, doesnt include it in the output
+    /// assumes the the following layout:
+    ///
+    /// [1B u8] [4B u32] [nB UTF8]
     ///
     /// makes an allocation
     fn decode(data: &[u8]) -> String {
@@ -87,7 +89,9 @@ impl Codec for String {
 }
 
 impl Codec for i64 {
-    // encodes a string to the following forma: [1B Type][8B i64 le Int]
+    /// output layout:
+    ///
+    /// (1B Type)(8B i64 le Int)
     fn encode(&self) -> Rc<[u8]> {
         let mut buf = [0u8; TYPE_LEN + INT_LEN];
 
@@ -99,7 +103,9 @@ impl Codec for i64 {
         out
     }
 
-    /// input assumes presence of type byte
+    /// expected byte layout:
+    ///
+    /// (1B Type)(8B i64 le Int)
     fn decode(data: &[u8]) -> Self {
         assert_eq!(data[0], TypeCol::INTEGER as u8);
         assert!(data.len() >= TYPE_LEN + INT_LEN);
@@ -114,12 +120,11 @@ pub(super) trait NumEncode {
 impl NumEncode for &mut [u8] {
     fn encode_i64(self, value: i64) -> Self {
         let (head, tail) = self.split_at_mut(std::mem::size_of::<i64>() + TYPE_LEN);
-        head.copy_from_slice(&value.encode());
 
-        // head[0] = TypeCol::INTEGER as u8;
-        // head[TYPE_LEN..].copy_from_slice(&value.to_le_bytes());
-        // assert_eq!(head.len(), TYPE_LEN + INT_LEN);
+        head[0] = TypeCol::INTEGER as u8;
+        head[TYPE_LEN..].copy_from_slice(&value.to_le_bytes());
 
+        assert_eq!(head.len(), TYPE_LEN + INT_LEN);
         tail
     }
 }
@@ -127,6 +132,7 @@ impl NumEncode for &mut [u8] {
 /// utility functions with cursor functionality
 pub(super) trait NumDecode {
     fn decode_i64(&mut self) -> i64;
+
     fn read_i64(&mut self) -> i64;
     fn read_u32(&mut self) -> u32;
     fn read_u8(&mut self) -> u8;

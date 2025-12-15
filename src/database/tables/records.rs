@@ -229,15 +229,8 @@ impl Record {
         Record { data: vec![] }
     }
 
-    fn add(&mut self, data: DataCell) -> &mut Self {
-        self.data.push(data);
-        self
-    }
-
-    fn push_strings(&mut self, data: &[&str]) -> &mut Self {
-        for s in data {
-            self.add(s.to_string().into());
-        }
+    fn add<T: InputData>(&mut self, data: T) -> &mut Self {
+        self.data.push(data.into_cell());
         self
     }
 
@@ -268,20 +261,20 @@ impl Record {
             match col.1.data_type {
                 TypeCol::BYTES => {
                     if let DataCell::Str(s) = &self.data[col.0] {
-                        let len = TYPE_LEN + STR_PRE_LEN + s.len();
-                        buf.extend_from_slice(&s.encode());
-                        idx += len;
-                        debug!(len, s, idx, "encoding string");
+                        let s = s.encode();
+                        idx += s.len();
+                        buf.extend_from_slice(&s);
+                        debug!(idx, "encoding string");
                     } else {
                         return Err(TableError::RecordError("expected str, got int".to_string()));
                     }
                 }
                 TypeCol::INTEGER => {
                     if let DataCell::Int(i) = &self.data[col.0] {
-                        let len = TYPE_LEN + INT_LEN;
-                        buf.extend_from_slice(&i.encode());
-                        idx += len;
-                        debug!(len, i, idx, "encoding integer");
+                        let i = i.encode();
+                        idx += i.len();
+                        buf.extend_from_slice(&i);
+                        debug!(idx, "encoding integer");
                     } else {
                         return Err(TableError::RecordError("expected int, got str".to_string()));
                     }
@@ -325,34 +318,43 @@ impl DataCell {
     }
 }
 
-trait TableCell {
+trait InputData {
     fn into_cell(self) -> DataCell;
 }
 
-impl From<DataCell> for String {
-    fn from(value: DataCell) -> Self {
-        match value {
-            DataCell::Str(s) => s,
-            DataCell::Int(i) => i.to_string(),
-        }
+impl InputData for String {
+    fn into_cell(self) -> DataCell {
+        DataCell::Str(self)
     }
 }
 
-impl From<String> for DataCell {
-    fn from(value: String) -> Self {
-        DataCell::Str(value)
+impl InputData for &str {
+    fn into_cell(self) -> DataCell {
+        DataCell::Str(self.to_string())
     }
 }
 
-impl From<&str> for DataCell {
-    fn from(value: &str) -> Self {
-        DataCell::Str(value.to_string())
+impl InputData for i64 {
+    fn into_cell(self) -> DataCell {
+        DataCell::Int(self)
     }
 }
 
-impl From<i64> for DataCell {
-    fn from(value: i64) -> Self {
-        DataCell::Int(value)
+impl InputData for i32 {
+    fn into_cell(self) -> DataCell {
+        DataCell::Int(self as i64)
+    }
+}
+
+impl InputData for i16 {
+    fn into_cell(self) -> DataCell {
+        DataCell::Int(self as i64)
+    }
+}
+
+impl InputData for i8 {
+    fn into_cell(self) -> DataCell {
+        DataCell::Int(self as i64)
     }
 }
 
@@ -392,9 +394,9 @@ mod test {
         let s2 = "world";
 
         let mut rec = Record::new();
-        rec.add(s1.into());
-        rec.add(i1.into());
-        rec.add(s2.into());
+        rec.add(s1);
+        rec.add(i1);
+        rec.add(s2);
 
         let (key, value) = rec.encode(&table).unwrap();
         assert_eq!(key.into_string(), "2hello10");
@@ -431,16 +433,16 @@ mod test {
         let s2 = "world";
 
         let (key1, value1) = Record::new()
-            .add(s1.into())
-            .add(i1.into())
-            .add(s2.into())
+            .add("hello")
+            .add(10)
+            .add("world")
             .encode(&table)
             .unwrap();
 
         let (key2, value2) = Record::new()
-            .add(s1.into())
-            .add(i1.into())
-            .add(s2.into())
+            .add(s1)
+            .add(i1)
+            .add(s2)
             .encode(&table)
             .unwrap();
 
