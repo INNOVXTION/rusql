@@ -32,6 +32,7 @@ const META_TABLE_PKEYS: u16 = 1;
  * |[1][ name ]|[  def   ]|
  */
 
+/// wrapper for sentinal value
 struct MetaTable(Table);
 
 impl MetaTable {
@@ -54,6 +55,7 @@ impl MetaTable {
     }
 }
 
+/// wrapper for sentinal value
 struct TDefTable(Table);
 
 impl TDefTable {
@@ -76,7 +78,50 @@ impl TDefTable {
     }
 }
 
-struct TableBuilder {}
+struct TableBuilder {
+    name: Option<String>,
+    id: Option<u64>,
+    cols: Vec<Column>,
+    pkeys: Option<u16>,
+}
+
+impl TableBuilder {
+    fn new() -> Self {
+        TableBuilder {
+            name: None,
+            id: None,
+            cols: vec![],
+            pkeys: None,
+        }
+    }
+
+    fn name(&mut self, name: &str) -> &mut Self {
+        self.name = Some(name.to_string());
+        self
+    }
+
+    fn id(&mut self, id: u64) -> &mut Self {
+        self.id = Some(id);
+        self
+    }
+
+    fn add_col(&mut self, title: &str, data_type: TypeCol) -> &mut Self {
+        self.cols.push(Column {
+            title: title.to_string(),
+            data_type,
+        });
+        self
+    }
+
+    fn pkey(&mut self, nkeys: u16) -> &mut Self {
+        self.pkeys = Some(nkeys);
+        self
+    }
+
+    fn build(&self) -> Table {
+        todo!()
+    }
+}
 
 // serialize to json
 #[derive(Serialize, Deserialize)]
@@ -88,6 +133,7 @@ pub(crate) struct Table {
 }
 
 impl Table {
+    /// deprecated, go through builder
     pub fn new(name: &str) -> Self {
         Table {
             name: name.to_string(),
@@ -96,9 +142,6 @@ impl Table {
             pkeys: 0,
         }
     }
-
-    // some function to add an auto incremending id
-    pub fn set_id() {}
 
     /// encode schema to json
     pub fn encode(self) -> Value {

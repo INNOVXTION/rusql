@@ -85,9 +85,18 @@ impl Ord for Key {
                 debug!("key b empty");
                 return Ordering::Greater;
             }
-            let next = key_a.read_u8();
-            assert_eq!(next, key_b.read_u8());
-            match TypeCol::from_u8(next) {
+
+            // advancing the type bit
+            let ta = key_a.read_u8();
+            let tb = key_b.read_u8();
+
+            debug_assert_eq!(ta, tb);
+            match ta.cmp(&tb) {
+                Ordering::Equal => {}
+                o => return o,
+            }
+
+            match TypeCol::from_u8(ta) {
                 Some(TypeCol::BYTES) => {
                     let len_a = key_a.read_u32() as usize;
                     let len_b = key_b.read_u32() as usize;
@@ -220,6 +229,7 @@ impl IntoIterator for Value {
     }
 }
 
+/// prelude list of data
 pub(crate) struct Record {
     data: Vec<DataCell>,
 }
@@ -428,10 +438,6 @@ mod test {
         table.cols = cols;
         table.pkeys = 2;
 
-        let s1 = "hello";
-        let i1 = 10;
-        let s2 = "world";
-
         let (key1, value1) = Record::new()
             .add("hello")
             .add(10)
@@ -440,12 +446,21 @@ mod test {
             .unwrap();
 
         let (key2, value2) = Record::new()
-            .add(s1)
-            .add(i1)
-            .add(s2)
+            .add("hello")
+            .add(10)
+            .add("world")
             .encode(&table)
             .unwrap();
 
-        assert_eq!(key1, key2)
+        assert_eq!(key1, key2);
+
+        let (key3, value3) = Record::new()
+            .add("smol")
+            .add(5)
+            .add("world")
+            .encode(&table)
+            .unwrap();
+
+        assert!(key1 < key3);
     }
 }
