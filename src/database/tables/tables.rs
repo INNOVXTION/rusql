@@ -1,11 +1,30 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, rc::Rc};
 
 use crate::database::{
     errors::TableError,
     pager::diskpager::KVEngine,
     tables::records::{Record, Value},
 };
-use serde::{Deserialize, Serialize, de::value::Error};
+use serde::{Deserialize, Serialize};
+
+/*
+ * Encoding Layout:
+ * |-----------KEY----------|----Value-----|
+ * |          [Col1][Col2]..|[Col3][Col4]..|
+ * |[TABLE ID][PK1 ][PK2 ]..|[ v1 ][ v2 ]..|
+ *
+ * Key: 0 Val: Tdef Schema
+ *
+ * Tdef, id = 1:
+ * |-----KEY---|----Val---|
+ * |   [ Col1 ]|[  Col2  ]|
+ * |[1][ name ]|[  def   ]|
+ *
+ * Meta, id = 2:
+ * |-----KEY---|----Val---|
+ * |   [ Col1 ]|[  Col2  ]|
+ * |[2][ key  ]|[  val   ]|
+ */
 
 // fixed table which holds all the schemas
 const DEF_TABLE_NAME: &'static str = "tdef";
@@ -14,26 +33,15 @@ const DEF_TABLE_COL2: &'static str = "def";
 const DEF_TABLE_ID: u64 = 1;
 const DEF_TABLE_PKEYS: u16 = 1;
 
-// fixed meta table
+// fixed meta table holding all the unique table ids
 const META_TABLE_NAME: &'static str = "tmeta";
 const META_TABLE_COL1: &'static str = "key";
 const META_TABLE_COL2: &'static str = "val";
 const META_TABLE_ID: u64 = 2;
 const META_TABLE_PKEYS: u16 = 1;
 
-/*
- * Encoding Layout:
- * |-----------KEY----------|----Value-----|
- * |          [Col1][Col2]..|[Col3][Col4]..|
- * |[TABLE ID][PK1 ][PK2 ]..|[ v1 ][ v2 ]..|
- *
- * Tdef:
- * |-----KEY---|----Val---|
- * |   [ Col1 ]|[  Col2  ]|
- * |[1][ name ]|[  def   ]|
- */
-
 /// wrapper for sentinal value
+#[derive(Serialize, Deserialize)]
 struct MetaTable(Table);
 
 impl MetaTable {
@@ -54,9 +62,18 @@ impl MetaTable {
             pkeys: META_TABLE_PKEYS,
         })
     }
+    /// encode schema to json
+    fn encode(self) -> EncodedTable {
+        EncodedTable(serde_json::to_string(&self).unwrap())
+    }
+
+    fn load<KV: KVEngine>(pager: &KV) -> Self {
+        todo!()
+    }
 }
 
 /// wrapper for sentinal value
+#[derive(Serialize, Deserialize)]
 struct TDefTable(Table);
 
 impl TDefTable {
@@ -76,6 +93,15 @@ impl TDefTable {
             ],
             pkeys: DEF_TABLE_PKEYS,
         })
+    }
+    /// encode schema to json
+    fn encode(self) -> EncodedTable {
+        EncodedTable(serde_json::to_string(&self).unwrap())
+    }
+
+    fn load<KV: KVEngine>(pager: &KV) -> Self {
+        let table: Self = serde_json::from_str(&pager.get("0").unwrap()).unwrap();
+        table
     }
 }
 
@@ -119,6 +145,7 @@ impl TableBuilder {
         self
     }
 
+    // TODO: extend validation
     pub fn build(self) -> Result<Table, TableError> {
         let name = match self.name {
             Some(n) => n,
@@ -146,10 +173,22 @@ impl TableBuilder {
 // serialize to json
 #[derive(Serialize, Deserialize)]
 pub(crate) struct Table {
-    pub(crate) name: String,
-    pub(crate) id: u64,
-    pub(crate) cols: Vec<Column>,
-    pub(crate) pkeys: u16,
+    name: String,
+    id: u64,
+    cols: Vec<Column>,
+    pkeys: u16,
+}
+
+struct EncodedTable(String);
+
+impl EncodedTable {
+    pub fn decode(self) -> Table {
+        let table = serde_json::from_str(&self.0).unwrap();
+        table
+    }
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
 }
 
 impl Table {
@@ -164,8 +203,18 @@ impl Table {
     }
 
     /// encode schema to json
-    pub fn encode(self) -> Value {
-        Value::from_slice(&serde_json::to_string(&self).unwrap().into_bytes())
+    pub fn encode(self) -> EncodedTable {
+        EncodedTable(serde_json::to_string(&self).unwrap())
+    }
+
+    pub fn cols(&self) -> &[Column] {
+        &self.cols[..]
+    }
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+    pub fn pkeys(&self) -> u16 {
+        self.pkeys
     }
 }
 
@@ -197,32 +246,38 @@ struct Database<KV: KVEngine> {
     kv_engine: KV,
 }
 
+impl<KV: KVEngine> Database<KV> {
+    fn new(pager: KV) -> Self {
+        Database {
+            tdef: TDefTable::load(&pager),
+            buffer: HashMap::new(),
+            kv_engine: pager,
+        }
+    }
+}
+
 // internal API
 trait TableInterface {
     type KVStore: KVEngine;
 
-    fn init();
-
-    fn get_record();
-    fn insert_record(records: &[Record], schema: &Table, pager: &Self::KVStore);
-    fn delete_record();
-
-    fn get_table(id: u64, pager: &Self::KVStore) -> Table;
-    fn insert_table(table: Table, pager: &Self::KVStore);
-    fn delete_table();
+    fn insert_table();
+    fn get_table();
 }
 
 // outward API
-trait DatabaseAPI {
+trait DatabaseAPI<DB>
+where
+    DB: TableInterface,
+{
     type DB: TableInterface;
 
-    fn create_table(pager: &Self::DB);
-    fn drop_table(pager: &Self::DB);
+    fn create_table(&self);
+    fn drop_table(&self);
 
-    fn get(pager: &Self::DB);
-    fn insert(pager: &Self::DB);
-    fn update(pager: &Self::DB);
-    fn delete(pager: &Self::DB);
+    fn get(&self);
+    fn insert(&self);
+    fn update(&self);
+    fn delete(&self);
 }
 
 #[cfg(test)]
@@ -239,10 +294,5 @@ mod test {
         let path = "table1.rdb";
         cleanup_file(path);
         let envoy = EnvoyV1::open(path).unwrap();
-    }
-
-    #[test]
-    fn json_test() {
-        let tree = mempage_tree();
     }
 }

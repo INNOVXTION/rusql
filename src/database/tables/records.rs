@@ -3,7 +3,6 @@ use std::rc::Rc;
 use std::{cmp::Ordering, fmt::Write};
 
 use tracing::debug;
-use tracing_subscriber::field::debug;
 
 use super::codec::*;
 use crate::database::{
@@ -173,6 +172,13 @@ impl IntoIterator for Key {
 pub(crate) struct Value(Rc<[u8]>);
 
 impl Value {
+    pub fn decode(self) -> Record {
+        let mut r = Record::new();
+        for cell in self {
+            r.add(cell);
+        }
+        r
+    }
     pub fn from_slice(data: &[u8]) -> Self {
         Value(Rc::from(data))
     }
@@ -248,7 +254,7 @@ impl Record {
     ///
     /// validates that record matches with column in schema
     fn encode(&mut self, schema: &Table) -> Result<(Key, Value), TableError> {
-        if schema.cols.len() != self.data.len() {
+        if schema.cols().len() != self.data.len() {
             return Err(TableError::RecordError(
                 "input doesnt match column count".to_string(),
             ));
@@ -259,13 +265,13 @@ impl Record {
         let mut key_idx: usize = 0;
 
         // starting with table id
-        buf.extend_from_slice(&schema.id.to_le_bytes());
+        buf.extend_from_slice(&schema.id().to_le_bytes());
         idx += TID_LEN;
 
         // composing byte array by iterating through all columns designated as primary key
-        for col in schema.cols.iter().enumerate() {
+        for col in schema.cols().iter().enumerate() {
             // remembering the cutoff point between keys and values
-            if col.0 == schema.pkeys as usize {
+            if col.0 == schema.pkeys() as usize {
                 key_idx = idx;
             }
             match col.1.data_type {
@@ -296,13 +302,6 @@ impl Record {
             Value::from_slice(&buf[key_idx..]),
         ))
     }
-
-    fn decode(data: (Key, Value)) -> Self {
-        let mut rec = Record::new();
-        rec.data.extend(data.0.into_iter());
-        rec.data.extend(data.1.into_iter());
-        rec
-    }
 }
 
 pub(crate) enum DataCell {
@@ -310,28 +309,15 @@ pub(crate) enum DataCell {
     Int(i64),
 }
 
-impl DataCell {
-    /// turns data cell into encoded byte array according to Codec
-    ///
-    /// for a string: 1B Type + 2B len + str.len()
-    fn into_bytes(self) -> Rc<[u8]> {
-        match self {
-            DataCell::Str(s) => s.encode(),
-            DataCell::Int(i) => i.encode(),
-        }
-    }
-    fn from_bytes(data: &[u8], encode_type: TypeCol) -> DataCell {
-        match encode_type {
-            TypeCol::BYTES => DataCell::Str(String::decode(data)),
-            TypeCol::INTEGER => DataCell::Int(i64::decode(data)),
-        }
-    }
-}
-
 trait InputData {
     fn into_cell(self) -> DataCell;
 }
 
+impl InputData for DataCell {
+    fn into_cell(self) -> DataCell {
+        self
+    }
+}
 impl InputData for String {
     fn into_cell(self) -> DataCell {
         DataCell::Str(self)
@@ -371,8 +357,6 @@ impl InputData for i8 {
 #[cfg(test)]
 mod test {
 
-    use crate::database::tables::tables::{Column, Table};
-
     use super::super::tables::TableBuilder;
     use super::*;
     use test_log::test;
@@ -380,25 +364,15 @@ mod test {
 
     #[test]
     fn record1() {
-        let mut table = Table::new("mytable");
-
-        let mut cols = Vec::<Column>::new();
-        cols.push(Column {
-            title: "greeter".into(),
-            data_type: TypeCol::BYTES,
-        });
-        cols.push(Column {
-            title: "number".into(),
-            data_type: TypeCol::INTEGER,
-        });
-        cols.push(Column {
-            title: "greetee".into(),
-            data_type: TypeCol::BYTES,
-        });
-
-        table.id = 2;
-        table.cols = cols;
-        table.pkeys = 2;
+        let table = TableBuilder::new()
+            .name("mytable")
+            .id(2)
+            .pkey(2)
+            .add_col("greeter", TypeCol::BYTES)
+            .add_col("number", TypeCol::INTEGER)
+            .add_col("gretee", TypeCol::BYTES)
+            .build()
+            .unwrap();
 
         let s1 = "hello";
         let i1 = 10;
@@ -415,7 +389,7 @@ mod test {
     }
 
     #[test]
-    fn key_cmp1() {
+    fn key_cmp1() -> Result<(), Box<dyn std::error::Error>> {
         let span = span!(Level::DEBUG, "cmp span");
         let _guard = span.enter();
 
@@ -426,22 +400,19 @@ mod test {
             .add_col("greeter", TypeCol::BYTES)
             .add_col("number", TypeCol::INTEGER)
             .add_col("gretee", TypeCol::BYTES)
-            .build()
-            .unwrap();
+            .build()?;
 
         let (key1, value1) = Record::new()
             .add("hello")
             .add(10)
             .add("world")
-            .encode(&table)
-            .unwrap();
+            .encode(&table)?;
 
         let (key2, value2) = Record::new()
             .add("hello")
             .add(10)
             .add("world")
-            .encode(&table)
-            .unwrap();
+            .encode(&table)?;
 
         assert_eq!(key1, key2);
 
@@ -449,9 +420,9 @@ mod test {
             .add("smol")
             .add(5)
             .add("world")
-            .encode(&table)
-            .unwrap();
+            .encode(&table)?;
 
         assert!(key1 < key3);
+        Ok(())
     }
 }

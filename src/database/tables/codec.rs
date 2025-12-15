@@ -26,22 +26,11 @@ example:
 pub const TYPE_LEN: usize = std::mem::size_of::<u8>();
 pub const HEADER_SIZE: usize = std::mem::size_of::<u16>();
 
-/// length prefix for strings is u32
 pub(crate) const STR_PRE_LEN: usize = std::mem::size_of::<u32>();
-/// length of integer it 8 bytes
 pub(crate) const INT_LEN: usize = std::mem::size_of::<u64>();
 pub(crate) const IDX_LEN: usize = std::mem::size_of::<u64>();
 pub(crate) const TID_LEN: usize = std::mem::size_of::<u64>();
 
-/// converts a String to bytes with a 4 byte length number + utf8 character
-/// ```
-/// let key = format!("{}{}{}", 5, "column1", "column2").encode();
-/// let val = format!("{}", "some data").encode();
-/// assert_eq!(key.len(), 20);
-/// assert_eq!(val.len(), 14);
-/// assert_eq!(String::decode(&key), "5column1column2");
-/// assert_eq!(String::decode(&val), "some data");
-/// ```
 pub(super) trait Codec {
     fn encode(&self) -> Rc<[u8]>;
     fn decode(data: &[u8]) -> Self;
