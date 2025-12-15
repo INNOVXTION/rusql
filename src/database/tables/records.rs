@@ -72,9 +72,6 @@ impl Ord for Key {
         let mut key_a = &self.0[TID_LEN..];
         let mut key_b = &other.0[TID_LEN..];
 
-        debug!(bytes_a = key_a);
-        debug!(bytes_b = key_b);
-
         loop {
             if key_a.is_empty() && key_b.is_empty() {
                 debug!("both keys empty");
@@ -291,8 +288,6 @@ impl Record {
                 }
             }
         }
-        debug!(bytes = &buf[..key_idx], "key");
-        debug!(bytes = &buf[key_idx..], "value");
         Ok((
             Key::from_slice(&buf[..key_idx]),
             Value::from_slice(&buf[key_idx..]),
@@ -442,12 +437,12 @@ mod test {
             .encode(&table)
             .unwrap();
 
-        let mut rec2 = Record::new();
-        rec2.add(s1.into());
-        rec2.add(i1.into());
-        rec2.add(s2.into());
-
-        let (key2, value2) = rec2.encode(&table).unwrap();
+        let (key2, value2) = Record::new()
+            .add(s1.into())
+            .add(i1.into())
+            .add(s2.into())
+            .encode(&table)
+            .unwrap();
 
         assert_eq!(key1, key2)
     }

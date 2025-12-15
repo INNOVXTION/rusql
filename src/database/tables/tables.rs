@@ -32,11 +32,6 @@ const META_TABLE_PKEYS: u16 = 1;
  * |[1][ name ]|[  def   ]|
  */
 
-struct TableBuffer<P: KVEngine> {
-    tables: TDefTable,
-    pager: P,
-}
-
 struct MetaTable(Table);
 
 impl MetaTable {
@@ -80,6 +75,8 @@ impl TDefTable {
         })
     }
 }
+
+struct TableBuilder {}
 
 // serialize to json
 #[derive(Serialize, Deserialize)]
