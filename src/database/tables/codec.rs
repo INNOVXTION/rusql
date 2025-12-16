@@ -103,8 +103,14 @@ impl Codec for i64 {
 }
 
 /// utility functions with cursor functionality
-pub(super) trait NumEncode {
+pub(crate) trait NumEncode {
     fn encode_i64(self, value: i64) -> Self;
+
+    fn write_i64(self, value: i64) -> Self;
+    fn write_u64(self, value: u64) -> Self;
+    fn write_u32(self, value: u32) -> Self;
+    fn write_u16(self, value: u16) -> Self;
+    fn write_u8(self, value: u8) -> Self;
 }
 impl NumEncode for &mut [u8] {
     fn encode_i64(self, value: i64) -> Self {
@@ -116,14 +122,42 @@ impl NumEncode for &mut [u8] {
         assert_eq!(head.len(), TYPE_LEN + INT_LEN);
         tail
     }
+
+    fn write_i64(self, value: i64) -> Self {
+        let (head, tail) = self.split_at_mut(std::mem::size_of::<i64>());
+        head.copy_from_slice(&value.to_le_bytes());
+        tail
+    }
+    fn write_u64(self, value: u64) -> Self {
+        let (head, tail) = self.split_at_mut(std::mem::size_of::<u64>());
+        head.copy_from_slice(&value.to_le_bytes());
+        tail
+    }
+    fn write_u32(self, value: u32) -> Self {
+        let (head, tail) = self.split_at_mut(std::mem::size_of::<u32>());
+        head.copy_from_slice(&value.to_le_bytes());
+        tail
+    }
+    fn write_u16(self, value: u16) -> Self {
+        let (head, tail) = self.split_at_mut(std::mem::size_of::<u16>());
+        head.copy_from_slice(&value.to_le_bytes());
+        tail
+    }
+    fn write_u8(self, value: u8) -> Self {
+        let (head, tail) = self.split_at_mut(std::mem::size_of::<u8>());
+        head.copy_from_slice(&value.to_le_bytes());
+        tail
+    }
 }
 
 /// utility functions with cursor functionality
-pub(super) trait NumDecode {
+pub(crate) trait NumDecode {
     fn decode_i64(&mut self) -> i64;
 
     fn read_i64(&mut self) -> i64;
+    fn read_u64(&mut self) -> u64;
     fn read_u32(&mut self) -> u32;
+    fn read_u16(&mut self) -> u16;
     fn read_u8(&mut self) -> u8;
 }
 
@@ -144,12 +178,19 @@ impl NumDecode for &[u8] {
     /// moves the slice like a cursor
     ///
     /// warning: this function does not consider the type bit like decode()!
+    fn read_u64(&mut self) -> u64 {
+        let (head, tail) = self.split_at(std::mem::size_of::<u64>());
+        *self = tail;
+        u64::from_le_bytes(head.try_into().expect("cast error read_u64"))
+    }
+    /// moves the slice like a cursor
+    ///
+    /// warning: this function does not consider the type bit like decode()!
     fn read_i64(&mut self) -> i64 {
         let (head, tail) = self.split_at(std::mem::size_of::<i64>());
         *self = tail;
         i64::from_le_bytes(head.try_into().expect("cast error read_u64"))
     }
-
     /// moves the slice like a cursor
     ///  
     /// warning: this function does not consider the type bit like decode()!
@@ -158,7 +199,14 @@ impl NumDecode for &[u8] {
         *self = tail;
         u32::from_le_bytes(head.try_into().expect("cast error read_u32"))
     }
-
+    /// moves the slice like a cursor
+    ///  
+    /// warning: this function does not consider the type bit like decode()!
+    fn read_u16(&mut self) -> u16 {
+        let (head, tail) = self.split_at(std::mem::size_of::<u16>());
+        *self = tail;
+        u16::from_le_bytes(head.try_into().expect("cast error read_u16"))
+    }
     /// moves the slice like a cursor
     ///
     /// warning: this function does not consider the type bit like decode()!
@@ -234,5 +282,20 @@ mod test {
         assert_eq!(read_slice.decode_i64(), 10);
         assert_eq!(read_slice.decode_i64(), 5);
         assert_eq!(read_slice.decode_i64(), 3);
+    }
+
+    #[test]
+    fn codec3() {
+        let i1: u16 = 5;
+        let i2: u32 = 7;
+        let i3: u64 = 9;
+        let mut buf = [0u8; 2 + 4 + 8];
+
+        buf.write_u16(i1).write_u32(i2).write_u64(i3);
+
+        let mut r_slice = &buf[..];
+        assert_eq!(r_slice.read_u16(), 5);
+        assert_eq!(r_slice.read_u32(), 7);
+        assert_eq!(r_slice.read_u64(), 9);
     }
 }

@@ -44,6 +44,21 @@ impl Key {
     fn from_slice(data: &[u8]) -> Self {
         Key(Rc::from(data))
     }
+
+    /// utility function for unit tests
+    fn from_unencoded_str<S: ToString>(str: S) -> Self {
+        let mut buf: Vec<u8> = vec![0; 8];
+        // artificial tid for testing purposes
+        buf.write_u64(1);
+        buf.extend_from_slice(&str.to_string().encode());
+        Key(Rc::from(buf))
+    }
+}
+
+impl From<&str> for Key {
+    fn from(value: &str) -> Self {
+        Key::from_unencoded_str(value)
+    }
 }
 
 impl Eq for Key {}
@@ -193,6 +208,16 @@ impl Value {
         }
         st
     }
+    /// utility function for unit tests
+    fn from_unencoded_str<S: ToString>(str: S) -> Self {
+        Value(str.to_string().encode())
+    }
+}
+
+impl From<&str> for Value {
+    fn from(value: &str) -> Self {
+        Value::from_unencoded_str(value)
+    }
 }
 
 pub(crate) struct ValueIter {
@@ -269,27 +294,27 @@ impl Record {
         idx += TID_LEN;
 
         // composing byte array by iterating through all columns designated as primary key
-        for col in schema.cols().iter().enumerate() {
+        for (i, col) in schema.cols().iter().enumerate() {
             // remembering the cutoff point between keys and values
-            if col.0 == schema.pkeys() as usize {
+            if i == schema.pkeys() as usize {
                 key_idx = idx;
             }
-            match col.1.data_type {
+            match col.data_type {
                 TypeCol::BYTES => {
-                    if let DataCell::Str(s) = &self.data[col.0] {
-                        let s = s.encode();
-                        idx += s.len();
-                        buf.extend_from_slice(&s);
+                    if let DataCell::Str(str) = &self.data[i] {
+                        let str = str.encode();
+                        idx += str.len();
+                        buf.extend_from_slice(&str);
                         debug!(idx, "encoding string");
                     } else {
                         return Err(TableError::RecordError("expected str, got int".to_string()));
                     }
                 }
                 TypeCol::INTEGER => {
-                    if let DataCell::Int(i) = &self.data[col.0] {
-                        let i = i.encode();
-                        idx += i.len();
-                        buf.extend_from_slice(&i);
+                    if let DataCell::Int(num) = &self.data[i] {
+                        let num = num.encode();
+                        idx += num.len();
+                        buf.extend_from_slice(&num);
                         debug!(idx, "encoding integer");
                     } else {
                         return Err(TableError::RecordError("expected int, got str".to_string()));
@@ -415,6 +440,7 @@ mod test {
             .encode(&table)?;
 
         assert_eq!(key1, key2);
+        assert_eq!(key1.into_string(), "2hello10");
 
         let (key3, value3) = Record::new()
             .add("smol")
@@ -422,7 +448,23 @@ mod test {
             .add("world")
             .encode(&table)?;
 
-        assert!(key1 < key3);
+        assert!(key2 < key3);
+        assert_eq!(key3.into_string(), "2smol5");
         Ok(())
+    }
+
+    #[test]
+    fn records_test_str() {
+        let key = Key::from_unencoded_str("hello");
+        assert_eq!(key.into_string(), "1hello");
+
+        let key: Key = "hello".into();
+        assert_eq!(key.into_string(), "1hello");
+
+        let key = Key::from_unencoded_str("owned hello".to_string());
+        assert_eq!(key.into_string(), "1owned hello");
+
+        let val: Value = "world".into();
+        assert_eq!(val.into_string(), "world");
     }
 }
