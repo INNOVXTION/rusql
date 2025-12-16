@@ -9,6 +9,7 @@ use crate::database::{
     btree::{BTree, Tree},
     errors::Error,
     pager::diskpager::{KVEngine, Pager},
+    tables::{Key, Value},
     types::{Node, Pointer},
 };
 
@@ -28,18 +29,18 @@ pub fn mempage_tree() -> Rc<MemoryPager> {
 }
 
 impl KVEngine for MemoryPager {
-    fn get(&self, key: &str) -> Result<String, Error> {
+    fn get(&self, key: Key) -> Result<Value, Error> {
         self.btree
             .borrow()
             .search(key)
             .ok_or(Error::SearchError("value not found".to_string()))
     }
 
-    fn set(&self, key: &str, value: &str) -> Result<(), Error> {
+    fn set(&self, key: Key, value: Value) -> Result<(), Error> {
         self.btree.borrow_mut().insert(key, value)
     }
 
-    fn delete(&self, key: &str) -> Result<(), Error> {
+    fn delete(&self, key: Key) -> Result<(), Error> {
         self.btree.borrow_mut().delete(key)
     }
 }

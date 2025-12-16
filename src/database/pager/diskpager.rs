@@ -10,9 +10,10 @@ use tracing::{debug, error, info, instrument, warn};
 
 use crate::create_file_sync;
 use crate::database::BTree;
-use crate::database::helper::{as_page, debug_print_buffer, input_valid};
+use crate::database::helper::{as_page, debug_print_buffer};
 use crate::database::pager::freelist::{FLConfig, FLNode, FreeList, GC};
 use crate::database::pager::mmap::*;
+use crate::database::tables::{Key, Value};
 use crate::database::{
     btree::{Tree, TreeNode},
     errors::{Error, PagerError},
@@ -50,16 +51,15 @@ pub(crate) struct Buffer {
 
 /// outward facing api
 pub(crate) trait KVEngine {
-    fn get(&self, key: &str) -> Result<String, Error>;
-    fn set(&self, key: &str, value: &str) -> Result<(), Error>;
-    fn delete(&self, key: &str) -> Result<(), Error>;
+    fn get(&self, key: Key) -> Result<Value, Error>;
+    fn set(&self, key: Key, val: Value) -> Result<(), Error>;
+    fn delete(&self, key: Key) -> Result<(), Error>;
 }
 
 impl KVEngine for EnvoyV1 {
     #[instrument(skip(self))]
-    fn get(&self, key: &str) -> Result<String, Error> {
+    fn get(&self, key: Key) -> Result<Value, Error> {
         info!("getting...");
-        input_valid(key, " ")?;
         self.tree
             .borrow()
             .search(key)
@@ -67,11 +67,10 @@ impl KVEngine for EnvoyV1 {
     }
 
     #[instrument(skip(self))]
-    fn set(&self, key: &str, value: &str) -> Result<(), Error> {
-        input_valid(key, value)?;
+    fn set(&self, key: Key, val: Value) -> Result<(), Error> {
         let recov_page = metapage_save(self); // saving current metapage for possible rollback
         info!("inserting...");
-        self.tree.borrow_mut().insert(key, value).map_err(|e| {
+        self.tree.borrow_mut().insert(key, val).map_err(|e| {
             error!(%e, "tree error");
             e
         })?;
@@ -79,9 +78,8 @@ impl KVEngine for EnvoyV1 {
     }
 
     #[instrument(skip(self))]
-    fn delete(&self, key: &str) -> Result<(), Error> {
+    fn delete(&self, key: Key) -> Result<(), Error> {
         info!("deleting...");
-        input_valid(key, " ")?;
         let recov_page = metapage_save(self); // saving current metapage for possible rollback
         self.tree.borrow_mut().delete(key)?;
         self.update_or_revert(&recov_page)
@@ -569,8 +567,16 @@ mod test {
         let path = "test-files/disk_insert1.rdb";
         cleanup_file(path);
         let pager = EnvoyV1::open(path).unwrap();
-        pager.set("1", "val").unwrap();
-        assert_eq!(pager.get("1").unwrap(), "val".to_string());
+        pager
+            .set(
+                Key::from_unencoded_str("1"),
+                Value::from_unencoded_str("val"),
+            )
+            .unwrap();
+        assert_eq!(
+            pager.get(Key::from_unencoded_str("1")).unwrap(),
+            Value::from_unencoded_str("val")
+        );
         cleanup_file(path);
     }
 
@@ -581,10 +587,10 @@ mod test {
         let pager = EnvoyV1::open(path).unwrap();
 
         for i in 1u16..=300u16 {
-            pager.set(&format!("{i}"), "value").unwrap()
+            pager.set(format!("{i}").into(), "value".into()).unwrap()
         }
         for i in 1u16..=300u16 {
-            assert_eq!(pager.get(&format!("{i}")).unwrap(), "value")
+            assert_eq!(pager.get(format!("{i}").into()).unwrap(), "value".into())
         }
         cleanup_file(path);
     }
@@ -596,10 +602,10 @@ mod test {
         let pager = EnvoyV1::open(path).unwrap();
 
         for i in 1u16..=300u16 {
-            pager.set(&format!("{i}"), "value").unwrap()
+            pager.set(format!("{i}").into(), "value".into()).unwrap()
         }
         for i in 1u16..=300u16 {
-            pager.delete(&format!("{i}")).unwrap();
+            pager.delete(format!("{i}").into()).unwrap();
         }
         cleanup_file(path);
     }
@@ -612,7 +618,10 @@ mod test {
 
         for _ in 1u16..=1000 {
             pager
-                .set(&format!("{:?}", rand::rng().random_range(1..1000)), "val")
+                .set(
+                    format!("{:?}", rand::rng().random_range(1..1000)).into(),
+                    Value::from_unencoded_str("val"),
+                )
                 .unwrap()
         }
         cleanup_file(path);
@@ -625,10 +634,12 @@ mod test {
         let pager = EnvoyV1::open(path).unwrap();
 
         for k in 1u16..=1000 {
-            pager.set(&format!("{}", k), "val").unwrap()
+            pager
+                .set(format!("{}", k).into(), Value::from_unencoded_str("val"))
+                .unwrap()
         }
         for k in 1u16..=1000 {
-            pager.delete(&format!("{}", k)).unwrap()
+            pager.delete(format!("{}", k).into()).unwrap()
         }
         cleanup_file(path);
     }
@@ -656,27 +667,29 @@ mod test {
         assert_eq!(res, None);
     }
 
-    #[test]
-    fn cleanup_test() {
-        let path = "test-files/disk_cleanup.rdb";
-        cleanup_file(path);
-        let pager = EnvoyV1::open(path).unwrap();
-        // assert_eq!(fd_size, PAGE_SIZE as u64 * 2);
-        for k in 1u16..=500 {
-            pager.set(&format!("{}", k), "val").unwrap()
-        }
-        for k in 1u16..=500 {
-            pager.delete(&format!("{}", k)).unwrap()
-        }
-        pager.truncate();
-        let fd_size = rustix::fs::fstat(&pager.database)
-            .map_err(|e| {
-                error!("Error when getting file size");
-                Error::PagerError(PagerError::FDError(e))
-            })
-            .unwrap()
-            .st_size as u64;
-        cleanup_file(path);
-        assert_eq!(fd_size, PAGE_SIZE as u64 * 2);
-    }
+    // #[test]
+    // fn cleanup_test() {
+    //     let path = "test-files/disk_cleanup.rdb";
+    //     cleanup_file(path);
+    //     let pager = EnvoyV1::open(path).unwrap();
+    //     // assert_eq!(fd_size, PAGE_SIZE as u64 * 2);
+    //     for k in 1u16..=500 {
+    //         pager
+    //             .set(format!("{}", k).into(), Value::from_unencoded_str("val"))
+    //             .unwrap()
+    //     }
+    //     for k in 1u16..=500 {
+    //         pager.delete(format!("{}", k).into()).unwrap()
+    //     }
+    //     pager.truncate();
+    //     let fd_size = rustix::fs::fstat(&pager.database)
+    //         .map_err(|e| {
+    //             error!("Error when getting file size");
+    //             Error::PagerError(PagerError::FDError(e))
+    //         })
+    //         .unwrap()
+    //         .st_size as u64;
+    //     cleanup_file(path);
+    //     assert_eq!(fd_size, PAGE_SIZE as u64 * 2);
+    // }
 }

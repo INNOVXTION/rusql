@@ -1,8 +1,9 @@
 use super::errors::{Error, PagerError};
 use super::types::*;
 use rustix::fs::{self, Mode, OFlags};
+use rustix::path::Arg;
 use std::collections::HashMap;
-use std::os::fd::OwnedFd;
+use std::os::fd::{AsFd, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use tracing::{debug, error};
@@ -12,53 +13,6 @@ use crate::database::btree::TreeNode;
 pub trait DecodeSlice {
     fn read_u16(&self, offset: usize) -> u16;
 }
-
-// /// assumes little endian
-// ///
-// /// reads a [u8] slice to u16 starting at offset
-// pub(crate) fn read_u16(data: &[u8], offset: usize) -> Result<u16, Error> {
-//     if offset > NODE_SIZE {
-//         error!("slice_to_u16: offset idx {} exceeded node size", offset);
-//         return Err(Error::IndexError);
-//     }
-//     data.get(offset..offset + U16_SIZE)
-//         .and_then(|x| x.try_into().ok())
-//         .map(|buf: [u8; U16_SIZE]| u16::from_le_bytes(buf))
-//         .ok_or(Error::IntCastError(None))
-// }
-
-// /// assumes little endian
-// ///
-// /// reads a [u8] slice to Pointer starting at offset
-// pub(crate) fn read_pointer(data: &[u8], offset: usize) -> Result<Pointer, Error> {
-//     if offset > NODE_SIZE {
-//         error!("slice_to_u64: offset idx {} exceeded node size", offset);
-//         return Err(Error::IndexError);
-//     }
-//     data.get(offset..offset + PTR_SIZE)
-//         .and_then(|x| x.try_into().ok())
-//         .map(|buf: [u8; PTR_SIZE]| Pointer::from(u64::from_le_bytes(buf)))
-//         .ok_or(Error::IntCastError(None))
-// }
-
-// /// writes u16 to slice at offset
-// pub(crate) fn write_u16(data: &mut [u8], offset: usize, value: u16) -> Result<(), Error> {
-//     if offset > NODE_SIZE {
-//         error!("offset idx {} exceeded node size", offset);
-//         return Err(Error::IndexError);
-//     }
-//     data[offset..offset + U16_SIZE].copy_from_slice(&value.to_le_bytes());
-//     Ok(())
-// }
-// /// writes Pointer to slice
-// pub(crate) fn write_pointer(data: &mut [u8], offset: usize, ptr: Pointer) -> Result<(), Error> {
-//     if offset > NODE_SIZE {
-//         error!("offset idx {} exceeded node size", offset);
-//         return Err(Error::IndexError);
-//     }
-//     data[offset..offset + PTR_SIZE].copy_from_slice(&ptr.as_slice());
-//     Ok(())
-// }
 
 /// casts usize to u16
 pub(crate) fn as_usize(n: usize) -> u16 {
@@ -81,23 +35,33 @@ pub(crate) fn as_page(offset: usize) -> String {
 
 /// creates or opens a .rdb file
 pub fn create_file_sync(file: &str) -> Result<OwnedFd, PagerError> {
-    let path = PathBuf::from_str(file).unwrap();
+    let path = Path::new(file);
     if let None = path.file_name() {
         error!("invalid file name");
         return Err(PagerError::FileNameError);
     }
-    let parent = path.parent();
+
     // checking if directory exists
-    if parent.is_some() && !parent.unwrap().is_dir() {
+    let parent = path.parent();
+    let parent_exists = parent != Some(Path::new(""));
+
+    if parent_exists && !parent.unwrap().is_dir() {
         debug!("creating parent directory {:?}", parent.unwrap());
         std::fs::create_dir_all(parent.unwrap()).expect("error when creating directory");
-    } // none return can panic on dirfd open call
-    debug!("opening directory fd");
-    let dirfd = fs::open(
-        parent.unwrap(),
-        OFlags::DIRECTORY | OFlags::RDONLY,
-        Mode::RUSR | Mode::WUSR | Mode::RGRP | Mode::ROTH,
-    )?;
+    }
+
+    let dirfd: Box<dyn std::os::fd::AsFd> = if parent_exists {
+        debug!("opening directory fd");
+        Box::new(fs::open(
+            parent.unwrap(),
+            OFlags::DIRECTORY | OFlags::RDONLY,
+            Mode::RUSR | Mode::WUSR | Mode::RGRP | Mode::ROTH,
+        )?)
+    } else {
+        debug!("using CWD");
+        Box::new(rustix::fs::CWD.as_fd())
+    };
+
     debug!("opening file");
     let fd = fs::openat(
         &dirfd,
@@ -106,34 +70,36 @@ pub fn create_file_sync(file: &str) -> Result<OwnedFd, PagerError> {
         Mode::RUSR | Mode::WUSR | Mode::RGRP | Mode::ROTH,
     )?;
     // fsync directory
-    fs::fsync(dirfd)?;
+    if parent_exists {
+        fs::fsync(&dirfd)?;
+    }
     Ok(fd)
 }
 
-/// input validator
-pub(crate) fn input_valid(key: &str, value: &str) -> Result<(), Error> {
-    if key.len() > BTREE_MAX_KEY_SIZE {
-        error!(
-            key.len = key.len(),
-            max = { BTREE_MAX_KEY_SIZE },
-            "key size exceeds maximum!"
-        );
-        return Err(Error::InvalidInput("key size exceeds maximum!"));
-    };
-    if value.len() > BTREE_MAX_VAL_SIZE {
-        error!(
-            val.len = value.len(),
-            max = { BTREE_MAX_VAL_SIZE },
-            "value size exceeds maximum!"
-        );
-        return Err(Error::InvalidInput("value size exceeds maximum!"));
-    };
-    if key.is_empty() {
-        error!("key cant be empty");
-        return Err(Error::InvalidInput("key cant be empty"));
-    }
-    Ok(())
-}
+// /// input validator
+// pub(crate) fn input_valid(key: &str, value: &str) -> Result<(), Error> {
+//     if key.len() > BTREE_MAX_KEY_SIZE {
+//         error!(
+//             key.len = key.len(),
+//             max = { BTREE_MAX_KEY_SIZE },
+//             "key size exceeds maximum!"
+//         );
+//         return Err(Error::InvalidInput("key size exceeds maximum!"));
+//     };
+//     if value.len() > BTREE_MAX_VAL_SIZE {
+//         error!(
+//             val.len = value.len(),
+//             max = { BTREE_MAX_VAL_SIZE },
+//             "value size exceeds maximum!"
+//         );
+//         return Err(Error::InvalidInput("value size exceeds maximum!"));
+//     };
+//     if key.is_empty() {
+//         error!("key cant be empty");
+//         return Err(Error::InvalidInput("key cant be empty"));
+//     }
+//     Ok(())
+// }
 
 /// helper function for debugging purposes
 pub fn debug_print_buffer(buf: &HashMap<Pointer, Node>) {
@@ -152,10 +118,14 @@ pub fn debug_print_buffer(buf: &HashMap<Pointer, Node>) {
 /// helper function for debugging purposes
 pub fn debug_print_tree(node: &TreeNode, idx: u16) {
     if let Some("debug") = option_env!("RUSQL_DEBUG") {
-        debug!(idx, "looking through leaf...");
+        debug!(idx, "looking through {:?}...", node.get_type());
         debug!("---------");
         for i in 0..node.get_nkeys() {
-            debug!(idx = i, key = node.get_key(i).unwrap(), "-- keys in node:");
+            debug!(
+                idx = i,
+                key = node.get_key(i).unwrap().to_string(),
+                "-- keys in node:"
+            );
         }
         debug!("---------");
     } else {
@@ -163,6 +133,7 @@ pub fn debug_print_tree(node: &TreeNode, idx: u16) {
     }
 }
 
+/// testing function to clean up old dbs
 pub fn cleanup_file(path: &str) {
     if Path::new(path).exists() {
         std::fs::remove_file(path).unwrap()

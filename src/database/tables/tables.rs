@@ -62,14 +62,6 @@ impl MetaTable {
             pkeys: META_TABLE_PKEYS,
         })
     }
-    /// encode schema to json
-    fn encode(self) -> EncodedTable {
-        EncodedTable(serde_json::to_string(&self).unwrap())
-    }
-
-    fn load<KV: KVEngine>(pager: &KV) -> Self {
-        todo!()
-    }
 }
 
 /// wrapper for sentinal value
@@ -93,15 +85,6 @@ impl TDefTable {
             ],
             pkeys: DEF_TABLE_PKEYS,
         })
-    }
-    /// encode schema to json
-    fn encode(self) -> EncodedTable {
-        EncodedTable(serde_json::to_string(&self).unwrap())
-    }
-
-    fn load<KV: KVEngine>(pager: &KV) -> Self {
-        let table: Self = serde_json::from_str(&pager.get("0").unwrap()).unwrap();
-        table
     }
 }
 
@@ -242,6 +225,7 @@ impl TypeCol {
 
 struct Database<KV: KVEngine> {
     tdef: TDefTable,
+    mtab: MetaTable,
     buffer: HashMap<String, Table>,
     kv_engine: KV,
 }
@@ -249,7 +233,8 @@ struct Database<KV: KVEngine> {
 impl<KV: KVEngine> Database<KV> {
     fn new(pager: KV) -> Self {
         Database {
-            tdef: TDefTable::load(&pager),
+            tdef: TDefTable::new(),
+            mtab: MetaTable::new(),
             buffer: HashMap::new(),
             kv_engine: pager,
         }
@@ -294,5 +279,6 @@ mod test {
         let path = "table1.rdb";
         cleanup_file(path);
         let envoy = EnvoyV1::open(path).unwrap();
+        cleanup_file(path);
     }
 }

@@ -1,8 +1,10 @@
+use std::io::Write;
 use std::ops::{Deref, DerefMut};
 
 use super::super::codec::*;
 use crate::database::btree::BTree;
 use crate::database::pager::diskpager::Pager;
+use crate::database::tables::{Key, Value};
 use crate::database::{
     helper::*,
     types::{MERGE_FACTOR, NODE_SIZE, PAGE_SIZE, Pointer},
@@ -16,6 +18,9 @@ const NKEYS_OFFSET: usize = 2;
 const HEADER_OFFSET: usize = 4;
 const POINTER_OFFSET: usize = 8;
 const OFFSETARR_OFFSET: usize = 2;
+
+const KEY_LEN_OFFSET: usize = 2;
+const VAL_LEN_OFFSET: usize = 2;
 
 /*
 -----------------------------------Node Layout----------------------------------
@@ -131,13 +136,14 @@ impl TreeNode {
         })?;
         // insert new ptr at idx, consuming the split array
         for (i, node) in new_kids.1.into_iter().enumerate() {
-            let key = node.get_key(0)?.to_string();
+            let key = node.get_key(0)?;
             let ptr = tree.encode(node);
             debug!(
-                "appending new ptr: {ptr} with {key} at idx {}",
-                idx + i as u16
+                "appending new ptr: {ptr} with {} at idx {}",
+                idx + i as u16,
+                key
             );
-            self.kvptr_append(idx + (i as u16), ptr, &key, "")
+            self.kvptr_append(idx + (i as u16), ptr, key, Value::from_unencoded_str(""))
                 .map_err(|e| {
                     error!("error when appending split array");
                     e
@@ -152,14 +158,16 @@ impl TreeNode {
                 })?;
         }
         // debug
-        debug!("nkids after insertion:");
-        for i in 0..self.get_nkeys() {
-            debug!(
-                "idx: {}, key {} ptr {}",
-                i,
-                self.get_key(i).unwrap(),
-                self.get_ptr(i)
-            )
+        if cfg!(test) {
+            debug!("nkids after insertion:");
+            for i in 0..self.get_nkeys() {
+                debug!(
+                    "idx: {}, key {} ptr {}",
+                    i,
+                    self.get_key(i).unwrap(),
+                    self.get_ptr(i)
+                )
+            }
         }
         Ok(())
     }
@@ -205,7 +213,7 @@ impl TreeNode {
     }
 
     /// retrieves key as byte array
-    pub fn get_key(&self, idx: u16) -> Result<&str, Error> {
+    pub fn get_key(&self, idx: u16) -> Result<Key, Error> {
         if idx >= self.get_nkeys() {
             error!(
                 "get_key: index {} out of key range {}",
@@ -217,37 +225,31 @@ impl TreeNode {
         let kvpos = self.kv_pos(idx)?;
         let key_len = self.as_offset_slice(kvpos).read_u16() as usize;
 
-        Ok(
-            str::from_utf8(&self.0[kvpos + 4..kvpos + 4 + key_len]).map_err(|e| {
-                error!("reading key error when casting from slice idx {idx} with kvpos {kvpos}");
-                e
-            })?,
-        )
+        let offset = kvpos + KEY_LEN_OFFSET + VAL_LEN_OFFSET;
+        let slice = &self.0[offset..offset + key_len];
+
+        Ok(Key::from_slice(slice))
     }
 
     /// retrieves value as byte array
-    pub fn get_val(&self, idx: u16) -> Result<&str, Error> {
+    pub fn get_val(&self, idx: u16) -> Result<Value, Error> {
         if let NodeType::Node = self.get_type() {
-            return Ok(" ");
+            return Ok(Value::from_unencoded_str(" "));
         }
         if idx >= self.get_nkeys() {
             error!("index {} out of key range {}", idx, self.get_nkeys());
             return Err(Error::IndexError);
         };
+
         let kvpos = self.kv_pos(idx)?;
         let key_len = self.as_offset_slice(kvpos).read_u16() as usize;
-        let val_len = self.as_offset_slice(kvpos + 2).read_u16() as usize;
+        let val_len = self.as_offset_slice(kvpos + KEY_LEN_OFFSET).read_u16() as usize;
 
-        Ok(
-            str::from_utf8(&self.0[kvpos + 4 + key_len..kvpos + 4 + key_len + val_len]).map_err(
-                |e| {
-                    error!(
-                        "reading value error when casting from slice idx {idx} with kvpos {kvpos}"
-                    );
-                    e
-                },
-            )?,
-        )
+        let offset = kvpos + KEY_LEN_OFFSET + VAL_LEN_OFFSET + key_len;
+        let val = Value::from_slice(self.as_offset_slice(offset).read_bytes(val_len));
+        debug_assert_eq!(val.len(), val_len);
+
+        Ok(val)
     }
 
     /// appends key value and pointer at index
@@ -257,25 +259,24 @@ impl TreeNode {
         &mut self,
         idx: u16,
         ptr: Pointer,
-        key: &str,
-        val: &str,
+        key: Key,
+        val: Value,
     ) -> Result<(), Error> {
         self.set_ptr(idx, ptr);
         let kvpos = self.kv_pos(idx)?;
-        let klen: u16 = key.len().try_into()?;
-        let vlen: u16 = val.len().try_into()?;
+        let klen = key.len() as u16;
+        let vlen = val.len() as u16;
 
-        //inserting klen and vlen = 4 bytes
-        self.0[kvpos..kvpos + 2].copy_from_slice(&klen.to_le_bytes());
-        self.0[kvpos + 2..kvpos + 4].copy_from_slice(&vlen.to_le_bytes());
-
-        //inserting key and value
-        self.0[kvpos + 4..kvpos + 4 + key.len()].copy_from_slice(key.as_bytes());
-        self.0[kvpos + 4 + key.len()..kvpos + 4 + key.len() + val.len()]
-            .copy_from_slice(val.as_bytes());
+        self.as_offset_slice_mut(kvpos)
+            .write_u16(klen)
+            .write_u16(vlen)
+            .write_bytes(key.as_slice())
+            .write_bytes(val.as_slice());
 
         // updating offset for next KV
-        self.set_offset(idx + 1, self.get_offset(idx)? + klen + vlen + 4);
+        let offset =
+            self.get_offset(idx)? + klen + vlen + KEY_LEN_OFFSET as u16 + VAL_LEN_OFFSET as u16;
+        self.set_offset(idx + 1, offset);
         Ok(())
     }
 
@@ -314,7 +315,7 @@ impl TreeNode {
     /// if the key is not found, returns the nkeys - 1
     ///
     /// TODO: binary search
-    pub fn lookupidx(&self, key: &str) -> u16 {
+    pub fn lookupidx(&self, key: &Key) -> u16 {
         let nkeys = self.get_nkeys();
         debug!("lookupidx in {:?} nkeys {}", self.get_type(), nkeys);
         if nkeys == 0 || nkeys == 1 {
@@ -328,16 +329,16 @@ impl TreeNode {
             let m = (hi + lo) / 2;
             let v = self.get_key(m).unwrap();
             // debug!(key, lo, hi, v = key_num(m), m);
-            if v == n {
+            if v == *n {
                 return m as u16;
             };
-            if v > n {
+            if v > *n {
                 hi = m;
             } else {
                 lo = m + 1;
             }
         }
-        if lo < nkeys && self.get_key(lo).unwrap() == key {
+        if lo < nkeys && self.get_key(lo).unwrap() == *n {
             return lo;
         }
         if lo == 0 {
@@ -347,7 +348,7 @@ impl TreeNode {
     }
 
     /// abstracted API over leaf_kvinsert and leaf_kvupdate
-    pub fn insert(&mut self, node: TreeNode, key: &str, val: &str, idx: u16) {
+    pub fn insert(&mut self, node: TreeNode, key: Key, val: Value, idx: u16) {
         if node.get_key(idx).unwrap() == key {
             debug!("upating in leaf at idx: {}", idx);
             self.leaf_kvupdate(node, idx, key, val).unwrap();
@@ -360,24 +361,26 @@ impl TreeNode {
     /// helper function: inserts new KV into leaf node copies content from old node
     ///
     /// updates nkeys, sets node to leaf
-    #[instrument(skip(self, src))]
     pub fn leaf_kvinsert(
         &mut self,
         src: TreeNode,
         idx: u16,
-        key: &str,
-        val: &str,
+        key: Key,
+        val: Value,
     ) -> Result<(), Error> {
         let src_nkeys = src.get_nkeys();
         self.set_header(NodeType::Leaf, src_nkeys + 1);
         debug!("insert new header: {}", src_nkeys + 1);
+
         // copy kv before idx
         self.append_from_range(&src, 0, 0, idx).map_err(|e| {
             error!("insertion error when appending before idx");
             e
         })?;
+
         // insert new kv
         self.kvptr_append(idx, Pointer::from(0u64), key, val)?;
+
         // copy kv after idx
         if src_nkeys > idx {
             self.append_from_range(&src, idx + 1, idx, src_nkeys - idx)
@@ -392,23 +395,25 @@ impl TreeNode {
     /// helper function: updates existing KV in leaf node copies content from old node, this function assumes the key exists and needs to be updated!
     ///
     /// updates nkeys, sets node to leaf
-    #[instrument(skip(self, src))]
     pub fn leaf_kvupdate(
         &mut self,
         src: TreeNode,
         idx: u16,
-        key: &str,
-        val: &str,
+        key: Key,
+        val: Value,
     ) -> Result<(), Error> {
         let src_nkeys = src.get_nkeys();
         self.set_header(NodeType::Leaf, src_nkeys);
+
         // copy kv before idx
         self.append_from_range(&src, 0, 0, idx).map_err(|err| {
             error!("kv update error: when appending before idx");
             err
         })?;
+
         // insert new kv
         self.kvptr_append(idx, Pointer::from(0), key, val)?;
+
         // copy kv after idx
         if src_nkeys > idx + 1 {
             // in case the updated key is the last key
@@ -488,16 +493,19 @@ impl TreeNode {
 
         assert!(right.fits_page());
         assert!(left.fits_page());
-        debug!("left node first key: {}", left.get_key(0).unwrap());
-        debug!(
-            "left node last key: {}",
-            left.get_key(nkeys_left - 1).unwrap()
-        );
-        debug!("right node first key: {}", right.get_key(0).unwrap());
-        debug!(
-            "right node last key: {}",
-            right.get_key(nkeys_right - 1).unwrap()
-        );
+
+        if cfg!(test) {
+            debug!("left node first key: {}", left.get_key(0).unwrap());
+            debug!(
+                "left node last key: {}",
+                left.get_key(nkeys_left - 1).unwrap()
+            );
+            debug!("right node first key: {}", right.get_key(0).unwrap());
+            debug!(
+                "right node last key: {}",
+                right.get_key(nkeys_right - 1).unwrap()
+            );
+        }
         Ok((left, right))
     }
 
@@ -612,14 +620,19 @@ impl TreeNode {
         let src_nkeys = src.get_nkeys();
         self.set_header(NodeType::Node, src_nkeys - 1);
 
-        let merge_ptr_key = merged_node.get_key(0).unwrap().to_string();
+        let merge_ptr_key = merged_node.get_key(0).unwrap();
         let merge_node_ptr = tree.encode(merged_node);
 
         self.append_from_range(&src, 0, 0, idx).map_err(|err| {
             error!("merge error when appending before idx");
             err
         })?;
-        self.kvptr_append(idx, merge_node_ptr, &merge_ptr_key, "")?;
+        self.kvptr_append(
+            idx,
+            merge_node_ptr,
+            merge_ptr_key,
+            Value::from_unencoded_str(""),
+        )?;
         if src_nkeys > (idx + 2) {
             self.append_from_range(&src, idx + 1, idx + 2, src_nkeys - idx - 2)
                 .map_err(|err| {
@@ -692,13 +705,13 @@ mod test {
     fn kv_append() -> Result<(), Error> {
         let mut node = TreeNode::new();
         node.set_header(NodeType::Leaf, 2);
-        node.kvptr_append(0, Pointer::from(0), "k1", "hi")?;
-        node.kvptr_append(1, Pointer::from(0), "k3", "hello")?;
+        node.kvptr_append(0, Pointer::from(0), "k1".into(), "hi".into())?;
+        node.kvptr_append(1, Pointer::from(0), "k3".into(), "hello".into())?;
 
-        assert_eq!(node.get_key(0).unwrap(), "k1");
-        assert_eq!(node.get_val(0).unwrap(), "hi");
-        assert_eq!(node.get_key(1).unwrap(), "k3");
-        assert_eq!(node.get_val(1).unwrap(), "hello");
+        assert_eq!(node.get_key(0).unwrap(), "k1".into());
+        assert_eq!(node.get_val(0).unwrap(), "hi".into());
+        assert_eq!(node.get_key(1).unwrap(), "k3".into());
+        assert_eq!(node.get_val(1).unwrap(), "hello".into());
         Ok(())
     }
 
@@ -709,14 +722,14 @@ mod test {
 
         n2.set_header(NodeType::Leaf, 2);
         n1.set_header(NodeType::Leaf, 2);
-        n1.kvptr_append(0, Pointer::from(0), "k1", "hi")?;
-        n1.kvptr_append(1, Pointer::from(0), "k3", "hello")?;
+        n1.kvptr_append(0, Pointer::from(0), "k1".into(), "hi".into())?;
+        n1.kvptr_append(1, Pointer::from(0), "k3".into(), "hello".into())?;
         n2.append_from_range(&n1, 0, 0, n1.get_nkeys())?;
 
-        assert_eq!(n2.get_key(0).unwrap(), "k1");
-        assert_eq!(n2.get_val(0).unwrap(), "hi");
-        assert_eq!(n2.get_key(1).unwrap(), "k3");
-        assert_eq!(n2.get_val(1).unwrap(), "hello");
+        assert_eq!(n2.get_key(0).unwrap(), "k1".into());
+        assert_eq!(n2.get_val(0).unwrap(), "hi".into());
+        assert_eq!(n2.get_key(1).unwrap(), "k3".into());
+        assert_eq!(n2.get_val(1).unwrap(), "hello".into());
         Ok(())
     }
 
@@ -726,16 +739,16 @@ mod test {
         let mut n2 = TreeNode::new();
 
         n1.set_header(NodeType::Leaf, 3);
-        n1.kvptr_append(0, Pointer::from(0), "k1", "hi")?;
-        n1.kvptr_append(1, Pointer::from(0), "k2", "bonjour")?;
-        n1.kvptr_append(2, Pointer::from(0), "k3", "hello")?;
+        n1.kvptr_append(0, Pointer::from(0), "k1".into(), "hi".into())?;
+        n1.kvptr_append(1, Pointer::from(0), "k2".into(), "bonjour".into())?;
+        n1.kvptr_append(2, Pointer::from(0), "k3".into(), "hello".into())?;
 
         n2.leaf_kvdelete(&n1, 1)?;
 
-        assert_eq!(n2.get_key(0).unwrap(), "k1");
-        assert_eq!(n2.get_val(0).unwrap(), "hi");
-        assert_eq!(n2.get_key(1).unwrap(), "k3");
-        assert_eq!(n2.get_val(1).unwrap(), "hello");
+        assert_eq!(n2.get_key(0).unwrap(), "k1".into());
+        assert_eq!(n2.get_val(0).unwrap(), "hi".into());
+        assert_eq!(n2.get_key(1).unwrap(), "k3".into());
+        assert_eq!(n2.get_val(1).unwrap(), "hello".into());
         Ok(())
     }
 
@@ -744,13 +757,13 @@ mod test {
     fn kv_delete_panic() -> () {
         let mut n1 = TreeNode::new();
         n1.set_header(NodeType::Leaf, 3);
-        n1.kvptr_append(0, Pointer::from(0), "k1", "hi")
+        n1.kvptr_append(0, Pointer::from(0), "k1".into(), "hi".into())
             .map_err(|_| ())
             .expect("unexpected panic");
-        n1.kvptr_append(1, Pointer::from(0), "k2", "bonjour")
+        n1.kvptr_append(1, Pointer::from(0), "k2".into(), "bonjour".into())
             .map_err(|_| ())
             .expect("unexpected panic");
-        n1.kvptr_append(2, Pointer::from(0), "k3", "hello")
+        n1.kvptr_append(2, Pointer::from(0), "k3".into(), "hello".into())
             .map_err(|_| ())
             .expect("unexpected panic");
 

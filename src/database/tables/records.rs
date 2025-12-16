@@ -1,4 +1,5 @@
 use std::cmp::min;
+use std::ffi::OsString;
 use std::rc::Rc;
 use std::{cmp::Ordering, fmt::Write};
 
@@ -19,17 +20,24 @@ use crate::database::{
 pub(crate) struct Key(Rc<[u8]>);
 
 impl Key {
-    /// turns key into string
-    pub fn into_string(self) -> String {
+    /// outputs string of Key data
+    pub fn to_string(&self) -> String {
         let mut st = String::new();
         write!(st, "{}", self.get_tid()).unwrap();
-        for cell in self {
+        for cell in self.iter() {
             match cell {
-                DataCell::Str(s) => write!(st, "{}", s).unwrap(),
-                DataCell::Int(i) => write!(st, "{}", i).unwrap(),
+                DataCellRef::Str(s) => write!(st, "{}", s).unwrap(),
+                DataCellRef::Int(i) => write!(st, "{}", i).unwrap(),
             };
         }
         st
+    }
+
+    pub fn iter(&self) -> KeyIterRef<'_> {
+        KeyIterRef {
+            data: self,
+            count: TID_LEN,
+        }
     }
 
     // reads the first 8 bytes
@@ -38,23 +46,50 @@ impl Key {
     }
 
     /// its up to the caller to ensure the data is properly formatted
-    fn from_slice(data: &[u8]) -> Self {
+    pub fn from_slice(data: &[u8]) -> Self {
         Key(Rc::from(data))
     }
 
+    pub fn as_slice(&self) -> &[u8] {
+        &self.0[..]
+    }
+
     /// utility function for unit tests
-    fn from_unencoded_str<S: ToString>(str: S) -> Self {
+    pub fn from_unencoded_str<S: ToString>(str: S) -> Self {
         let mut buf: Vec<u8> = vec![0; 8];
         // artificial tid for testing purposes
         buf.write_u64(1);
         buf.extend_from_slice(&str.to_string().encode());
         Key(Rc::from(buf))
     }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
 }
 
 impl From<&str> for Key {
     fn from(value: &str) -> Self {
         Key::from_unencoded_str(value)
+    }
+}
+impl From<String> for Key {
+    fn from(value: String) -> Self {
+        Key::from_unencoded_str(value)
+    }
+}
+
+impl std::fmt::Display for Key {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // outputs string of Key data
+        write!(f, "{} ", self.get_tid()).unwrap();
+        for cell in self.iter() {
+            match cell {
+                DataCellRef::Str(s) => write!(f, "{} ", s).unwrap(),
+                DataCellRef::Int(i) => write!(f, "{} ", i).unwrap(),
+            };
+        }
+        Ok(())
     }
 }
 
@@ -75,9 +110,7 @@ impl PartialOrd<Key> for Key {
 impl Ord for Key {
     fn cmp(&self, other: &Self) -> Ordering {
         match self.get_tid().cmp(&other.get_tid()) {
-            Ordering::Equal => {
-                debug!("table id is equal");
-            }
+            Ordering::Equal => {}
             o => return o,
         }
         let mut key_a = &self.0[TID_LEN..];
@@ -85,15 +118,12 @@ impl Ord for Key {
 
         loop {
             if key_a.is_empty() && key_b.is_empty() {
-                debug!("both keys empty");
                 return Ordering::Equal;
             }
             if key_a.is_empty() {
-                debug!("key a empty");
                 return Ordering::Less;
             }
             if key_b.is_empty() {
-                debug!("key b empty");
                 return Ordering::Greater;
             }
 
@@ -112,14 +142,17 @@ impl Ord for Key {
                     let len_a = key_a.read_u32() as usize;
                     let len_b = key_b.read_u32() as usize;
                     let min = min(len_a, len_b);
-
-                    debug!(len_a, len_b, min, "comparing strings...");
+                    debug!(key_a = &key_a[..min], key_b = &key_b[..min], "comparing");
+                    debug!(len_a, len_b);
                     match key_a[..min].cmp(&key_b[..min]) {
-                        Ordering::Equal => {
-                            debug!("strings are equal");
-                            key_a = &key_a[len_a..];
-                            key_b = &key_b[len_b..];
-                        }
+                        Ordering::Equal => match len_a.cmp(&len_b) {
+                            // accounting for equal string bytes
+                            Ordering::Equal => {
+                                key_a = &key_a[len_a..];
+                                key_b = &key_b[len_b..];
+                            }
+                            o => return o,
+                        },
                         o => return o,
                     }
                 }
@@ -127,11 +160,8 @@ impl Ord for Key {
                     // flipping the sign bit for comparison
                     let int_a = key_a.read_i64() as u64 ^ 0x8000_0000_0000_0000;
                     let int_b = key_b.read_i64() as u64 ^ 0x8000_0000_0000_0000;
-                    debug!(int_a, int_b, "comparing integer");
                     match int_a.cmp(&int_b) {
-                        Ordering::Equal => {
-                            debug!("integer are equal");
-                        }
+                        Ordering::Equal => {}
                         o => return o,
                     }
                 }
@@ -181,6 +211,50 @@ impl IntoIterator for Key {
     }
 }
 
+pub enum DataCellRef<'a> {
+    Int(i64),
+    Str(&'a str), // or &'a [u8] if you want raw bytes
+}
+
+pub(crate) struct KeyIterRef<'a> {
+    data: &'a Key,
+    count: usize,
+}
+
+impl<'a> Iterator for KeyIterRef<'a> {
+    type Item = DataCellRef<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let buf = &self.data.0;
+
+        if self.count >= self.data.0.len() {
+            return None;
+        }
+
+        match TypeCol::from_u8(buf[self.count]) {
+            Some(TypeCol::BYTES) => {
+                let len = (&buf[self.count + TYPE_LEN..]).read_u32() as usize;
+                let offset = self.count + TYPE_LEN + STR_PRE_LEN;
+
+                let s = unsafe { std::str::from_utf8_unchecked(&buf[offset..offset + len]) }; // or unchecked
+
+                self.count += TYPE_LEN + STR_PRE_LEN + len;
+                Some(DataCellRef::Str(s))
+            }
+
+            Some(TypeCol::INTEGER) => {
+                let int = i64::decode(&buf[self.count..]);
+
+                self.count += TYPE_LEN + INT_LEN;
+                Some(DataCellRef::Int(int))
+            }
+
+            None => None,
+        }
+    }
+}
+
+#[derive(Debug)]
 pub(crate) struct Value(Rc<[u8]>);
 
 impl Value {
@@ -194,20 +268,35 @@ impl Value {
     pub fn from_slice(data: &[u8]) -> Self {
         Value(Rc::from(data))
     }
-    /// turns value into string
-    pub fn into_string(self) -> String {
+    /// outputs string of Key data
+    pub fn to_string(&self) -> String {
         let mut st = String::new();
-        for cell in self {
+        for cell in self.iter() {
             match cell {
-                DataCell::Str(s) => write!(st, "{}", s).unwrap(),
-                DataCell::Int(i) => write!(st, "{}", i).unwrap(),
+                DataCellRef::Str(s) => write!(st, "{}", s).unwrap(),
+                DataCellRef::Int(i) => write!(st, "{}", i).unwrap(),
             };
         }
         st
     }
+
+    pub fn iter(&self) -> ValueIterRef<'_> {
+        ValueIterRef {
+            data: self,
+            count: 0,
+        }
+    }
     /// utility function for unit tests
-    fn from_unencoded_str<S: ToString>(str: S) -> Self {
+    pub fn from_unencoded_str<S: ToString>(str: S) -> Self {
         Value(str.to_string().encode())
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn as_slice(&self) -> &[u8] {
+        &self.0[..]
     }
 }
 
@@ -253,6 +342,121 @@ impl IntoIterator for Value {
         ValueIter {
             data: self,
             count: 0,
+        }
+    }
+}
+
+pub(crate) struct ValueIterRef<'a> {
+    data: &'a Value,
+    count: usize,
+}
+
+impl<'a> Iterator for ValueIterRef<'a> {
+    type Item = DataCellRef<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let buf = &self.data.0;
+
+        if self.count >= self.data.0.len() {
+            return None;
+        }
+
+        match TypeCol::from_u8(buf[self.count]) {
+            Some(TypeCol::BYTES) => {
+                let len = (&buf[self.count + TYPE_LEN..]).read_u32() as usize;
+                let offset = self.count + TYPE_LEN + STR_PRE_LEN;
+
+                let s = unsafe { std::str::from_utf8_unchecked(&buf[offset..offset + len]) }; // or unchecked
+
+                self.count += TYPE_LEN + STR_PRE_LEN + len;
+                Some(DataCellRef::Str(s))
+            }
+
+            Some(TypeCol::INTEGER) => {
+                let int = i64::decode(&buf[self.count..]);
+
+                self.count += TYPE_LEN + INT_LEN;
+                Some(DataCellRef::Int(int))
+            }
+
+            None => None,
+        }
+    }
+}
+
+impl Eq for Value {}
+
+impl PartialEq<Value> for Value {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl PartialOrd<Value> for Value {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Value {
+    fn cmp(&self, other: &Self) -> Ordering {
+        let mut val_a = &self.0[..];
+        let mut val_b = &other.0[..];
+
+        loop {
+            if val_a.is_empty() && val_b.is_empty() {
+                debug!("both keys empty");
+                return Ordering::Equal;
+            }
+            if val_a.is_empty() {
+                debug!("key a empty");
+                return Ordering::Less;
+            }
+            if val_b.is_empty() {
+                debug!("key b empty");
+                return Ordering::Greater;
+            }
+
+            // advancing the type bit
+            let ta = val_a.read_u8();
+            let tb = val_b.read_u8();
+
+            debug_assert_eq!(ta, tb);
+            match ta.cmp(&tb) {
+                Ordering::Equal => {}
+                o => return o,
+            }
+
+            match TypeCol::from_u8(ta) {
+                Some(TypeCol::BYTES) => {
+                    let len_a = val_a.read_u32() as usize;
+                    let len_b = val_b.read_u32() as usize;
+                    let min = min(len_a, len_b);
+
+                    debug!(len_a, len_b, min, "comparing strings...");
+                    match val_a[..min].cmp(&val_b[..min]) {
+                        Ordering::Equal => {
+                            debug!("strings are equal");
+                            val_a = &val_a[len_a..];
+                            val_b = &val_b[len_b..];
+                        }
+                        o => return o,
+                    }
+                }
+                Some(TypeCol::INTEGER) => {
+                    // flipping the sign bit for comparison
+                    let int_a = val_a.read_i64() as u64 ^ 0x8000_0000_0000_0000;
+                    let int_b = val_b.read_i64() as u64 ^ 0x8000_0000_0000_0000;
+                    debug!(int_a, int_b, "comparing integer");
+                    match int_a.cmp(&int_b) {
+                        Ordering::Equal => {
+                            debug!("integer are equal");
+                        }
+                        o => return o,
+                    }
+                }
+                None => unreachable!(),
+            }
         }
     }
 }
@@ -406,8 +610,8 @@ mod test {
         rec.add(s2);
 
         let (key, value) = rec.encode(&table).unwrap();
-        assert_eq!(key.into_string(), "2hello10");
-        assert_eq!(value.into_string(), "world");
+        assert_eq!(key.to_string(), "2hello10");
+        assert_eq!(value.to_string(), "world");
     }
 
     #[test]
@@ -437,7 +641,7 @@ mod test {
             .encode(&table)?;
 
         assert_eq!(key1, key2);
-        assert_eq!(key1.into_string(), "2hello10");
+        assert_eq!(key1.to_string(), "2hello10");
 
         let (key3, value3) = Record::new()
             .add("smol")
@@ -446,22 +650,32 @@ mod test {
             .encode(&table)?;
 
         assert!(key2 < key3);
-        assert_eq!(key3.into_string(), "2smol5");
+        assert_eq!(key3.to_string(), "2smol5");
         Ok(())
     }
 
     #[test]
     fn records_test_str() {
         let key = Key::from_unencoded_str("hello");
-        assert_eq!(key.into_string(), "1hello");
+        assert_eq!(key.to_string(), "1hello");
 
         let key: Key = "hello".into();
-        assert_eq!(key.into_string(), "1hello");
+        assert_eq!(key.to_string(), "1hello");
 
         let key = Key::from_unencoded_str("owned hello".to_string());
-        assert_eq!(key.into_string(), "1owned hello");
+        assert_eq!(key.to_string(), "1owned hello");
 
         let val: Value = "world".into();
-        assert_eq!(val.into_string(), "world");
+        assert_eq!(val.to_string(), "world");
+    }
+
+    #[test]
+    fn key_cmp2() {
+        let k2: Key = "9".into();
+        let k3: Key = "10".into();
+        let k1: Key = "1".into();
+        assert!(k3 < k2);
+        assert!(k1 < k2);
+        assert!(k1 < k3);
     }
 }
