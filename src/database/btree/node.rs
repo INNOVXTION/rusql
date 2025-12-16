@@ -13,15 +13,6 @@ use tracing::{debug, error, instrument, warn};
 
 use crate::database::errors::Error;
 
-const TYPE_OFFSET: usize = 0;
-const NKEYS_OFFSET: usize = 2;
-const HEADER_OFFSET: usize = 4;
-const POINTER_OFFSET: usize = 8;
-const OFFSETARR_OFFSET: usize = 2;
-
-const KEY_LEN_OFFSET: usize = 2;
-const VAL_LEN_OFFSET: usize = 2;
-
 /*
 -----------------------------------Node Layout----------------------------------
 | type | nkeys | pointers | offsets |            key-values           | unused |
@@ -32,6 +23,15 @@ const VAL_LEN_OFFSET: usize = 2;
 | key_size | val_size | key | val |
 |    2B    |    2B    | ... | ... |
 */
+
+const TYPE_OFFSET: usize = 0;
+const NKEYS_OFFSET: usize = 2;
+const HEADER_OFFSET: usize = 4;
+const POINTER_OFFSET: usize = 8;
+const OFFSETARR_OFFSET: usize = 2;
+
+const KEY_LEN_OFFSET: usize = 2;
+const VAL_LEN_OFFSET: usize = 2;
 
 /// types of tree nodes
 #[derive(PartialEq, Debug)]

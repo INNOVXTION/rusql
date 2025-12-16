@@ -1,5 +1,6 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::collections::hash_map::Keys;
 use std::ops::{Deref, DerefMut};
 use std::os::fd::OwnedFd;
 use std::ptr;
@@ -19,6 +20,39 @@ use crate::database::{
     errors::{Error, PagerError},
     types::*,
 };
+/// outward facing api
+pub(crate) trait KVEngine {
+    fn get(&self, key: Key) -> Result<Value, Error>;
+    fn set(&self, key: Key, val: Value) -> Result<(), Error>;
+    fn delete(&self, key: Key) -> Result<(), Error>;
+}
+
+/// wrapper struct
+pub(crate) struct Envoy {
+    envoy: Rc<EnvoyV1>,
+}
+
+impl Envoy {
+    pub(crate) fn new(path: &'static str) -> Self {
+        Envoy {
+            envoy: EnvoyV1::open(path).expect("unexpected error"),
+        }
+    }
+}
+
+impl KVEngine for Envoy {
+    fn get(&self, key: Key) -> Result<Value, Error> {
+        self.envoy.get(key)
+    }
+
+    fn set(&self, key: Key, val: Value) -> Result<(), Error> {
+        self.envoy.set(key, val)
+    }
+
+    fn delete(&self, key: Key) -> Result<(), Error> {
+        self.envoy.delete(key)
+    }
+}
 
 /// indicates the encoding/decoding style of a node
 #[derive(Debug)]
@@ -47,43 +81,6 @@ pub(crate) struct Buffer {
     pub hmap: HashMap<Pointer, Node>, // pages to be written
     pub nappend: u64,                 // number of pages to be appended
     pub npages: u64,                  // database size in number of pages
-}
-
-/// outward facing api
-pub(crate) trait KVEngine {
-    fn get(&self, key: Key) -> Result<Value, Error>;
-    fn set(&self, key: Key, val: Value) -> Result<(), Error>;
-    fn delete(&self, key: Key) -> Result<(), Error>;
-}
-
-impl KVEngine for EnvoyV1 {
-    #[instrument(skip(self))]
-    fn get(&self, key: Key) -> Result<Value, Error> {
-        info!("getting...");
-        self.tree
-            .borrow()
-            .search(key)
-            .ok_or(Error::SearchError("value not found".to_string()))
-    }
-
-    #[instrument(skip(self))]
-    fn set(&self, key: Key, val: Value) -> Result<(), Error> {
-        let recov_page = metapage_save(self); // saving current metapage for possible rollback
-        info!("inserting...");
-        self.tree.borrow_mut().insert(key, val).map_err(|e| {
-            error!(%e, "tree error");
-            e
-        })?;
-        self.update_or_revert(&recov_page)
-    }
-
-    #[instrument(skip(self))]
-    fn delete(&self, key: Key) -> Result<(), Error> {
-        info!("deleting...");
-        let recov_page = metapage_save(self); // saving current metapage for possible rollback
-        self.tree.borrow_mut().delete(key)?;
-        self.update_or_revert(&recov_page)
-    }
 }
 
 /// internal callback API
@@ -228,6 +225,31 @@ impl EnvoyV1 {
             pager.mmap.borrow().chunks.len(),
         );
         Ok(pager)
+    }
+
+    fn get(&self, key: Key) -> Result<Value, Error> {
+        info!("getting...");
+        self.tree
+            .borrow()
+            .search(key)
+            .ok_or(Error::SearchError("value not found".to_string()))
+    }
+
+    fn set(&self, key: Key, val: Value) -> Result<(), Error> {
+        let recov_page = metapage_save(self); // saving current metapage for possible rollback
+        info!("inserting...");
+        self.tree.borrow_mut().insert(key, val).map_err(|e| {
+            error!(%e, "tree error");
+            e
+        })?;
+        self.update_or_revert(&recov_page)
+    }
+
+    fn delete(&self, key: Key) -> Result<(), Error> {
+        info!("deleting...");
+        let recov_page = metapage_save(self); // saving current metapage for possible rollback
+        self.tree.borrow_mut().delete(key)?;
+        self.update_or_revert(&recov_page)
     }
 
     fn update_or_revert(&self, recov_page: &MetaPage) -> Result<(), Error> {

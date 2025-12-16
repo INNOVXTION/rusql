@@ -1,11 +1,9 @@
-use super::errors::{Error, PagerError};
+use super::errors::PagerError;
 use super::types::*;
 use rustix::fs::{self, Mode, OFlags};
-use rustix::path::Arg;
 use std::collections::HashMap;
 use std::os::fd::{AsFd, OwnedFd};
-use std::path::{Path, PathBuf};
-use std::str::FromStr;
+use std::path::Path;
 use tracing::{debug, error};
 
 use crate::database::btree::TreeNode;
@@ -149,7 +147,7 @@ mod test {
     #[test]
     fn create_file() -> Result<(), Box<dyn Error>> {
         let path_str = "./test-files/database.rdb";
-        let path = PathBuf::from(path_str);
+        let path = std::path::PathBuf::from(path_str);
         cleanup_file(path_str);
         create_file_sync(path_str)?;
         assert!(path.is_file());

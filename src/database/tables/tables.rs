@@ -24,19 +24,23 @@ use serde::{Deserialize, Serialize};
  * |-----KEY---|----Val---|
  * |   [ Col1 ]|[  Col2  ]|
  * |[2][ key  ]|[  val   ]|
+ *
+ * Data Path:
+ * User Input -> DataCell -> Record -> Key, Value
+ *
  */
 
 // fixed table which holds all the schemas
 const DEF_TABLE_NAME: &'static str = "tdef";
-const DEF_TABLE_COL1: &'static str = "name";
+const DEF_TABLE_COL1: &'static str = "tname";
 const DEF_TABLE_COL2: &'static str = "def";
 const DEF_TABLE_ID: u64 = 1;
 const DEF_TABLE_PKEYS: u16 = 1;
 
 // fixed meta table holding all the unique table ids
 const META_TABLE_NAME: &'static str = "tmeta";
-const META_TABLE_COL1: &'static str = "key";
-const META_TABLE_COL2: &'static str = "val";
+const META_TABLE_COL1: &'static str = "tname";
+const META_TABLE_COL2: &'static str = "tid";
 const META_TABLE_ID: u64 = 2;
 const META_TABLE_PKEYS: u16 = 1;
 
@@ -110,6 +114,7 @@ impl TableBuilder {
         self
     }
 
+    /// default 0
     pub fn id(mut self, id: u64) -> Self {
         self.id = Some(id);
         self
@@ -267,7 +272,7 @@ where
 
 #[cfg(test)]
 mod test {
-    use crate::database::pager::{EnvoyV1, mempage_tree};
+    use crate::database::pager::{EnvoyV1, diskpager::Envoy, mempage_tree};
 
     use super::*;
     use crate::database::helper::cleanup_file;
@@ -278,7 +283,8 @@ mod test {
     fn meta_page() {
         let path = "table1.rdb";
         cleanup_file(path);
-        let envoy = EnvoyV1::open(path).unwrap();
+        let pager = Envoy::new(path);
+        let db = Database::new(pager);
         cleanup_file(path);
     }
 }
