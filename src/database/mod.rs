@@ -1,4 +1,5 @@
 mod btree;
+mod codec;
 mod errors;
 mod helper;
 mod pager;

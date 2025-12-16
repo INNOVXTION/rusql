@@ -1,5 +1,6 @@
 use std::ops::{Deref, DerefMut};
 
+use super::super::codec::*;
 use crate::database::btree::BTree;
 use crate::database::pager::diskpager::Pager;
 use crate::database::{
@@ -10,6 +11,8 @@ use tracing::{debug, error, instrument, warn};
 
 use crate::database::errors::Error;
 
+const TYPE_OFFSET: usize = 0;
+const NKEYS_OFFSET: usize = 2;
 const HEADER_OFFSET: usize = 4;
 const POINTER_OFFSET: usize = 8;
 const OFFSETARR_OFFSET: usize = 2;
@@ -56,8 +59,18 @@ impl TreeNode {
         true
     }
 
+    // returns a slice of the underlying data
+    fn as_offset_slice(&self, offset: usize) -> &[u8] {
+        &self[offset..]
+    }
+
+    // returns a slice of the underlying data
+    fn as_offset_slice_mut(&mut self, offset: usize) -> &mut [u8] {
+        &mut self[offset..]
+    }
+
     pub fn get_type(&self) -> NodeType {
-        match read_u16(self, 0).expect("error when reading node type") {
+        match self.as_ref().read_u16() {
             1 => NodeType::Node,
             2 => NodeType::Leaf,
             _ => {
@@ -68,7 +81,7 @@ impl TreeNode {
     }
     /// receive number of keys, this function doesnt check if KV amount aligns with nkeys!
     pub fn get_nkeys(&self) -> u16 {
-        read_u16(self, 2).unwrap()
+        self.as_offset_slice(NKEYS_OFFSET).read_u16()
     }
 
     pub fn set_header(&mut self, nodetype: NodeType, nkeys: u16) {
@@ -76,8 +89,7 @@ impl TreeNode {
             NodeType::Node => 1,
             NodeType::Leaf => 2,
         };
-        write_u16(self, 0, nodetype).expect("panic when setting header");
-        write_u16(self, 2, nkeys).expect("panic when setting header");
+        self.as_mut().write_u16(nodetype).write_u16(nkeys);
     }
 
     /// retrieves child pointer(page number) from pointer array: 8 bytes
@@ -87,7 +99,7 @@ impl TreeNode {
             panic!("invalid index")
         };
         let pos: usize = HEADER_OFFSET + 8 * idx as usize;
-        read_pointer(self, pos).expect("error when getting pointer")
+        self.as_offset_slice(pos).read_u64().into()
     }
     /// sets pointer at index in pointer array, does not increase nkeys!
     pub fn set_ptr(&mut self, idx: u16, ptr: Pointer) {
@@ -96,7 +108,7 @@ impl TreeNode {
             panic!("invalid index")
         };
         let pos: usize = HEADER_OFFSET + 8 * idx as usize;
-        write_pointer(self, pos, ptr).expect("error when setting pointer")
+        self.as_offset_slice_mut(pos).write_u64(ptr.get());
     }
 
     /// inserts pointer when splitting or adding new child nodes, encodes nodes
@@ -167,7 +179,7 @@ impl TreeNode {
             return Err(Error::IndexError);
         }
         let pos = HEADER_OFFSET + (8 * self.get_nkeys() as usize) + 2 * (idx as usize - 1);
-        read_u16(self, pos)
+        Ok(self.as_offset_slice(pos).read_u16())
     }
 
     /// writes a new offset into the array 2 Bytes
@@ -177,7 +189,7 @@ impl TreeNode {
             panic!()
         }
         let pos = HEADER_OFFSET + (8 * self.get_nkeys() as usize) + 2 * (idx as usize - 1);
-        write_u16(self, pos, size).expect("error when setting offset")
+        self.as_offset_slice_mut(pos).write_u16(size);
     }
 
     /// kv position relative to node
@@ -203,7 +215,7 @@ impl TreeNode {
             return Err(Error::IndexError);
         };
         let kvpos = self.kv_pos(idx)?;
-        let key_len = read_u16(self, kvpos)? as usize;
+        let key_len = self.as_offset_slice(kvpos).read_u16() as usize;
 
         Ok(
             str::from_utf8(&self.0[kvpos + 4..kvpos + 4 + key_len]).map_err(|e| {
@@ -223,8 +235,8 @@ impl TreeNode {
             return Err(Error::IndexError);
         };
         let kvpos = self.kv_pos(idx)?;
-        let key_len = read_u16(self, kvpos)? as usize;
-        let val_len = read_u16(self, kvpos + 2)? as usize;
+        let key_len = self.as_offset_slice(kvpos).read_u16() as usize;
+        let val_len = self.as_offset_slice(kvpos + 2).read_u16() as usize;
 
         Ok(
             str::from_utf8(&self.0[kvpos + 4 + key_len..kvpos + 4 + key_len + val_len]).map_err(
@@ -630,6 +642,18 @@ impl Deref for TreeNode {
 
     fn deref(&self) -> &Self::Target {
         &self.0[..]
+    }
+}
+
+impl AsRef<[u8]> for TreeNode {
+    fn as_ref(&self) -> &[u8] {
+        &self.0[..]
+    }
+}
+
+impl AsMut<[u8]> for TreeNode {
+    fn as_mut(&mut self) -> &mut [u8] {
+        &mut self.0[..]
     }
 }
 

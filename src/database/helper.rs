@@ -13,52 +13,52 @@ pub trait DecodeSlice {
     fn read_u16(&self, offset: usize) -> u16;
 }
 
-/// assumes little endian
-///
-/// reads a [u8] slice to u16 starting at offset
-pub(crate) fn read_u16(data: &[u8], offset: usize) -> Result<u16, Error> {
-    if offset > NODE_SIZE {
-        error!("slice_to_u16: offset idx {} exceeded node size", offset);
-        return Err(Error::IndexError);
-    }
-    data.get(offset..offset + U16_SIZE)
-        .and_then(|x| x.try_into().ok())
-        .map(|buf: [u8; U16_SIZE]| u16::from_le_bytes(buf))
-        .ok_or(Error::IntCastError(None))
-}
+// /// assumes little endian
+// ///
+// /// reads a [u8] slice to u16 starting at offset
+// pub(crate) fn read_u16(data: &[u8], offset: usize) -> Result<u16, Error> {
+//     if offset > NODE_SIZE {
+//         error!("slice_to_u16: offset idx {} exceeded node size", offset);
+//         return Err(Error::IndexError);
+//     }
+//     data.get(offset..offset + U16_SIZE)
+//         .and_then(|x| x.try_into().ok())
+//         .map(|buf: [u8; U16_SIZE]| u16::from_le_bytes(buf))
+//         .ok_or(Error::IntCastError(None))
+// }
 
-/// assumes little endian
-///
-/// reads a [u8] slice to Pointer starting at offset
-pub(crate) fn read_pointer(data: &[u8], offset: usize) -> Result<Pointer, Error> {
-    if offset > NODE_SIZE {
-        error!("slice_to_u64: offset idx {} exceeded node size", offset);
-        return Err(Error::IndexError);
-    }
-    data.get(offset..offset + PTR_SIZE)
-        .and_then(|x| x.try_into().ok())
-        .map(|buf: [u8; PTR_SIZE]| Pointer::from(u64::from_le_bytes(buf)))
-        .ok_or(Error::IntCastError(None))
-}
+// /// assumes little endian
+// ///
+// /// reads a [u8] slice to Pointer starting at offset
+// pub(crate) fn read_pointer(data: &[u8], offset: usize) -> Result<Pointer, Error> {
+//     if offset > NODE_SIZE {
+//         error!("slice_to_u64: offset idx {} exceeded node size", offset);
+//         return Err(Error::IndexError);
+//     }
+//     data.get(offset..offset + PTR_SIZE)
+//         .and_then(|x| x.try_into().ok())
+//         .map(|buf: [u8; PTR_SIZE]| Pointer::from(u64::from_le_bytes(buf)))
+//         .ok_or(Error::IntCastError(None))
+// }
 
-/// writes u16 to slice at offset
-pub(crate) fn write_u16(data: &mut [u8], offset: usize, value: u16) -> Result<(), Error> {
-    if offset > NODE_SIZE {
-        error!("offset idx {} exceeded node size", offset);
-        return Err(Error::IndexError);
-    }
-    data[offset..offset + U16_SIZE].copy_from_slice(&value.to_le_bytes());
-    Ok(())
-}
-/// writes Pointer to slice
-pub(crate) fn write_pointer(data: &mut [u8], offset: usize, ptr: Pointer) -> Result<(), Error> {
-    if offset > NODE_SIZE {
-        error!("offset idx {} exceeded node size", offset);
-        return Err(Error::IndexError);
-    }
-    data[offset..offset + PTR_SIZE].copy_from_slice(&ptr.as_slice());
-    Ok(())
-}
+// /// writes u16 to slice at offset
+// pub(crate) fn write_u16(data: &mut [u8], offset: usize, value: u16) -> Result<(), Error> {
+//     if offset > NODE_SIZE {
+//         error!("offset idx {} exceeded node size", offset);
+//         return Err(Error::IndexError);
+//     }
+//     data[offset..offset + U16_SIZE].copy_from_slice(&value.to_le_bytes());
+//     Ok(())
+// }
+// /// writes Pointer to slice
+// pub(crate) fn write_pointer(data: &mut [u8], offset: usize, ptr: Pointer) -> Result<(), Error> {
+//     if offset > NODE_SIZE {
+//         error!("offset idx {} exceeded node size", offset);
+//         return Err(Error::IndexError);
+//     }
+//     data[offset..offset + PTR_SIZE].copy_from_slice(&ptr.as_slice());
+//     Ok(())
+// }
 
 /// casts usize to u16
 pub(crate) fn as_usize(n: usize) -> u16 {

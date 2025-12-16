@@ -2,12 +2,12 @@ use std::fmt::Debug;
 use std::ops::{Deref, DerefMut};
 use std::rc::Weak;
 
+use crate::database::codec::{NumDecode, NumEncode};
 use crate::database::pager::diskpager::{NodeFlag, Pager};
 use crate::database::types::Node;
 use crate::database::{
     btree::TreeNode,
     errors::FLError,
-    helper::{read_pointer, write_pointer},
     types::{PAGE_SIZE, PTR_SIZE, Pointer},
 };
 use tracing::debug;
@@ -274,23 +274,25 @@ impl FLNode {
 
     fn get_next(&self) -> Pointer {
         debug!("getting next");
-        read_pointer(&self, 0).expect("reading next ptr failed")
+        (&self[0..]).read_u64().into()
+        // read_pointer(&self, 0).expect("reading next ptr failed")
     }
 
     fn set_next(&mut self, ptr: Pointer) {
         debug!(ptr = ?ptr, "setting next");
-        write_pointer(self, 0, ptr).unwrap()
+        (&mut self[0..]).write_u64(ptr.get());
     }
 
     fn get_ptr(&self, idx: u16) -> Pointer {
         debug!(idx, "getting pointer from free list node");
-        read_pointer(self, FREE_LIST_NEXT + (FREE_LIST_NEXT * idx as usize))
-            .expect("reading ptr failed")
+        let offset = FREE_LIST_NEXT + (FREE_LIST_NEXT * idx as usize);
+        (&self[offset..]).read_u64().into()
     }
 
     fn set_ptr(&mut self, idx: u16, ptr: Pointer) {
         debug!(idx, ptr = ?ptr, "free list node: setting pointer");
-        write_pointer(self, FREE_LIST_NEXT + (PTR_SIZE * idx as usize), ptr).unwrap();
+        let offset = FREE_LIST_NEXT + (PTR_SIZE * idx as usize);
+        (&mut self[offset..]).write_u64(ptr.get());
     }
 }
 

@@ -4,13 +4,10 @@ use std::{cmp::Ordering, fmt::Write};
 
 use tracing::debug;
 
-use super::codec::*;
+use crate::database::codec::*;
 use crate::database::{
     errors::TableError,
-    tables::{
-        codec::{STR_PRE_LEN, TID_LEN, TYPE_LEN},
-        tables::{Table, TypeCol},
-    },
+    tables::tables::{Table, TypeCol},
 };
 
 /// encoded and parsed key for the pager, should only be created from encoding a record
