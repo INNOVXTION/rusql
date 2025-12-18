@@ -1,9 +1,13 @@
-use std::{collections::HashMap, rc::Rc};
+use std::{collections::HashMap, marker::PhantomData, ops::Deref, rc::Rc};
 
 use crate::database::{
+    codec::Codec,
     errors::TableError,
     pager::diskpager::KVEngine,
-    tables::records::{Record, Value},
+    tables::{
+        Key,
+        records::{Record, Value},
+    },
 };
 use serde::{Deserialize, Serialize};
 
@@ -64,6 +68,7 @@ impl MetaTable {
                 },
             ],
             pkeys: META_TABLE_PKEYS,
+            _priv: PhantomData,
         })
     }
 }
@@ -88,7 +93,16 @@ impl TDefTable {
                 },
             ],
             pkeys: DEF_TABLE_PKEYS,
+            _priv: PhantomData,
         })
+    }
+}
+
+impl Deref for TDefTable {
+    type Target = Table;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 
@@ -154,45 +168,31 @@ impl TableBuilder {
             id,
             cols,
             pkeys,
+            _priv: PhantomData,
         })
     }
 }
 
-// serialize to json
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub(crate) struct Table {
-    name: String,
-    id: u64,
-    cols: Vec<Column>,
-    pkeys: u16,
-}
+    pub(crate) name: String,
+    pub(crate) id: u64,
+    pub(crate) cols: Vec<Column>,
+    pub(crate) pkeys: u16,
 
-struct EncodedTable(String);
-
-impl EncodedTable {
-    pub fn decode(self) -> Table {
-        let table = serde_json::from_str(&self.0).unwrap();
-        table
-    }
-    pub fn as_str(&self) -> &str {
-        self.0.as_str()
-    }
+    // ensures tables are built through constructor
+    _priv: PhantomData<bool>,
 }
 
 impl Table {
-    /// deprecated, go through builder
-    pub fn new(name: &str) -> Self {
-        Table {
-            name: name.to_string(),
-            id: 0,
-            cols: vec![],
-            pkeys: 0,
-        }
+    /// to table to JSON string
+    pub fn encode(&self) -> String {
+        serde_json::to_string(&self).unwrap()
     }
 
-    /// encode schema to json
-    pub fn encode(self) -> EncodedTable {
-        EncodedTable(serde_json::to_string(&self).unwrap())
+    /// decodes JSON string into table
+    pub fn decode(value: Value) -> Self {
+        serde_json::from_str(&value.to_string()).unwrap()
     }
 
     pub fn cols(&self) -> &[Column] {
@@ -206,13 +206,13 @@ impl Table {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub(crate) struct Column {
     pub title: String,
     pub data_type: TypeCol,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub(crate) enum TypeCol {
     BYTES = 1,
     INTEGER = 2,
@@ -236,7 +236,7 @@ struct Database<KV: KVEngine> {
 }
 
 impl<KV: KVEngine> Database<KV> {
-    fn new(pager: KV) -> Self {
+    pub fn new(pager: KV) -> Self {
         Database {
             tdef: TDefTable::new(),
             mtab: MetaTable::new(),
@@ -244,23 +244,40 @@ impl<KV: KVEngine> Database<KV> {
             kv_engine: pager,
         }
     }
-}
 
-// internal API
-trait TableInterface {
-    type KVStore: KVEngine;
+    pub fn insert_table(&mut self, table: &Table) {
+        // check buffer
+        if let Some(t) = self.buffer.get(&table.name) {
+            return ();
+        }
 
-    fn insert_table();
-    fn get_table();
+        let (key, value) = Record::new()
+            .add(table.name.clone())
+            .add(table.encode())
+            .encode(&self.tdef)
+            .unwrap();
+
+        self.kv_engine.set(key, value);
+        ()
+    }
+
+    pub fn get_table(&mut self, name: &str) -> Option<Table> {
+        // check buffer
+        if let Some(t) = self.buffer.remove(name) {
+            return Some(t);
+        }
+        let (key, _) = Record::new().add(name).add("").encode(&self.tdef).unwrap();
+
+        if let Ok(t) = self.kv_engine.get(key) {
+            Some(Table::decode(t))
+        } else {
+            None
+        }
+    }
 }
 
 // outward API
-trait DatabaseAPI<DB>
-where
-    DB: TableInterface,
-{
-    type DB: TableInterface;
-
+trait DatabaseAPI {
     fn create_table(&self);
     fn drop_table(&self);
 
@@ -286,5 +303,25 @@ mod test {
         let pager = Envoy::new(path);
         let db = Database::new(pager);
         cleanup_file(path);
+    }
+
+    #[test]
+    fn tdef1() {
+        let pager = mempage_tree();
+        let mut db = Database::new(pager);
+
+        let table = TableBuilder::new()
+            .id(3)
+            .name("mytable")
+            .add_col("name", TypeCol::BYTES)
+            .add_col("age", TypeCol::INTEGER)
+            .pkey(1)
+            .build()
+            .unwrap();
+
+        db.insert_table(&table);
+
+        let dec_table = db.get_table("mytable").unwrap();
+        assert_eq!(dec_table, table);
     }
 }

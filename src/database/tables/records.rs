@@ -55,6 +55,7 @@ impl Key {
     }
 
     /// utility function for unit tests
+    /// adds TID 1
     pub fn from_unencoded_str<S: ToString>(str: S) -> Self {
         let mut buf: Vec<u8> = vec![0; 8];
         // artificial tid for testing purposes
@@ -67,16 +68,13 @@ impl Key {
         self.0.len()
     }
 
-    /// turns key back into id + record of cells
-    fn decode(self) -> Result<(u64, Record), TableError> {
+    /// turns key back into Records, doesnt return TID
+    fn decode(self) -> Result<Record, TableError> {
         let mut rec = Record::new();
-        let id = self.get_tid();
-
         for cell in self {
             rec.add(cell);
         }
-
-        Ok((id, rec))
+        Ok(rec)
     }
 }
 
@@ -480,26 +478,38 @@ impl Ord for Value {
     }
 }
 
+impl std::fmt::Display for Value {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // outputs string of Value data
+        for cell in self.iter() {
+            match cell {
+                DataCellRef::Str(s) => write!(f, "{} ", s).unwrap(),
+                DataCellRef::Int(i) => write!(f, "{} ", i).unwrap(),
+            };
+        }
+        Ok(())
+    }
+}
 /// prelude list of data
 pub(crate) struct Record {
     data: Vec<DataCell>,
 }
 
 impl Record {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Record { data: vec![] }
     }
 
-    fn add<T: InputData>(&mut self, data: T) -> &mut Self {
+    pub fn add<T: InputData>(&mut self, data: T) -> &mut Self {
         self.data.push(data.into_cell());
         self
     }
 
-    /// encodes a Record according to a schema into a key value pair starting with table id
+    /// encodes a Record according to a schema into a key value pair starting with schema table id
     ///
     /// validates that record matches with column in schema
-    fn encode(&mut self, schema: &Table) -> Result<(Key, Value), TableError> {
-        if schema.cols().len() != self.data.len() {
+    pub fn encode(&mut self, schema: &Table) -> Result<(Key, Value), TableError> {
+        if schema.cols.len() != self.data.len() {
             return Err(TableError::RecordError(
                 "input doesnt match column count".to_string(),
             ));
@@ -510,11 +520,11 @@ impl Record {
         let mut key_idx: usize = 0;
 
         // starting with table id
-        buf.extend_from_slice(&schema.id().to_le_bytes());
+        buf.extend_from_slice(&schema.id.to_le_bytes());
         idx += TID_LEN;
 
         // composing byte array by iterating through all columns designated as primary key
-        for (i, col) in schema.cols().iter().enumerate() {
+        for (i, col) in schema.cols.iter().enumerate() {
             // remembering the cutoff point between keys and values
             if i == schema.pkeys() as usize {
                 key_idx = idx;
@@ -693,8 +703,10 @@ mod test {
         let k2: Key = "9".into();
         let k3: Key = "10".into();
         let k1: Key = "1".into();
+        let k4: Key = "1".into();
         assert!(k3 < k2);
         assert!(k1 < k2);
         assert!(k1 < k3);
+        assert!(k1 == k4);
     }
 }

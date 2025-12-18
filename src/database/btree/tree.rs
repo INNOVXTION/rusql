@@ -31,7 +31,7 @@ pub(crate) trait Tree {
 impl<P: Pager> Tree for BTree<P> {
     type Codec = P;
     fn insert(&mut self, key: Key, val: Value) -> Result<(), Error> {
-        info!("inserting: {key}",);
+        info!("inserting key: {key}, val: {val}",);
         // get root node
         let root = match self.root_ptr {
             Some(ptr) => {
@@ -352,7 +352,7 @@ mod test {
         tree.set("1".into(), "hello".into()).unwrap();
         tree.set("2".into(), "world".into()).unwrap();
 
-        let t_ref = tree.btree.borrow();
+        let t_ref = tree.pager.btree.borrow();
 
         assert_eq!(tree.get("1".into()).unwrap(), "hello".into());
         assert_eq!(tree.get("2".into()).unwrap(), "world".into());
@@ -371,7 +371,7 @@ mod test {
         tree.set("2".into(), "world".into()).unwrap();
         tree.set("3".into(), "bonjour".into()).unwrap();
         {
-            let t_ref = tree.btree.borrow();
+            let t_ref = tree.pager.btree.borrow();
             assert_eq!(
                 t_ref.decode(t_ref.get_root().unwrap()).get_type(),
                 NodeType::Leaf
@@ -381,7 +381,7 @@ mod test {
         }
 
         tree.delete("2".into()).unwrap();
-        let t_ref = tree.btree.borrow();
+        let t_ref = tree.pager.btree.borrow();
         assert_eq!(tree.get("1".into()).unwrap(), "hello".into());
         assert_eq!(tree.get("3".into()).unwrap(), "bonjour".into());
         assert_eq!(t_ref.decode(t_ref.get_root().unwrap()).get_nkeys(), 3);
@@ -394,7 +394,7 @@ mod test {
         for i in 1u16..=200u16 {
             tree.set(format!("{i}").into(), "value".into()).unwrap()
         }
-        let t_ref = tree.btree.borrow();
+        let t_ref = tree.pager.btree.borrow();
         assert_eq!(
             t_ref.decode(t_ref.get_root().unwrap()).get_type(),
             NodeType::Node
@@ -413,7 +413,7 @@ mod test {
         for i in 1u16..=400u16 {
             tree.set(format!("{i}").into(), "value".into()).unwrap()
         }
-        let t_ref = tree.btree.borrow();
+        let t_ref = tree.pager.btree.borrow();
         assert_eq!(
             t_ref.decode(t_ref.get_root().unwrap()).get_type(),
             NodeType::Node
@@ -440,7 +440,7 @@ mod test {
         for i in 1u16..=200u16 {
             tree.delete(format!("{i}").into()).unwrap()
         }
-        let t_ref = tree.btree.borrow();
+        let t_ref = tree.pager.btree.borrow();
         assert_eq!(
             t_ref.decode(t_ref.get_root().unwrap()).get_type(),
             NodeType::Leaf
@@ -458,7 +458,7 @@ mod test {
         for i in 1u16..=400u16 {
             tree.delete(format!("{i}").into()).unwrap()
         }
-        let t_ref = tree.btree.borrow();
+        let t_ref = tree.pager.btree.borrow();
         assert_eq!(
             t_ref.decode(t_ref.get_root().unwrap()).get_type(),
             NodeType::Leaf
@@ -476,7 +476,7 @@ mod test {
         for i in (1..=400u16).rev() {
             tree.delete(format!("{i}").into()).unwrap()
         }
-        let t_ref = tree.btree.borrow();
+        let t_ref = tree.pager.btree.borrow();
         assert_eq!(
             t_ref.decode(t_ref.get_root().unwrap()).get_type(),
             NodeType::Leaf
@@ -497,7 +497,7 @@ mod test {
             tree.delete(format!("{i}").into()).unwrap()
         }
         tree.delete("".into()).unwrap();
-        let t_ref = tree.btree.borrow();
+        let t_ref = tree.pager.btree.borrow();
         assert_eq!(t_ref.get_root(), None);
     }
 
@@ -509,7 +509,7 @@ mod test {
             tree.set(format!("{i}").into(), "value".into()).unwrap()
         }
         {
-            let t_ref = tree.btree.borrow();
+            let t_ref = tree.pager.btree.borrow();
             assert_eq!(
                 t_ref.decode(t_ref.get_root().unwrap()).get_type(),
                 NodeType::Node
@@ -540,7 +540,7 @@ mod test {
         for i in 1u16..=11u16 {
             tree.set(format!("{i}").into(), "value".into()).unwrap()
         }
-        // let t_ref = tree.btree.borrow();
+        // let t_ref = tree.pager.btree.borrow();
         // assert_eq!(
         //     t_ref.decode(t_ref.get_root().unwrap()).get_type(),
         //     NodeType::Node

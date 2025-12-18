@@ -13,22 +13,44 @@ use crate::database::{
     types::{Node, Pointer},
 };
 
+// wrapper
+pub(crate) struct MemPager {
+    pub(crate) pager: Rc<MemoryPager>,
+}
+
+impl KVEngine for MemPager {
+    fn get(&self, key: Key) -> Result<Value, Error> {
+        self.pager.get(key)
+    }
+
+    fn set(&self, key: Key, val: Value) -> Result<(), Error> {
+        self.pager.set(key, val)
+    }
+
+    fn delete(&self, key: Key) -> Result<(), Error> {
+        self.pager.delete(key)
+    }
+}
+
 pub struct MemoryPager {
     freelist: RefCell<Vec<u64>>,
     pages: RefCell<HashMap<u64, Node>>,
     pub btree: Box<RefCell<BTree<MemoryPager>>>,
 }
 
+/// constructor for in memory pager and tree
 #[allow(unused)]
-pub fn mempage_tree() -> Rc<MemoryPager> {
-    Rc::new_cyclic(|w| MemoryPager {
-        freelist: RefCell::new(Vec::from_iter((1..=100).rev())),
-        pages: RefCell::new(HashMap::<u64, Node>::new()),
-        btree: Box::new(RefCell::new(BTree::<MemoryPager>::new(w.clone()))),
-    })
+pub fn mempage_tree() -> MemPager {
+    MemPager {
+        pager: Rc::new_cyclic(|w| MemoryPager {
+            freelist: RefCell::new(Vec::from_iter((1..=100).rev())),
+            pages: RefCell::new(HashMap::<u64, Node>::new()),
+            btree: Box::new(RefCell::new(BTree::<MemoryPager>::new(w.clone()))),
+        }),
+    }
 }
 
-impl KVEngine for MemoryPager {
+impl MemoryPager {
     fn get(&self, key: Key) -> Result<Value, Error> {
         self.btree
             .borrow()
