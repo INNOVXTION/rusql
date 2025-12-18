@@ -252,7 +252,8 @@ impl<'a> Iterator for KeyIterRef<'a> {
                 let len = (&buf[self.count + TYPE_LEN..]).read_u32() as usize;
                 let offset = self.count + TYPE_LEN + STR_PRE_LEN;
 
-                let s = unsafe { std::str::from_utf8_unchecked(&buf[offset..offset + len]) }; // or unchecked
+                // SAFETY: we only ever input strings in utf8
+                let s = unsafe { std::str::from_utf8_unchecked(&buf[offset..offset + len]) };
 
                 self.count += TYPE_LEN + STR_PRE_LEN + len;
                 Some(DataCellRef::Str(s))
@@ -380,7 +381,8 @@ impl<'a> Iterator for ValueIterRef<'a> {
                 let len = (&buf[self.count + TYPE_LEN..]).read_u32() as usize;
                 let offset = self.count + TYPE_LEN + STR_PRE_LEN;
 
-                let s = unsafe { std::str::from_utf8_unchecked(&buf[offset..offset + len]) }; // or unchecked
+                // SAFETY: we only ever input strings in utf8
+                let s = unsafe { std::str::from_utf8_unchecked(&buf[offset..offset + len]) };
 
                 self.count += TYPE_LEN + STR_PRE_LEN + len;
                 Some(DataCellRef::Str(s))
@@ -447,11 +449,16 @@ impl Ord for Value {
 
                     debug!(len_a, len_b, min, "comparing strings...");
                     match val_a[..min].cmp(&val_b[..min]) {
-                        Ordering::Equal => {
-                            debug!("strings are equal");
-                            val_a = &val_a[len_a..];
-                            val_b = &val_b[len_b..];
-                        }
+                        // comparing a tail string like "1" with "11" would return equal because for min = 1: "1" == "1"
+                        // after it would move the slice up, empyting both keys, returning equal,
+                        // therefore another match is needed to compare lengths
+                        Ordering::Equal => match len_a.cmp(&len_b) {
+                            Ordering::Equal => {
+                                val_a = &val_a[len_a..];
+                                val_b = &val_b[len_b..];
+                            }
+                            o => return o,
+                        },
                         o => return o,
                     }
                 }
