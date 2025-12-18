@@ -46,7 +46,7 @@ impl Key {
     }
 
     /// its up to the caller to ensure the data is properly formatted
-    pub fn from_slice(data: &[u8]) -> Self {
+    pub fn from_encoded_slice(data: &[u8]) -> Self {
         Key(Rc::from(data))
     }
 
@@ -65,6 +65,18 @@ impl Key {
 
     pub fn len(&self) -> usize {
         self.0.len()
+    }
+
+    /// turns key back into id + record of cells
+    fn decode(self) -> Result<(u64, Record), TableError> {
+        let mut rec = Record::new();
+        let id = self.get_tid();
+
+        for cell in self {
+            rec.add(cell);
+        }
+
+        Ok((id, rec))
     }
 }
 
@@ -145,8 +157,10 @@ impl Ord for Key {
                     debug!(key_a = &key_a[..min], key_b = &key_b[..min], "comparing");
                     debug!(len_a, len_b);
                     match key_a[..min].cmp(&key_b[..min]) {
+                        // comparing a tail string like "1" with "11" would return equal because for min = 1: "1" == "1"
+                        // after it would move the slice up, empyting both keys, returning equal,
+                        // therefore another match is needed to compare lengths
                         Ordering::Equal => match len_a.cmp(&len_b) {
-                            // accounting for equal string bytes
                             Ordering::Equal => {
                                 key_a = &key_a[len_a..];
                                 key_b = &key_b[len_b..];
@@ -187,11 +201,13 @@ impl Iterator for KeyIter {
             Some(TypeCol::BYTES) => {
                 let str = String::decode(&self.data.0[self.count..]);
                 self.count += TYPE_LEN + STR_PRE_LEN + str.len();
+
                 Some(DataCell::Str(str))
             }
             Some(TypeCol::INTEGER) => {
                 let int = i64::decode(&self.data.0[self.count..]);
                 self.count += TYPE_LEN + INT_LEN;
+
                 Some(DataCell::Int(int))
             }
             None => None,
@@ -265,7 +281,8 @@ impl Value {
         }
         r
     }
-    pub fn from_slice(data: &[u8]) -> Self {
+    /// assumes proper encoding
+    pub fn from_encoded_slice(data: &[u8]) -> Self {
         Value(Rc::from(data))
     }
     /// outputs string of Key data
@@ -286,15 +303,13 @@ impl Value {
             count: 0,
         }
     }
-    /// utility function for unit tests
+    /// utility function for unit tests, assigns table id 1
     pub fn from_unencoded_str<S: ToString>(str: S) -> Self {
         Value(str.to_string().encode())
     }
-
     pub fn len(&self) -> usize {
         self.0.len()
     }
-
     pub fn as_slice(&self) -> &[u8] {
         &self.0[..]
     }
@@ -356,7 +371,6 @@ impl<'a> Iterator for ValueIterRef<'a> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let buf = &self.data.0;
-
         if self.count >= self.data.0.len() {
             return None;
         }
@@ -371,14 +385,12 @@ impl<'a> Iterator for ValueIterRef<'a> {
                 self.count += TYPE_LEN + STR_PRE_LEN + len;
                 Some(DataCellRef::Str(s))
             }
-
             Some(TypeCol::INTEGER) => {
                 let int = i64::decode(&buf[self.count..]);
 
                 self.count += TYPE_LEN + INT_LEN;
                 Some(DataCellRef::Int(int))
             }
-
             None => None,
         }
     }
@@ -524,8 +536,8 @@ impl Record {
             }
         }
         Ok((
-            Key::from_slice(&buf[..key_idx]),
-            Value::from_slice(&buf[key_idx..]),
+            Key::from_encoded_slice(&buf[..key_idx]),
+            Value::from_encoded_slice(&buf[key_idx..]),
         ))
     }
 }

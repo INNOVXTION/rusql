@@ -64,12 +64,12 @@ impl TreeNode {
         true
     }
 
-    // returns a slice of the underlying data
+    /// returns a slice of the underlying data
     fn as_offset_slice(&self, offset: usize) -> &[u8] {
         &self[offset..]
     }
 
-    // returns a slice of the underlying data
+    /// returns a mutable slice of the underlying data
     fn as_offset_slice_mut(&mut self, offset: usize) -> &mut [u8] {
         &mut self[offset..]
     }
@@ -129,6 +129,7 @@ impl TreeNode {
         debug!("inserting new kids...");
         let old_nkeys = old_node.get_nkeys();
         self.set_header(NodeType::Node, old_nkeys + new_kids.0 - 1);
+
         // copy range before new idx
         self.append_from_range(&old_node, 0, 0, idx).map_err(|e| {
             error!("append error before idx");
@@ -157,7 +158,7 @@ impl TreeNode {
                     e
                 })?;
         }
-        // debug
+
         if cfg!(test) {
             debug!("nkids after insertion:");
             for i in 0..self.get_nkeys() {
@@ -228,7 +229,7 @@ impl TreeNode {
         let offset = kvpos + KEY_LEN_OFFSET + VAL_LEN_OFFSET;
         let slice = &self.0[offset..offset + key_len];
 
-        Ok(Key::from_slice(slice))
+        Ok(Key::from_encoded_slice(slice))
     }
 
     /// retrieves value as byte array
@@ -246,7 +247,7 @@ impl TreeNode {
         let val_len = self.as_offset_slice(kvpos + KEY_LEN_OFFSET).read_u16() as usize;
 
         let offset = kvpos + KEY_LEN_OFFSET + VAL_LEN_OFFSET + key_len;
-        let val = Value::from_slice(self.as_offset_slice(offset).read_bytes(val_len));
+        let val = Value::from_encoded_slice(self.as_offset_slice(offset).read_bytes(val_len));
         debug_assert_eq!(val.len(), val_len);
 
         Ok(val)
@@ -275,7 +276,7 @@ impl TreeNode {
 
         // updating offset for next KV
         let offset =
-            self.get_offset(idx)? + klen + vlen + KEY_LEN_OFFSET as u16 + VAL_LEN_OFFSET as u16;
+            KEY_LEN_OFFSET as u16 + VAL_LEN_OFFSET as u16 + self.get_offset(idx)? + klen + vlen;
         self.set_offset(idx + 1, offset);
         Ok(())
     }
@@ -433,11 +434,13 @@ impl TreeNode {
         if (src_nkeys - 1) == 0 {
             return Ok(());
         }
+
         self.set_header(NodeType::Leaf, src_nkeys - 1);
         self.append_from_range(src, 0, 0, idx).map_err(|err| {
             error!("deletion error when appending before idx");
             err
         })?;
+        // checking indices beyond the one we are modifiying
         if src_nkeys > (idx + 1) {
             self.append_from_range(src, idx, idx + 1, src_nkeys - 1 - idx)
                 .map_err(|err| {
@@ -485,6 +488,7 @@ impl TreeNode {
         left.set_header(self.get_type(), nkeys_left);
         left.append_from_range(&self, 0, 0, nkeys_left)
             .map_err(|err| Error::SplitError(format!("append error during left split, {err}")))?;
+
         let nkeys_right = nkeys - nkeys_left;
         right.set_header(self.get_type(), nkeys_right);
         right
@@ -554,7 +558,7 @@ impl TreeNode {
         Ok((3, arr))
     }
 
-    /// consumes two nodes and returns merged node
+    /// merges left right into self
     ///
     /// updates nkeys
     pub fn merge(&mut self, left: TreeNode, right: TreeNode, ntype: NodeType) -> Result<(), Error> {
