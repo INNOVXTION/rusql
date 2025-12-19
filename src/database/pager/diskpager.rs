@@ -314,6 +314,7 @@ impl EnvoyV1 {
             buffer = buf_len,
             "pages to be written:"
         );
+
         // iterate over buffer and write nodes to designated pages
         let mut bytes_written: usize = 0;
         for pair in buf.hmap.iter() {
@@ -330,6 +331,7 @@ impl EnvoyV1 {
         }
         debug!(bytes_written, "bytes written:");
         assert!(bytes_written == buf_len * PAGE_SIZE);
+
         //discard in-memory data
         drop(buf);
         let mut buf = self.buffer.borrow_mut();

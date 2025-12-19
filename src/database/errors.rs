@@ -7,7 +7,9 @@ use std::{
 
 use rustix::io::Errno;
 
-#[derive(Debug)]
+use thiserror::Error;
+
+#[derive(Debug, Error)]
 pub enum Error {
     IndexError,
     FileError(io::Error),
@@ -22,6 +24,8 @@ pub enum Error {
     InvalidInput(&'static str),
     FreeListError(FLError),
     SearchError(String),
+
+    TableError(#[from] TableError),
 }
 
 impl Display for Error {
@@ -42,11 +46,10 @@ impl Display for Error {
             E::InvalidInput(e) => write!(f, "invalid input!, {e}"),
             E::FreeListError(e) => write!(f, "Free List Error {e}"),
             E::SearchError(e) => write!(f, "Search Error {e}"),
+            E::TableError(e) => write!(f, "Table Error {e}"),
         }
     }
 }
-
-impl std::error::Error for Error {}
 
 impl From<io::Error> for Error {
     fn from(err: io::Error) -> Self {
@@ -136,23 +139,55 @@ impl Display for FLError {
 
 impl std::error::Error for FLError {}
 
-#[derive(Debug)]
+// #[error("{var}")]    ⟶   write!("{}", self.var)
+// #[error("{0}")]      ⟶   write!("{}", self.0)
+// #[error("{var:?}")]  ⟶   write!("{:?}", self.var)
+// #[error("{0:?}")]    ⟶   write!("{:?}", self.0)
+
+#[derive(Error, Debug)]
 pub(crate) enum TableError {
+    #[error("invalid Record (expected {expected:?}, found {found:?})")]
+    RecordEncodeError { expected: String, found: String },
+    #[error("Record error {0}")]
     RecordError(String),
-    TableError(String),
-    CellError(String),
-    CodecError(String),
-}
 
-impl Display for TableError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            TableError::RecordError(s) => write!(f, "Record Error {}", s),
-            TableError::TableError(s) => write!(f, "Table Error {}", s),
-            TableError::CellError(s) => write!(f, "Cell Error {}", s),
-            TableError::CodecError(s) => write!(f, "Codec Error {}", s),
-        }
-    }
-}
+    #[error("invalid Query (expected {expected:?}, found {found:?})")]
+    QueryEncodeError { expected: String, found: String },
+    #[error("Query error {0}")]
+    QueryError(String),
 
-impl std::error::Error for TableError {}
+    #[error("Table build error {0}")]
+    TableBuildError(String),
+    #[error("Insert table error {0}")]
+    InsertTableError(String),
+    #[error("Get table error {0}")]
+    GetTableError(String),
+    #[error("Delete table error {0}")]
+    DeleteTableError(String),
+    #[error("Encode table error {0}")]
+    EncodeTableError(serde_json::Error),
+    #[error("Delete table error {0}")]
+    DecodeTableError(serde_json::Error),
+
+    #[error("Invalid input")]
+    CellEncodeError,
+    #[error("Error when decoding cell")]
+    CellDecodeError,
+
+    #[error("unknown error...")]
+    UnknownError,
+
+    #[error("Key encode error {0}")]
+    KeyEncodeError(String),
+    #[error("Key decode error {0}")]
+    KeyDecodeError(String),
+    #[error("Key string error {0}")]
+    KeyStringError(#[from] std::io::Error),
+
+    #[error("Value encode error {0}")]
+    ValueEncodeError(String),
+    #[error("Value decode error {0}")]
+    ValueDecodeError(String),
+    #[error("Value string error {0}")]
+    ValueStringError(std::io::Error),
+}

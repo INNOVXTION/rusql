@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 tracing = { version = "0.1", features = ["log"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"] }
-thiserror = { version = "2.0" }
+thiserror = "2.0"
 rustix = {version = "1.1.0", features = ["fs", "mm", "param"]}
 parking_lot = "0.12"
 serde_json = "1.0.145"

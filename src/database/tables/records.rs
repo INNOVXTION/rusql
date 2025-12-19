@@ -23,16 +23,16 @@ pub(crate) struct Key(Rc<[u8]>);
 
 impl Key {
     /// outputs string of Key data
-    pub fn to_string(&self) -> String {
+    pub fn to_string(&self) -> Result<String, TableError> {
         let mut st = String::new();
-        write!(st, "{}", self.get_tid()).unwrap();
+        write!(st, "{}", self.get_tid());
         for cell in self.iter() {
             match cell {
-                DataCellRef::Str(s) => write!(st, "{}", s).unwrap(),
-                DataCellRef::Int(i) => write!(st, "{}", i).unwrap(),
+                DataCellRef::Str(s) => write!(st, "{}", s),
+                DataCellRef::Int(i) => write!(st, "{}", i),
             };
         }
-        st
+        Ok(st)
     }
 
     pub fn iter(&self) -> KeyIterRef<'_> {
@@ -44,7 +44,7 @@ impl Key {
 
     // reads the first 8 bytes
     pub fn get_tid(&self) -> u64 {
-        u64::from_le_bytes(self.0[..TID_LEN].try_into().unwrap())
+        u64::from_le_bytes(self.0[..TID_LEN].try_into().expect("this cant fail"))
     }
 
     /// its up to the caller to ensure the data is properly encoded
@@ -94,11 +94,11 @@ impl From<String> for Key {
 impl std::fmt::Display for Key {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // outputs string of Key data
-        write!(f, "{} ", self.get_tid()).unwrap();
+        write!(f, "{} ", self.get_tid())?;
         for cell in self.iter() {
             match cell {
-                DataCellRef::Str(s) => write!(f, "{} ", s).unwrap(),
-                DataCellRef::Int(i) => write!(f, "{} ", i).unwrap(),
+                DataCellRef::Str(s) => write!(f, "{} ", s)?,
+                DataCellRef::Int(i) => write!(f, "{} ", i)?,
             };
         }
         Ok(())
@@ -287,15 +287,15 @@ impl Value {
         Value(Rc::from(data))
     }
     /// outputs string of Key data
-    pub fn to_string(&self) -> String {
+    pub fn to_string(&self) -> Result<String, TableError> {
         let mut st = String::new();
         for cell in self.iter() {
             match cell {
-                DataCellRef::Str(s) => write!(st, "{}", s).unwrap(),
-                DataCellRef::Int(i) => write!(st, "{}", i).unwrap(),
+                DataCellRef::Str(s) => write!(st, "{}", s),
+                DataCellRef::Int(i) => write!(st, "{}", i),
             };
         }
-        st
+        Ok(st)
     }
 
     pub fn iter(&self) -> ValueIterRef<'_> {
@@ -485,8 +485,8 @@ impl std::fmt::Display for Value {
         // outputs string of Value data
         for cell in self.iter() {
             match cell {
-                DataCellRef::Str(s) => write!(f, "{} ", s).unwrap(),
-                DataCellRef::Int(i) => write!(f, "{} ", i).unwrap(),
+                DataCellRef::Str(s) => write!(f, "{} ", s)?,
+                DataCellRef::Int(i) => write!(f, "{} ", i)?,
             };
         }
         Ok(())
@@ -531,7 +531,7 @@ impl Record {
         // composing byte array by iterating through all columns designated as primary key
         for (i, col) in schema.cols.iter().enumerate() {
             // remembering the cutoff point between keys and values
-            if i == schema.pkeys() as usize {
+            if i == schema.pkeys as usize {
                 key_idx = idx;
             }
             match col.data_type {
@@ -579,6 +579,8 @@ impl Query {
     }
 
     /// add the column and primary key which you want to query
+    ///
+    /// keys dont have to be inserted in order
     pub fn add<T: InputData>(mut self, col: &str, value: T) -> Self {
         self.data.insert(col.to_string(), value.into_cell());
         self
@@ -586,9 +588,7 @@ impl Query {
 
     /// encodes a Query according into a key
     ///
-    /// validates that record matches with column in schema
-    ///
-    /// currently limited to querying for primary key only
+    /// will error if primary keys are missing or the data type doesnt match
     pub fn encode(self, schema: &Table) -> Result<Key, TableError> {
         let mut buf = Vec::<u8>::new();
 
@@ -678,13 +678,18 @@ impl InputData for i8 {
 #[cfg(test)]
 mod test {
 
+    use crate::database::{pager::mempage_tree, tables::tables::Database};
+
     use super::super::tables::TableBuilder;
     use super::*;
     use test_log::test;
     use tracing::{Level, info, span};
 
     #[test]
-    fn record1() {
+    fn record1() -> Result<(), Box<dyn std::error::Error>> {
+        let pager = mempage_tree();
+        let mut db = Database::new(pager);
+
         let table = TableBuilder::new()
             .name("mytable")
             .id(2)
@@ -692,7 +697,7 @@ mod test {
             .add_col("greeter", TypeCol::BYTES)
             .add_col("number", TypeCol::INTEGER)
             .add_col("gretee", TypeCol::BYTES)
-            .build()
+            .build(&mut db)
             .unwrap();
 
         let s1 = "hello";
@@ -702,14 +707,15 @@ mod test {
         let rec = Record::new().add(s1).add(i1).add(s2);
 
         let (key, value) = rec.encode(&table).unwrap();
-        assert_eq!(key.to_string(), "2hello10");
-        assert_eq!(value.to_string(), "world");
+        assert_eq!(key.to_string()?, "2hello10");
+        assert_eq!(value.to_string()?, "world");
+        Ok(())
     }
 
     #[test]
     fn key_cmp1() -> Result<(), Box<dyn std::error::Error>> {
-        let span = span!(Level::DEBUG, "cmp span");
-        let _guard = span.enter();
+        let pager = mempage_tree();
+        let mut db = Database::new(pager);
 
         let table = TableBuilder::new()
             .name("mytable")
@@ -718,7 +724,7 @@ mod test {
             .add_col("greeter", TypeCol::BYTES)
             .add_col("number", TypeCol::INTEGER)
             .add_col("gretee", TypeCol::BYTES)
-            .build()?;
+            .build(&mut db)?;
 
         let (key1, value1) = Record::new()
             .add("hello")
@@ -733,7 +739,7 @@ mod test {
             .encode(&table)?;
 
         assert_eq!(key1, key2);
-        assert_eq!(key1.to_string(), "2hello10");
+        assert_eq!(key1.to_string()?, "2hello10");
 
         let (key3, value3) = Record::new()
             .add("smol")
@@ -742,27 +748,28 @@ mod test {
             .encode(&table)?;
 
         assert!(key2 < key3);
-        assert_eq!(key3.to_string(), "2smol5");
+        assert_eq!(key3.to_string()?, "2smol5");
         Ok(())
     }
 
     #[test]
-    fn records_test_str() {
+    fn records_test_str() -> Result<(), Box<dyn std::error::Error>> {
         let key = Key::from_unencoded_str("hello");
-        assert_eq!(key.to_string(), "1hello");
+        assert_eq!(key.to_string()?, "1hello");
 
         let key: Key = "hello".into();
-        assert_eq!(key.to_string(), "1hello");
+        assert_eq!(key.to_string()?, "1hello");
 
         let key = Key::from_unencoded_str("owned hello".to_string());
-        assert_eq!(key.to_string(), "1owned hello");
+        assert_eq!(key.to_string()?, "1owned hello");
 
         let val: Value = "world".into();
-        assert_eq!(val.to_string(), "world");
+        assert_eq!(val.to_string()?, "world");
+        Ok(())
     }
 
     #[test]
-    fn key_cmp2() {
+    fn key_cmp2() -> Result<(), Box<dyn std::error::Error>> {
         let k2: Key = "9".into();
         let k3: Key = "10".into();
         let k1: Key = "1".into();
@@ -771,5 +778,6 @@ mod test {
         assert!(k1 < k2);
         assert!(k1 < k3);
         assert!(k1 == k4);
+        Ok(())
     }
 }

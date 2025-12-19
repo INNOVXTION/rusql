@@ -1,4 +1,4 @@
-use std::{collections::HashMap, marker::PhantomData, ops::Deref, rc::Rc};
+use std::{collections::HashMap, f64::consts::E, marker::PhantomData, ops::Deref, rc::Rc};
 
 use crate::database::{
     codec::Codec,
@@ -10,6 +10,7 @@ use crate::database::{
     },
 };
 use serde::{Deserialize, Serialize};
+use tracing::error;
 
 /*
  * Encoding Layout:
@@ -30,11 +31,10 @@ use serde::{Deserialize, Serialize};
  * |[2][ key  ]|[  val   ]|
  *
  * Data Path:
- * User Input -> DataCell -> Record -> Key, Value
+ * User Input -> DataCell -> Record -> Key, Value -> Tree
  *
  */
 
-// fixed table which holds all the schemas
 const DEF_TABLE_NAME: &'static str = "tdef";
 const DEF_TABLE_COL1: &'static str = "name";
 const DEF_TABLE_COL2: &'static str = "def";
@@ -42,7 +42,6 @@ const DEF_TABLE_COL2: &'static str = "def";
 const DEF_TABLE_ID: u64 = 1;
 const DEF_TABLE_PKEYS: u16 = 1;
 
-// fixed meta table holding all the unique table ids
 const META_TABLE_NAME: &'static str = "tmeta";
 const META_TABLE_COL1: &'static str = "name";
 const META_TABLE_COL2: &'static str = "tid";
@@ -135,7 +134,7 @@ impl TableBuilder {
         self
     }
 
-    /// default 0
+    /// DEPRECTATED, for testing purposes only
     pub fn id(mut self, id: u64) -> Self {
         self.id = Some(id);
         self
@@ -154,22 +153,63 @@ impl TableBuilder {
         self
     }
 
-    // TODO: extend validation
-    pub fn build(self) -> Result<Table, TableError> {
+    /// parsing is WIP
+    pub fn build<KV: KVEngine>(self, pager: &mut Database<KV>) -> Result<Table, TableError> {
         let name = match self.name {
-            Some(n) => n,
-            None => return Err(TableError::TableError("invalid name".to_string())),
+            Some(n) => {
+                if n.is_empty() {
+                    error!("table creation error");
+                    return Err(TableError::TableBuildError(
+                        "must provide a name".to_string(),
+                    ));
+                }
+                n
+            }
+            None => {
+                error!("table creation error");
+                return Err(TableError::TableBuildError(
+                    "must provide a name".to_string(),
+                ));
+            }
         };
-        // TODO: check meta table for unique id
+
         let id = match self.id {
             Some(id) => id,
-            None => return Err(TableError::TableError("invalid id".to_string())),
+            None => pager.new_tid(),
         };
+
         let cols = self.cols;
+        if cols.len() < 1 {
+            error!("table creation error");
+            return Err(TableError::TableBuildError(
+                "must provide at least 2 columns".to_string(),
+            ));
+        }
+
         let pkeys = match self.pkeys {
-            Some(pk) => pk,
-            None => return Err(TableError::TableError("invalid pkeys".to_string())),
+            Some(pk) => {
+                if pk == 0 {
+                    error!("table creation error");
+                    return Err(TableError::TableBuildError(
+                        "primary key cant be zero".to_string(),
+                    ));
+                }
+                if cols.len() < pk as usize {
+                    error!("table creation error");
+                    return Err(TableError::TableBuildError(
+                        "cant have more primary keys than columns".to_string(),
+                    ));
+                }
+                pk
+            }
+            None => {
+                error!("table creation error");
+                return Err(TableError::TableBuildError(
+                    "must designate primary keys".to_string(),
+                ));
+            }
         };
+
         Ok(Table {
             name,
             id,
@@ -193,23 +233,19 @@ pub(crate) struct Table {
 
 impl Table {
     /// encodes table to JSON string
-    pub fn encode(&self) -> String {
-        serde_json::to_string(&self).unwrap()
+    pub fn encode(&self) -> Result<String, TableError> {
+        serde_json::to_string(&self).map_err(|e| {
+            error!(%e, "error when encoding table");
+            TableError::EncodeTableError(e)
+        })
     }
 
     /// decodes JSON string into table
-    pub fn decode(value: Value) -> Self {
-        serde_json::from_str(&value.to_string()).unwrap()
-    }
-
-    pub fn cols(&self) -> &[Column] {
-        &self.cols[..]
-    }
-    pub fn id(&self) -> u64 {
-        self.id
-    }
-    pub fn pkeys(&self) -> u16 {
-        self.pkeys
+    pub fn decode(value: Value) -> Result<Self, TableError> {
+        serde_json::from_str(&value.to_string()?).map_err(|e| {
+            error!(%e, "error when decoding table");
+            TableError::EncodeTableError(e)
+        })
     }
 }
 
@@ -235,10 +271,16 @@ impl TypeCol {
     }
 }
 
-struct Database<KV: KVEngine> {
+pub(crate) struct Database<KV: KVEngine> {
     tdef: TDefTable,
     buffer: HashMap<String, Table>, // table name as key
-    kv_engine: KV,
+    kve: KV,
+}
+
+enum SetFlag {
+    INSERT, // only add new rows
+    UPDATE, // only modifies existing
+    UPSERT, // add or modify
 }
 
 impl<KV: KVEngine> Database<KV> {
@@ -246,7 +288,7 @@ impl<KV: KVEngine> Database<KV> {
         Database {
             tdef: TDefTable::new(),
             buffer: HashMap::new(),
-            kv_engine: pager,
+            kve: pager,
         }
     }
 
@@ -254,9 +296,9 @@ impl<KV: KVEngine> Database<KV> {
         let key = Query::new()
             .add(META_TABLE_COL1, META_TABLE_ID_ROW) // we query name column, where pkey = tid
             .encode(&self.get_meta())
-            .unwrap();
+            .expect("this cant fail");
 
-        match self.kv_engine.get(key).ok() {
+        match self.kve.get(key).ok() {
             Some(value) => {
                 let meta = self.get_meta();
                 let res = value.decode();
@@ -267,9 +309,9 @@ impl<KV: KVEngine> Database<KV> {
                         .add(META_TABLE_ID_ROW)
                         .add(i + 1)
                         .encode(&meta)
-                        .unwrap();
-                    self.kv_engine.set(k, v);
+                        .expect("this cant fail");
 
+                    self.kve.set(k, v);
                     i as u64 + 1
                 } else {
                     // error when types dont match
@@ -284,9 +326,9 @@ impl<KV: KVEngine> Database<KV> {
                     .add(META_TABLE_ID_ROW)
                     .add(3)
                     .encode(&meta)
-                    .unwrap(); // tid 1 and 2 are taken
-                self.kv_engine.set(k, v);
+                    .expect("this cant fail"); // tid 1 and 2 are taken
 
+                self.kve.set(k, v);
                 3
             }
         }
@@ -304,16 +346,26 @@ impl<KV: KVEngine> Database<KV> {
     }
 
     /// overwrites table in buffer
-    pub fn insert_table(&mut self, table: &Table) {
+    pub fn insert_table(&mut self, table: &Table) -> Result<(), TableError> {
+        if self.get_table(&table.name).is_some() {
+            return Err(TableError::InsertTableError(
+                "table with provided name exists already".into(),
+            ));
+        }
+
         let (key, value) = Record::new()
             .add(table.name.clone())
-            .add(table.encode())
-            .encode(&self.tdef)
-            .unwrap();
-        let _ = self.kv_engine.set(key, value);
+            .add(table.encode()?)
+            .encode(&self.tdef)?;
+
+        self.kve.set(key, value).map_err(|e| {
+            error!("error when inserting");
+            TableError::InsertTableError("error when inserting table".to_string())
+        })?;
 
         // updating buffer
         self.buffer.insert(table.name.clone(), table.clone());
+        Ok(())
     }
 
     /// gets the schema for a table name, schema is stored inside buffer
@@ -322,24 +374,40 @@ impl<KV: KVEngine> Database<KV> {
         if self.buffer.contains_key(name) {
             return self.buffer.get(name);
         }
-        let key = Query::new().add("name", name).encode(&self.tdef).unwrap();
+        let key = Query::new().add("name", name).encode(&self.tdef).ok()?;
 
-        if let Ok(t) = self.kv_engine.get(key) {
-            self.buffer.insert(name.to_string(), Table::decode(t));
-            Some(self.buffer.get(&name.to_string()).unwrap())
+        if let Ok(t) = self.kve.get(key) {
+            self.buffer.insert(name.to_string(), Table::decode(t).ok()?);
+            Some(self.buffer.get(&name.to_string())?)
         } else {
             None
         }
     }
 
+    pub fn drop_table(&mut self, name: &str) -> Result<(), TableError> {
+        if self.get_table(name).is_none() {
+            return Err(TableError::DeleteTableError(
+                "table doesnt exist".to_string(),
+            ));
+        }
+        let qu = Query::new().add(DEF_TABLE_COL1, name).encode(&self.tdef)?;
+
+        self.kve.delete(qu).or_else(|e| {
+            error!(%e, "error when dropping table");
+            Err(TableError::DeleteTableError(
+                "dropping table error when deleting".to_string(),
+            ))
+        })
+    }
+
     fn insert_rec(&mut self, rec: Record, schema: &Table) -> Result<(), TableError> {
-        let (key, value) = rec.encode(schema).unwrap();
-        let _ = self.kv_engine.set(key, value);
+        let (key, value) = rec.encode(schema)?;
+        let _ = self.kve.set(key, value);
 
         Ok(())
     }
     fn get_rec(&self, query: Query, schema: &Table) -> Option<Value> {
-        self.kv_engine.get(query.encode(schema).unwrap()).ok()
+        self.kve.get(query.encode(schema).ok()?).ok()
     }
 }
 
@@ -385,13 +453,16 @@ mod test {
             .add_col("name", TypeCol::BYTES)
             .add_col("age", TypeCol::INTEGER)
             .pkey(1)
-            .build()
+            .build(&mut db)
             .unwrap();
 
         db.insert_table(&table);
 
         let dec_table = db.get_table("mytable").unwrap();
         assert_eq!(*dec_table, table);
+
+        // should reject duplicate
+        assert!(db.insert_table(&table).is_err());
     }
 
     #[test]
@@ -406,7 +477,7 @@ mod test {
             .add_col("age", TypeCol::INTEGER)
             .add_col("id", TypeCol::INTEGER)
             .pkey(1)
-            .build()
+            .build(&mut db)
             .unwrap();
 
         db.insert_table(&table);
@@ -450,7 +521,7 @@ mod test {
             .add_col("age", TypeCol::INTEGER)
             .add_col("id", TypeCol::INTEGER)
             .pkey(2)
-            .build()
+            .build(&mut db)
             .unwrap();
 
         db.insert_table(&table);

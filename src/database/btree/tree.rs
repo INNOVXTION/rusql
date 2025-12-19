@@ -48,9 +48,11 @@ impl<P: Pager> Tree for BTree<P> {
                 return Ok(());
             }
         };
-        // insert kv
+
+        // recursively insert kv
         let updated_root = self.tree_insert(root, key, val);
         let mut split = updated_root.split()?;
+
         // deleting old root and creating a new one
         self.dealloc(self.root_ptr.unwrap());
         if split.0 == 1 {
@@ -65,11 +67,13 @@ impl<P: Pager> Tree for BTree<P> {
         // in case of split tree grows in height
         let mut new_root = TreeNode::new();
         new_root.set_header(NodeType::Node, split.0);
+
         // iterate through node array from split to create new root node
         for (i, node) in split.1.into_iter().enumerate() {
             let key = node.get_key(0)?;
             new_root.kvptr_append(i as u16, self.encode(node), key, "".into())?;
         }
+
         // encoding new root and updating tree ptr
         self.root_ptr = Some(self.encode(new_root));
         debug!(
@@ -183,8 +187,6 @@ impl<P: Pager> BTree<P> {
     }
 
     /// recursive deletion, node = current node, returns updated node in case a deletion happened
-    ///
-    /// TODO: update height
     fn tree_delete(&mut self, mut node: TreeNode, key: &Key) -> Option<TreeNode> {
         let idx = node.lookupidx(key);
         match node.get_type() {
@@ -194,7 +196,7 @@ impl<P: Pager> BTree<P> {
                 }
 
                 if node.get_key(idx).unwrap() == *key {
-                    debug!("deleting key {} at idx {idx}", key.to_string());
+                    debug!("deleting key {} at idx {idx}", key.to_string().unwrap());
                     let mut new = TreeNode::new();
                     new.leaf_kvdelete(&node, idx).unwrap();
                     new.set_header(NodeType::Leaf, node.get_nkeys() - 1);
@@ -216,6 +218,7 @@ impl<P: Pager> BTree<P> {
                     Some(updated_child) => {
                         let mut new = TreeNode::new();
                         let cur_nkeys = node.get_nkeys();
+
                         match node.merge_check(self, &updated_child, idx) {
                             // we need to merge
                             Some(dir) => {
@@ -223,6 +226,7 @@ impl<P: Pager> BTree<P> {
                                 let right: Pointer;
                                 let mut merged_node = TreeNode::new();
                                 let merge_type = updated_child.get_type();
+
                                 match dir {
                                     MergeDirection::Left(sibling) => {
                                         debug!(
@@ -311,10 +315,10 @@ impl<P: Pager> BTree<P> {
                     debug_print_tree(&node, idx);
                 }
                 if node.get_key(idx).unwrap() == key {
-                    debug!("key {key_s} found!");
+                    debug!("key {key_s:?} found!");
                     return Some(node.get_val(idx).unwrap());
                 } else {
-                    debug!("key {key_s} not found!");
+                    debug!("key {key_s:?} not found!");
                     None
                 }
             }
