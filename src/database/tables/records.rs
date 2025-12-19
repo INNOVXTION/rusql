@@ -1,4 +1,5 @@
 use std::cmp::min;
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::rc::Rc;
 use std::{cmp::Ordering, fmt::Write};
@@ -6,6 +7,7 @@ use std::{cmp::Ordering, fmt::Write};
 use tracing::debug;
 
 use crate::database::codec::*;
+use crate::database::tables::tables::Column;
 use crate::database::{
     errors::TableError,
     tables::tables::{Table, TypeCol},
@@ -45,7 +47,7 @@ impl Key {
         u64::from_le_bytes(self.0[..TID_LEN].try_into().unwrap())
     }
 
-    /// its up to the caller to ensure the data is properly formatted
+    /// its up to the caller to ensure the data is properly encoded
     pub fn from_encoded_slice(data: &[u8]) -> Self {
         Key(Rc::from(data))
     }
@@ -72,7 +74,7 @@ impl Key {
     fn decode(self) -> Result<Record, TableError> {
         let mut rec = Record::new();
         for cell in self {
-            rec.add(cell);
+            rec = rec.add(cell);
         }
         Ok(rec)
     }
@@ -273,12 +275,12 @@ impl<'a> Iterator for KeyIterRef<'a> {
 pub(crate) struct Value(Rc<[u8]>);
 
 impl Value {
-    pub fn decode(self) -> Record {
-        let mut r = Record::new();
+    pub fn decode(self) -> Vec<DataCell> {
+        let mut v = Vec::new();
         for cell in self {
-            r.add(cell);
+            v.push(cell);
         }
-        r
+        v
     }
     /// assumes proper encoding
     pub fn from_encoded_slice(data: &[u8]) -> Self {
@@ -490,7 +492,7 @@ impl std::fmt::Display for Value {
         Ok(())
     }
 }
-/// prelude list of data
+/// Record object used to insert data
 pub(crate) struct Record {
     data: Vec<DataCell>,
 }
@@ -500,7 +502,10 @@ impl Record {
         Record { data: vec![] }
     }
 
-    pub fn add<T: InputData>(&mut self, data: T) -> &mut Self {
+    /// add a datacell to the record
+    ///
+    /// inserts from lefts to right
+    pub fn add<T: InputData>(mut self, data: T) -> Self {
         self.data.push(data.into_cell());
         self
     }
@@ -508,7 +513,7 @@ impl Record {
     /// encodes a Record according to a schema into a key value pair starting with schema table id
     ///
     /// validates that record matches with column in schema
-    pub fn encode(&mut self, schema: &Table) -> Result<(Key, Value), TableError> {
+    pub fn encode(self, schema: &Table) -> Result<(Key, Value), TableError> {
         if schema.cols.len() != self.data.len() {
             return Err(TableError::RecordError(
                 "input doesnt match column count".to_string(),
@@ -559,12 +564,74 @@ impl Record {
     }
 }
 
+/// Query object used to construct a key
+///
+/// validates that record matches with column in schema
+///
+/// currently limited to querying for primary key only
+pub(crate) struct Query {
+    data: HashMap<String, DataCell>,
+}
+
+impl Query {
+    pub fn new() -> Self {
+        Query {
+            data: HashMap::new(),
+        }
+    }
+
+    /// add the column and primary key which you want to query
+    pub fn add<T: InputData>(mut self, col: &str, value: T) -> Self {
+        self.data.insert(col.to_string(), value.into_cell());
+        self
+    }
+
+    /// encodes a Query according into a key
+    ///
+    /// validates that record matches with column in schema
+    ///
+    /// currently limited to querying for primary key only
+    pub fn encode(self, schema: &Table) -> Result<Key, TableError> {
+        let mut buf = Vec::<u8>::new();
+
+        // encoding table id
+        buf.extend_from_slice(&schema.id.to_le_bytes());
+
+        // encoding primary keys
+        for i in 0..schema.pkeys {
+            let col = &schema.cols[i as usize];
+
+            match self.data.get(&col.title) {
+                Some(DataCell::Str(s)) => {
+                    if col.data_type == TypeCol::BYTES {
+                        buf.extend_from_slice(&String::encode(s));
+                    } else {
+                        // invalid data type for column
+                        return Err(TableError::RecordError("expected string".to_string()));
+                    }
+                }
+                Some(DataCell::Int(int)) => {
+                    if col.data_type == TypeCol::INTEGER {
+                        buf.extend_from_slice(&i64::encode(int));
+                    } else {
+                        // invalid data type for column
+                        return Err(TableError::RecordError("expected int".to_string()));
+                    }
+                }
+                // invalid column name
+                None => return Err(TableError::RecordError("invalid column name".to_string())),
+            }
+        }
+        Ok(Key::from_encoded_slice(&buf))
+    }
+}
+
 pub(crate) enum DataCell {
     Str(String),
     Int(i64),
 }
 
-trait InputData {
+pub(crate) trait InputData {
     fn into_cell(self) -> DataCell;
 }
 
@@ -633,10 +700,7 @@ mod test {
         let i1 = 10;
         let s2 = "world";
 
-        let mut rec = Record::new();
-        rec.add(s1);
-        rec.add(i1);
-        rec.add(s2);
+        let rec = Record::new().add(s1).add(i1).add(s2);
 
         let (key, value) = rec.encode(&table).unwrap();
         assert_eq!(key.to_string(), "2hello10");

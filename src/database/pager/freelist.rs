@@ -45,7 +45,6 @@ pub(crate) trait GC {
 impl<P: Pager> GC for FreeList<P> {
     type Codec = P;
     /// removes a page from the head, decrement head seq
-    /// PopHead
     fn get(&mut self) -> Option<Pointer> {
         match self.pop_head() {
             (Some(ptr), Some(head)) => {
@@ -83,6 +82,7 @@ impl<P: Pager> GC for FreeList<P> {
                     self.tail_page = Some(new_node);
                     self.tail_seq = 0; // experimental
                 }
+
                 // setting new page
                 (Some(next), None) => {
                     debug!("got page from head...");
@@ -91,6 +91,7 @@ impl<P: Pager> GC for FreeList<P> {
                     self.tail_page = Some(next);
                     self.tail_seq = 0; // experimental
                 }
+
                 // getting the last item of the head node and the head node itself
                 (Some(next), Some(head)) => {
                     debug!("got last ptr and head!.");
@@ -122,6 +123,7 @@ impl<P: Pager> GC for FreeList<P> {
 
         let max = self.max_seq;
         let mut node = self.decode(self.head_page.unwrap());
+
         while head < max && head_page != tail_page {
             list.push(node.get_ptr(seq_to_idx(head)));
             head += 1;
@@ -194,13 +196,15 @@ impl<P: Pager> FreeList<P> {
             // no free page available
             return (None, None);
         }
+
         let ptr = self.update_get_ptr(self.head_page.unwrap(), seq_to_idx(self.head_seq));
+        self.head_seq += 1;
         debug!(
             "getting ptr {} from head at {}",
             ptr,
             self.head_page.unwrap()
         );
-        self.head_seq += 1;
+
         // in case the head page is empty we reuse it
         if seq_to_idx(self.head_seq) == 0 {
             let head = self.head_page.unwrap();

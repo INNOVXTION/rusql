@@ -6,7 +6,7 @@ use crate::database::{
     pager::diskpager::KVEngine,
     tables::{
         Key,
-        records::{Record, Value},
+        records::{DataCell, Query, Record, Value},
     },
 };
 use serde::{Deserialize, Serialize};
@@ -36,14 +36,14 @@ use serde::{Deserialize, Serialize};
 
 // fixed table which holds all the schemas
 const DEF_TABLE_NAME: &'static str = "tdef";
-const DEF_TABLE_COL1: &'static str = "tname";
+const DEF_TABLE_COL1: &'static str = "name";
 const DEF_TABLE_COL2: &'static str = "def";
 const DEF_TABLE_ID: u64 = 1;
 const DEF_TABLE_PKEYS: u16 = 1;
 
 // fixed meta table holding all the unique table ids
 const META_TABLE_NAME: &'static str = "tmeta";
-const META_TABLE_COL1: &'static str = "tname";
+const META_TABLE_COL1: &'static str = "name";
 const META_TABLE_COL2: &'static str = "tid";
 const META_TABLE_ID: u64 = 2;
 const META_TABLE_PKEYS: u16 = 1;
@@ -64,12 +64,16 @@ impl MetaTable {
                 },
                 Column {
                     title: META_TABLE_COL2.to_string(),
-                    data_type: TypeCol::BYTES,
+                    data_type: TypeCol::INTEGER,
                 },
             ],
             pkeys: META_TABLE_PKEYS,
             _priv: PhantomData,
         })
+    }
+
+    fn as_table(self) -> Table {
+        self.0
     }
 }
 
@@ -173,7 +177,7 @@ impl TableBuilder {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub(crate) struct Table {
     pub(crate) name: String,
     pub(crate) id: u64,
@@ -185,7 +189,7 @@ pub(crate) struct Table {
 }
 
 impl Table {
-    /// to table to JSON string
+    /// encodes table to JSON string
     pub fn encode(&self) -> String {
         serde_json::to_string(&self).unwrap()
     }
@@ -206,13 +210,13 @@ impl Table {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub(crate) struct Column {
     pub title: String,
     pub data_type: TypeCol,
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub(crate) enum TypeCol {
     BYTES = 1,
     INTEGER = 2,
@@ -230,8 +234,7 @@ impl TypeCol {
 
 struct Database<KV: KVEngine> {
     tdef: TDefTable,
-    mtab: MetaTable,
-    buffer: HashMap<String, Table>,
+    buffer: HashMap<String, Table>, // table name as key
     kv_engine: KV,
 }
 
@@ -239,40 +242,93 @@ impl<KV: KVEngine> Database<KV> {
     pub fn new(pager: KV) -> Self {
         Database {
             tdef: TDefTable::new(),
-            mtab: MetaTable::new(),
             buffer: HashMap::new(),
             kv_engine: pager,
         }
     }
 
-    pub fn insert_table(&mut self, table: &Table) {
+    pub fn new_tid(&mut self) -> u64 {
+        let key = Query::new()
+            .add(META_TABLE_COL1, "id") // we query name column, where pkey = "id"
+            .encode(&self.tdef)
+            .unwrap();
+
+        match self.kv_engine.get(key).ok() {
+            Some(value) => {
+                let meta = self.get_meta();
+                let res = value.decode();
+
+                if let DataCell::Int(i) = res[0] {
+                    // incrementing the ID
+                    let (k, v) = Record::new().add("id").add(i + 1).encode(&meta).unwrap();
+                    self.kv_engine.set(k, v);
+
+                    i as u64
+                } else {
+                    // error when types dont match
+                    todo!()
+                }
+            }
+            // no id entry yet
+            None => {
+                let meta = self.get_meta();
+
+                let (k, v) = Record::new().add("id").add(3).encode(&meta).unwrap(); // tid 1 and 2 are taken
+                self.kv_engine.set(k, v);
+
+                3
+            }
+        }
+    }
+
+    fn get_meta(&mut self) -> &Table {
         // check buffer
-        if let Some(t) = self.buffer.get(&table.name) {
-            return ();
+        if self.buffer.contains_key(META_TABLE_NAME) {
+            return self.buffer.get(META_TABLE_NAME).unwrap();
         }
 
+        let meta = MetaTable::new().as_table();
+        self.buffer.insert(META_TABLE_NAME.to_string(), meta);
+        self.buffer.get(META_TABLE_NAME).unwrap()
+    }
+
+    /// overwrites table in buffer
+    pub fn insert_table(&mut self, table: &Table) {
         let (key, value) = Record::new()
             .add(table.name.clone())
             .add(table.encode())
             .encode(&self.tdef)
             .unwrap();
+        let _ = self.kv_engine.set(key, value);
 
-        self.kv_engine.set(key, value);
-        ()
+        // updating buffer
+        self.buffer.insert(table.name.clone(), table.clone());
     }
 
-    pub fn get_table(&mut self, name: &str) -> Option<Table> {
+    /// gets the schema for a table name, schema is stored inside buffer
+    pub fn get_table(&mut self, name: &str) -> Option<&Table> {
         // check buffer
-        if let Some(t) = self.buffer.remove(name) {
-            return Some(t);
+        if self.buffer.contains_key(name) {
+            return self.buffer.get(name);
         }
-        let (key, _) = Record::new().add(name).add("").encode(&self.tdef).unwrap();
+        let key = Query::new().add("name", name).encode(&self.tdef).unwrap();
 
         if let Ok(t) = self.kv_engine.get(key) {
-            Some(Table::decode(t))
+            self.buffer.insert(name.to_string(), Table::decode(t));
+            Some(self.buffer.get(&name.to_string()).unwrap())
         } else {
             None
         }
+    }
+
+    fn insert_rec(&mut self, rec: Record, schema: &Table) -> Result<(), TableError> {
+        let (key, value) = rec.encode(schema).unwrap();
+        let _ = self.kv_engine.set(key, value);
+
+        Ok(())
+    }
+    fn get_rec(&self, query: Query, schema: &Table) -> Option<Value> {
+        self.kv_engine.get(query.encode(schema).unwrap()).ok()
     }
 }
 
@@ -289,12 +345,14 @@ trait DatabaseAPI {
 
 #[cfg(test)]
 mod test {
-    use crate::database::pager::{EnvoyV1, diskpager::Envoy, mempage_tree};
+    use crate::database::{
+        pager::{diskpager::Envoy, mempage_tree},
+        tables::tables,
+    };
 
     use super::*;
     use crate::database::helper::cleanup_file;
     use test_log::test;
-    use tracing::{Level, info, span};
 
     #[test]
     fn meta_page() {
@@ -306,7 +364,7 @@ mod test {
     }
 
     #[test]
-    fn tdef1() {
+    fn tables1() {
         let pager = mempage_tree();
         let mut db = Database::new(pager);
 
@@ -322,6 +380,40 @@ mod test {
         db.insert_table(&table);
 
         let dec_table = db.get_table("mytable").unwrap();
-        assert_eq!(dec_table, table);
+        assert_eq!(*dec_table, table);
+    }
+
+    #[test]
+    fn tables2() {
+        let pager = mempage_tree();
+        let mut db = Database::new(pager);
+
+        let table = TableBuilder::new()
+            .id(3)
+            .name("mytable")
+            .add_col("name", TypeCol::BYTES)
+            .add_col("age", TypeCol::INTEGER)
+            .pkey(1)
+            .build()
+            .unwrap();
+
+        db.insert_table(&table);
+
+        let mut entries = vec![];
+        entries.push(Record::new().add("Alice").add(20));
+        entries.push(Record::new().add("Bob").add(15));
+        entries.push(Record::new().add("Charlie").add(25));
+
+        for entry in entries {
+            db.insert_rec(entry, &table).unwrap()
+        }
+
+        let q1 = Query::new().add("name", "Alice");
+        let q2 = Query::new().add("name", "Bob");
+        let q3 = Query::new().add("name", "Charlie");
+
+        assert_eq!(db.get_rec(q1, &table).unwrap().to_string(), "20");
+        assert_eq!(db.get_rec(q2, &table).unwrap().to_string(), "15");
+        assert_eq!(db.get_rec(q3, &table).unwrap().to_string(), "25");
     }
 }
