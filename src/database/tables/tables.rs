@@ -38,6 +38,7 @@ use serde::{Deserialize, Serialize};
 const DEF_TABLE_NAME: &'static str = "tdef";
 const DEF_TABLE_COL1: &'static str = "name";
 const DEF_TABLE_COL2: &'static str = "def";
+
 const DEF_TABLE_ID: u64 = 1;
 const DEF_TABLE_PKEYS: u16 = 1;
 
@@ -45,6 +46,8 @@ const DEF_TABLE_PKEYS: u16 = 1;
 const META_TABLE_NAME: &'static str = "tmeta";
 const META_TABLE_COL1: &'static str = "name";
 const META_TABLE_COL2: &'static str = "tid";
+const META_TABLE_ID_ROW: &'static str = "tid";
+
 const META_TABLE_ID: u64 = 2;
 const META_TABLE_PKEYS: u16 = 1;
 
@@ -249,8 +252,8 @@ impl<KV: KVEngine> Database<KV> {
 
     pub fn new_tid(&mut self) -> u64 {
         let key = Query::new()
-            .add(META_TABLE_COL1, "id") // we query name column, where pkey = "id"
-            .encode(&self.tdef)
+            .add(META_TABLE_COL1, META_TABLE_ID_ROW) // we query name column, where pkey = tid
+            .encode(&self.get_meta())
             .unwrap();
 
         match self.kv_engine.get(key).ok() {
@@ -260,10 +263,14 @@ impl<KV: KVEngine> Database<KV> {
 
                 if let DataCell::Int(i) = res[0] {
                     // incrementing the ID
-                    let (k, v) = Record::new().add("id").add(i + 1).encode(&meta).unwrap();
+                    let (k, v) = Record::new()
+                        .add(META_TABLE_ID_ROW)
+                        .add(i + 1)
+                        .encode(&meta)
+                        .unwrap();
                     self.kv_engine.set(k, v);
 
-                    i as u64
+                    i as u64 + 1
                 } else {
                     // error when types dont match
                     todo!()
@@ -273,7 +280,11 @@ impl<KV: KVEngine> Database<KV> {
             None => {
                 let meta = self.get_meta();
 
-                let (k, v) = Record::new().add("id").add(3).encode(&meta).unwrap(); // tid 1 and 2 are taken
+                let (k, v) = Record::new()
+                    .add(META_TABLE_ID_ROW)
+                    .add(3)
+                    .encode(&meta)
+                    .unwrap(); // tid 1 and 2 are taken
                 self.kv_engine.set(k, v);
 
                 3
@@ -364,7 +375,7 @@ mod test {
     }
 
     #[test]
-    fn tables1() {
+    fn tables_insert1() {
         let pager = mempage_tree();
         let mut db = Database::new(pager);
 
@@ -384,7 +395,7 @@ mod test {
     }
 
     #[test]
-    fn tables2() {
+    fn tables_insert2() {
         let pager = mempage_tree();
         let mut db = Database::new(pager);
 
@@ -425,5 +436,53 @@ mod test {
         let q3_res = db.get_rec(q3, &table).unwrap().decode();
         assert_eq!(q3_res[0], DataCell::Int(25));
         assert_eq!(q3_res[1], DataCell::Int(3));
+    }
+
+    #[test]
+    fn query_input() {
+        let pager = mempage_tree();
+        let mut db = Database::new(pager);
+
+        let table = TableBuilder::new()
+            .id(3)
+            .name("mytable")
+            .add_col("name", TypeCol::BYTES)
+            .add_col("age", TypeCol::INTEGER)
+            .add_col("id", TypeCol::INTEGER)
+            .pkey(2)
+            .build()
+            .unwrap();
+
+        db.insert_table(&table);
+        let tables = db.get_table("mytable");
+
+        let good_query = Query::new().add("name", "Alice").add("age", 10);
+
+        assert!(good_query.encode(&table).is_ok());
+
+        let good_query = Query::new().add("name", "Alice").add("age", 10);
+        let unordered = Query::new().add("age", 10).add("name", "Alice");
+        assert_eq!(
+            good_query.encode(&table).unwrap(),
+            unordered.encode(&table).unwrap()
+        );
+
+        let bad_query = Query::new().add("name", "Alice");
+        assert!(bad_query.encode(&table).is_err());
+
+        let bad_query = Query::new().add("dfasdf", "fasdf");
+        assert!(bad_query.encode(&table).is_err());
+
+        let bad_query = Query::new();
+        assert!(bad_query.encode(&table).is_err())
+    }
+
+    #[test]
+    fn table_ids() {
+        let pager = mempage_tree();
+        let mut db = Database::new(pager);
+        assert_eq!(db.new_tid(), 3);
+        assert_eq!(db.new_tid(), 4);
+        assert_eq!(db.new_tid(), 5);
     }
 }

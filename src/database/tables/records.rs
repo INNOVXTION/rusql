@@ -566,9 +566,7 @@ impl Record {
 
 /// Query object used to construct a key
 ///
-/// validates that record matches with column in schema
-///
-/// currently limited to querying for primary key only
+/// validates that record matches with primary key columns in schema
 pub(crate) struct Query {
     data: HashMap<String, DataCell>,
 }
