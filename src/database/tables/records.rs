@@ -626,6 +626,7 @@ impl Query {
     }
 }
 
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum DataCell {
     Str(String),
     Int(i64),

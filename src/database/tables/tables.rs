@@ -393,16 +393,18 @@ mod test {
             .name("mytable")
             .add_col("name", TypeCol::BYTES)
             .add_col("age", TypeCol::INTEGER)
+            .add_col("id", TypeCol::INTEGER)
             .pkey(1)
             .build()
             .unwrap();
 
         db.insert_table(&table);
+        let tables = db.get_table("mytable");
 
         let mut entries = vec![];
-        entries.push(Record::new().add("Alice").add(20));
-        entries.push(Record::new().add("Bob").add(15));
-        entries.push(Record::new().add("Charlie").add(25));
+        entries.push(Record::new().add("Alice").add(20).add(1));
+        entries.push(Record::new().add("Bob").add(15).add(2));
+        entries.push(Record::new().add("Charlie").add(25).add(3));
 
         for entry in entries {
             db.insert_rec(entry, &table).unwrap()
@@ -412,8 +414,16 @@ mod test {
         let q2 = Query::new().add("name", "Bob");
         let q3 = Query::new().add("name", "Charlie");
 
-        assert_eq!(db.get_rec(q1, &table).unwrap().to_string(), "20");
-        assert_eq!(db.get_rec(q2, &table).unwrap().to_string(), "15");
-        assert_eq!(db.get_rec(q3, &table).unwrap().to_string(), "25");
+        let q1_res = db.get_rec(q1, &table).unwrap().decode();
+        assert_eq!(q1_res[0], DataCell::Int(20));
+        assert_eq!(q1_res[1], DataCell::Int(1));
+
+        let q2_res = db.get_rec(q2, &table).unwrap().decode();
+        assert_eq!(q2_res[0], DataCell::Int(15));
+        assert_eq!(q2_res[1], DataCell::Int(2));
+
+        let q3_res = db.get_rec(q3, &table).unwrap().decode();
+        assert_eq!(q3_res[0], DataCell::Int(25));
+        assert_eq!(q3_res[1], DataCell::Int(3));
     }
 }
