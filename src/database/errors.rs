@@ -5,6 +5,8 @@ use std::{
     str::Utf8Error,
 };
 
+use crate::database::tables::{DataCell, TypeCol};
+
 use rustix::io::Errno;
 
 use thiserror::Error;
@@ -147,12 +149,12 @@ impl std::error::Error for FLError {}
 #[derive(Error, Debug)]
 pub(crate) enum TableError {
     #[error("invalid Record (expected {expected:?}, found {found:?})")]
-    RecordEncodeError { expected: String, found: String },
+    RecordEncodeError { expected: TypeCol, found: String },
     #[error("Record error {0}")]
     RecordError(String),
 
     #[error("invalid Query (expected {expected:?}, found {found:?})")]
-    QueryEncodeError { expected: String, found: String },
+    QueryEncodeError { expected: TypeCol, found: String },
     #[error("Query error {0}")]
     QueryError(String),
 
@@ -176,6 +178,8 @@ pub(crate) enum TableError {
 
     #[error("unknown error...")]
     UnknownError,
+    #[error("string format error {0}")]
+    StringFormatError(#[from] std::fmt::Error),
 
     #[error("Key encode error {0}")]
     KeyEncodeError(String),
@@ -190,4 +194,7 @@ pub(crate) enum TableError {
     ValueDecodeError(String),
     #[error("Value string error {0}")]
     ValueStringError(std::io::Error),
+
+    #[error("Table id error {0}")]
+    TableIdError(String),
 }

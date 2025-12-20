@@ -4,7 +4,7 @@ use std::ffi::OsString;
 use std::rc::Rc;
 use std::{cmp::Ordering, fmt::Write};
 
-use tracing::debug;
+use tracing::{debug, error};
 
 use crate::database::codec::*;
 use crate::database::tables::tables::Column;
@@ -291,8 +291,8 @@ impl Value {
         let mut st = String::new();
         for cell in self.iter() {
             match cell {
-                DataCellRef::Str(s) => write!(st, "{}", s),
-                DataCellRef::Int(i) => write!(st, "{}", i),
+                DataCellRef::Str(s) => write!(st, "{}", s)?,
+                DataCellRef::Int(i) => write!(st, "{}", i)?,
             };
         }
         Ok(st)
@@ -493,6 +493,7 @@ impl std::fmt::Display for Value {
     }
 }
 /// Record object used to insert data
+#[derive(Debug)]
 pub(crate) struct Record {
     data: Vec<DataCell>,
 }
@@ -515,6 +516,7 @@ impl Record {
     /// validates that record matches with column in schema
     pub fn encode(self, schema: &Table) -> Result<(Key, Value), TableError> {
         if schema.cols.len() != self.data.len() {
+            error!(?schema, "input doesnt match column count");
             return Err(TableError::RecordError(
                 "input doesnt match column count".to_string(),
             ));
@@ -542,17 +544,33 @@ impl Record {
                         buf.extend_from_slice(&str);
                         debug!(idx, "encoding string");
                     } else {
-                        return Err(TableError::RecordError("expected str, got int".to_string()));
+                        error!(
+                            "expected {:?}, got {}",
+                            TypeCol::BYTES,
+                            format!("{:?}", &self.data[i])
+                        );
+                        return Err(TableError::RecordEncodeError {
+                            expected: TypeCol::BYTES,
+                            found: format!("{:?}", &self.data[i]),
+                        });
                     }
                 }
                 TypeCol::INTEGER => {
-                    if let DataCell::Int(num) = &self.data[i] {
+                    if let DataCell::Int(num) = self.data[i] {
                         let num = num.encode();
                         idx += num.len();
                         buf.extend_from_slice(&num);
                         debug!(idx, "encoding integer");
                     } else {
-                        return Err(TableError::RecordError("expected int, got str".to_string()));
+                        error!(
+                            "expected {:?}, got {}",
+                            TypeCol::BYTES,
+                            format!("{:?}", &self.data[i])
+                        );
+                        return Err(TableError::RecordEncodeError {
+                            expected: TypeCol::INTEGER,
+                            found: format!("{:?}", &self.data[i]),
+                        });
                     }
                 }
             }
@@ -567,6 +585,7 @@ impl Record {
 /// Query object used to construct a key
 ///
 /// validates that record matches with primary key columns in schema
+#[derive(Debug)]
 pub(crate) struct Query {
     data: HashMap<String, DataCell>,
 }
@@ -604,16 +623,22 @@ impl Query {
                     if col.data_type == TypeCol::BYTES {
                         buf.extend_from_slice(&String::encode(s));
                     } else {
-                        // invalid data type for column
-                        return Err(TableError::RecordError("expected string".to_string()));
+                        error!("expected {:?}, got {:?}", TypeCol::BYTES, col.data_type);
+                        return Err(TableError::QueryEncodeError {
+                            expected: TypeCol::BYTES,
+                            found: format!("{:?}", col.data_type),
+                        });
                     }
                 }
                 Some(DataCell::Int(int)) => {
                     if col.data_type == TypeCol::INTEGER {
                         buf.extend_from_slice(&i64::encode(int));
                     } else {
-                        // invalid data type for column
-                        return Err(TableError::RecordError("expected int".to_string()));
+                        error!("expected {:?}, got {:?}", TypeCol::BYTES, col.data_type);
+                        return Err(TableError::QueryEncodeError {
+                            expected: TypeCol::BYTES,
+                            found: format!("{:?}", col.data_type),
+                        });
                     }
                 }
                 // invalid column name
@@ -677,7 +702,6 @@ impl InputData for i8 {
 
 #[cfg(test)]
 mod test {
-
     use crate::database::{pager::mempage_tree, tables::tables::Database};
 
     use super::super::tables::TableBuilder;

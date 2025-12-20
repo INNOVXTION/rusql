@@ -1,4 +1,3 @@
-use std::io::Write;
 use std::ops::{Deref, DerefMut};
 
 use super::super::codec::*;

@@ -3,6 +3,7 @@ use std::rc::Weak;
 
 use tracing::debug;
 use tracing::info;
+use tracing::instrument;
 
 use crate::database::{
     btree::node::*, errors::Error, helper::debug_print_tree, pager::diskpager::NodeFlag, types::*,
@@ -30,6 +31,8 @@ pub(crate) trait Tree {
 
 impl<P: Pager> Tree for BTree<P> {
     type Codec = P;
+
+    #[instrument(name = "tree insert", skip_all)]
     fn insert(&mut self, key: Key, val: Value) -> Result<(), Error> {
         info!("inserting key: {key}, val: {val}",);
         // get root node
@@ -83,6 +86,7 @@ impl<P: Pager> Tree for BTree<P> {
         Ok(())
     }
 
+    #[instrument(name = "tree delete", skip_all)]
     fn delete(&mut self, key: Key) -> Result<(), Error> {
         info!("deleting kv: {key}",);
         let root_ptr = match self.root_ptr {
@@ -123,10 +127,13 @@ impl<P: Pager> Tree for BTree<P> {
         }
         Ok(())
     }
+
+    #[instrument(name = "tree search", skip_all)]
     fn search(&self, key: Key) -> Option<Value> {
         info!("searching: {key}",);
         self.tree_search(self.decode(self.root_ptr?), key)
     }
+
     fn get_root(&self) -> Option<Pointer> {
         self.root_ptr
     }

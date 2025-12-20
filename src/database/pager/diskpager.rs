@@ -191,7 +191,7 @@ impl EnvoyV1 {
     /// initializes pager
     ///
     /// opens file, and sets up callbacks for the tree
-    #[instrument]
+
     pub fn open(path: &'static str) -> Result<Rc<Self>, Error> {
         let mut pager = Rc::new_cyclic(|w| EnvoyV1 {
             path,
@@ -227,6 +227,7 @@ impl EnvoyV1 {
         Ok(pager)
     }
 
+    #[instrument(name = "pager get", skip_all)]
     fn get(&self, key: Key) -> Result<Value, Error> {
         info!("getting...");
         self.tree
@@ -235,6 +236,7 @@ impl EnvoyV1 {
             .ok_or(Error::SearchError("value not found".to_string()))
     }
 
+    #[instrument(name = "pager set", skip_all)]
     fn set(&self, key: Key, val: Value) -> Result<(), Error> {
         let recov_page = metapage_save(self); // saving current metapage for possible rollback
         info!("inserting...");
@@ -245,6 +247,7 @@ impl EnvoyV1 {
         self.update_or_revert(&recov_page)
     }
 
+    #[instrument(name = "pager delete", skip_all)]
     fn delete(&self, key: Key) -> Result<(), Error> {
         info!("deleting...");
         let recov_page = metapage_save(self); // saving current metapage for possible rollback
@@ -252,6 +255,7 @@ impl EnvoyV1 {
         self.update_or_revert(&recov_page)
     }
 
+    #[instrument(name = "pager update file", skip_all)]
     fn update_or_revert(&self, recov_page: &MetaPage) -> Result<(), Error> {
         debug!("tree operation complete, updating file");
         if self.failed.get() {
