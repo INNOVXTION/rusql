@@ -2,7 +2,7 @@ use std::{collections::HashMap, marker::PhantomData, ops::Deref};
 
 use crate::database::{
     codec::Codec,
-    errors::TableError,
+    errors::{Error, Result, TableError},
     pager::diskpager::KVEngine,
     tables::{
         Key,
@@ -10,7 +10,7 @@ use crate::database::{
     },
 };
 use serde::{Deserialize, Serialize};
-use tracing::{Level, debug, error, info, instrument, span};
+use tracing::{debug, error, info, instrument};
 
 /*
  * Encoding Layout:
@@ -154,14 +154,14 @@ impl TableBuilder {
     }
 
     /// parsing is WIP
-    pub fn build<KV: KVEngine>(self, pager: &mut Database<KV>) -> Result<Table, TableError> {
+    pub fn build<KV: KVEngine>(self, pager: &mut Database<KV>) -> Result<Table> {
         let name = match self.name {
             Some(n) => {
                 if n.is_empty() {
                     error!("table creation error");
-                    return Err(TableError::TableBuildError(
+                    Err(TableError::TableBuildError(
                         "must provide a name".to_string(),
-                    ));
+                    ))?;
                 }
                 n
             }
@@ -169,7 +169,7 @@ impl TableBuilder {
                 error!("table creation error");
                 return Err(TableError::TableBuildError(
                     "must provide a name".to_string(),
-                ));
+                ))?;
             }
         };
 
@@ -183,7 +183,7 @@ impl TableBuilder {
             error!("table creation error");
             return Err(TableError::TableBuildError(
                 "must provide at least 2 columns".to_string(),
-            ));
+            ))?;
         }
 
         let pkeys = match self.pkeys {
@@ -192,13 +192,13 @@ impl TableBuilder {
                     error!("table creation error");
                     return Err(TableError::TableBuildError(
                         "primary key cant be zero".to_string(),
-                    ));
+                    ))?;
                 }
                 if cols.len() < pk as usize {
                     error!("table creation error");
                     return Err(TableError::TableBuildError(
                         "cant have more primary keys than columns".to_string(),
-                    ));
+                    ))?;
                 }
                 pk
             }
@@ -206,7 +206,7 @@ impl TableBuilder {
                 error!("table creation error");
                 return Err(TableError::TableBuildError(
                     "must designate primary keys".to_string(),
-                ));
+                ))?;
             }
         };
 
@@ -233,18 +233,18 @@ pub(crate) struct Table {
 
 impl Table {
     /// encodes table to JSON string
-    pub fn encode(&self) -> Result<String, TableError> {
+    pub fn encode(&self) -> Result<String> {
         serde_json::to_string(&self).map_err(|e| {
             error!(%e, "error when encoding table");
-            TableError::EncodeTableError(e)
+            TableError::EncodeTableError(e).into()
         })
     }
 
     /// decodes JSON string into table
-    pub fn decode(value: Value) -> Result<Self, TableError> {
+    pub fn decode(value: Value) -> Result<Self> {
         serde_json::from_str(&value.to_string()?).map_err(|e| {
             error!(%e, "error when decoding table");
-            TableError::EncodeTableError(e)
+            TableError::EncodeTableError(e).into()
         })
     }
 }
@@ -293,7 +293,7 @@ impl<KV: KVEngine> Database<KV> {
     }
 
     #[instrument(name = "new table id", skip_all)]
-    pub fn new_tid(&mut self) -> Result<u64, TableError> {
+    pub fn new_tid(&mut self) -> Result<u64> {
         let key = Query::new()
             .add(META_TABLE_COL1, META_TABLE_ID_ROW) // we query name column, where pkey = tid
             .encode(&self.get_meta())
@@ -321,7 +321,7 @@ impl<KV: KVEngine> Database<KV> {
                     // error when types dont match
                     return Err(TableError::TableIdError(
                         "id doesnt match expected int".to_string(),
-                    ));
+                    ))?;
                 }
             }
             // no id entry yet
@@ -356,12 +356,13 @@ impl<KV: KVEngine> Database<KV> {
 
     /// overwrites table in buffer
     #[instrument(name = "insert table", skip_all)]
-    pub fn insert_table(&mut self, table: &Table) -> Result<(), TableError> {
+    pub fn insert_table(&mut self, table: &Table) -> Result<()> {
         info!(?table, "inserting table");
         if self.get_table(&table.name).is_some() {
+            error!(name = table.name, "table with provided name exists already");
             return Err(TableError::InsertTableError(
                 "table with provided name exists already".into(),
-            ));
+            ))?;
         }
 
         let (key, value) = Record::new()
@@ -401,26 +402,24 @@ impl<KV: KVEngine> Database<KV> {
     }
 
     #[instrument(name = "drop table", skip_all)]
-    pub fn drop_table(&mut self, name: &str) -> Result<(), TableError> {
+    pub fn drop_table(&mut self, name: &str) -> Result<()> {
         info!(name, "dropping table");
         if self.get_table(name).is_none() {
             error!("table doesnt exist");
             return Err(TableError::DeleteTableError(
                 "table doesnt exist".to_string(),
-            ));
+            ))?;
         }
         let qu = Query::new().add(DEF_TABLE_COL1, name).encode(&self.tdef)?;
 
-        self.kve.delete(qu).or_else(|e| {
+        self.kve.delete(qu).map_err(|e| {
             error!(%e, "error when dropping table");
-            Err(TableError::DeleteTableError(
-                "dropping table error when deleting".to_string(),
-            ))
+            TableError::DeleteTableError("dropping table error when deleting".to_string()).into()
         })
     }
 
     #[instrument(name = "insert rec", skip_all)]
-    fn insert_rec(&mut self, rec: Record, schema: &Table) -> Result<(), TableError> {
+    fn insert_rec(&mut self, rec: Record, schema: &Table) -> Result<()> {
         info!(?rec, "inserting record");
 
         let (key, value) = rec.encode(schema)?;

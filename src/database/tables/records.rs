@@ -642,7 +642,7 @@ impl Query {
                     }
                 }
                 // invalid column name
-                None => return Err(TableError::RecordError("invalid column name".to_string())),
+                None => return Err(TableError::QueryError("invalid column name".to_string())),
             }
         }
         Ok(Key::from_encoded_slice(&buf))

@@ -8,26 +8,29 @@ use std::{
 use crate::database::tables::{DataCell, TypeCol};
 
 use rustix::io::Errno;
-
 use thiserror::Error;
+
+pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, Error)]
 pub enum Error {
     IndexError,
-    FileError(io::Error),
-    IntCastError(Option<TryFromIntError>),
-    StrCastError(Utf8Error),
     SplitError(String),
     MergeError(String),
     InsertError(String),
     DeleteError(String),
-    PagerError(PagerError),
     PagerSetError,
     InvalidInput(&'static str),
-    FreeListError(FLError),
     SearchError(String),
 
+    PagerError(#[from] PagerError),
+    FreeListError(#[from] FLError),
     TableError(#[from] TableError),
+
+    StrCastError(#[from] Utf8Error),
+    IntCastError(#[from] Option<TryFromIntError>),
+
+    FileError(#[from] io::Error),
 }
 
 impl Display for Error {
@@ -53,23 +56,7 @@ impl Display for Error {
     }
 }
 
-impl From<io::Error> for Error {
-    fn from(err: io::Error) -> Self {
-        Error::FileError(err)
-    }
-}
-impl From<TryFromIntError> for Error {
-    fn from(err: TryFromIntError) -> Self {
-        Error::IntCastError(Some(err))
-    }
-}
-impl From<Utf8Error> for Error {
-    fn from(value: Utf8Error) -> Self {
-        Error::StrCastError(value)
-    }
-}
-
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum PagerError {
     UnkownError,
     PageNotFound(u64),
@@ -106,14 +93,6 @@ impl Display for PagerError {
     }
 }
 
-impl From<FLError> for Error {
-    fn from(value: FLError) -> Self {
-        Error::FreeListError(value)
-    }
-}
-
-impl std::error::Error for PagerError {}
-
 impl From<io::Error> for PagerError {
     fn from(value: io::Error) -> Self {
         Self::CodecError(value)
@@ -126,7 +105,7 @@ impl From<rustix::io::Errno> for PagerError {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum FLError {
     UnknownError,
 }
@@ -139,8 +118,6 @@ impl Display for FLError {
     }
 }
 
-impl std::error::Error for FLError {}
-
 // #[error("{var}")]    ⟶   write!("{}", self.var)
 // #[error("{0}")]      ⟶   write!("{}", self.0)
 // #[error("{var:?}")]  ⟶   write!("{:?}", self.var)
@@ -148,16 +125,19 @@ impl std::error::Error for FLError {}
 
 #[derive(Error, Debug)]
 pub(crate) enum TableError {
+    // Record
     #[error("invalid Record (expected {expected:?}, found {found:?})")]
     RecordEncodeError { expected: TypeCol, found: String },
     #[error("Record error {0}")]
     RecordError(String),
 
+    // Query
     #[error("invalid Query (expected {expected:?}, found {found:?})")]
     QueryEncodeError { expected: TypeCol, found: String },
     #[error("Query error {0}")]
     QueryError(String),
 
+    // Table
     #[error("Table build error {0}")]
     TableBuildError(String),
     #[error("Insert table error {0}")]
@@ -170,17 +150,22 @@ pub(crate) enum TableError {
     EncodeTableError(serde_json::Error),
     #[error("Delete table error {0}")]
     DecodeTableError(serde_json::Error),
+    #[error("Table id error {0}")]
+    TableIdError(String),
 
+    // Cell
     #[error("Invalid input")]
     CellEncodeError,
     #[error("Error when decoding cell")]
     CellDecodeError,
 
+    // String
     #[error("unknown error...")]
     UnknownError,
     #[error("string format error {0}")]
     StringFormatError(#[from] std::fmt::Error),
 
+    // Key
     #[error("Key encode error {0}")]
     KeyEncodeError(String),
     #[error("Key decode error {0}")]
@@ -188,13 +173,11 @@ pub(crate) enum TableError {
     #[error("Key string error {0}")]
     KeyStringError(#[from] std::io::Error),
 
+    // Value
     #[error("Value encode error {0}")]
     ValueEncodeError(String),
     #[error("Value decode error {0}")]
     ValueDecodeError(String),
     #[error("Value string error {0}")]
     ValueStringError(std::io::Error),
-
-    #[error("Table id error {0}")]
-    TableIdError(String),
 }

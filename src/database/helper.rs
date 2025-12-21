@@ -100,34 +100,42 @@ pub fn create_file_sync(file: &str) -> Result<OwnedFd, PagerError> {
 // }
 
 /// helper function for debugging purposes
+
 pub fn debug_print_buffer(buf: &HashMap<Pointer, Node>) {
-    if let Some("debug") = option_env!("RUSQL_DEBUG") {
-        debug!("current buffer:");
-        debug!("---------");
-        for kv in buf {
-            debug!("{}, {:?}", kv.0, kv.1.get_type())
+    #[cfg(test)]
+    {
+        if let Some("debug") = option_env!("RUSQL_DEBUG") {
+            debug!("current buffer:");
+            debug!("---------");
+            for kv in buf {
+                debug!("{}, {:?}", kv.0, kv.1.get_type())
+            }
+            debug!("---------")
+        } else {
+            ()
         }
-        debug!("---------")
-    } else {
-        ()
     }
 }
 
 /// helper function for debugging purposes
+
 pub fn debug_print_tree(node: &TreeNode, idx: u16) {
-    if let Some("debug") = option_env!("RUSQL_DEBUG") {
-        debug!(idx, "looking through {:?}...", node.get_type());
-        debug!("---------");
-        for i in 0..node.get_nkeys() {
-            debug!(
-                idx = i,
-                key = node.get_key(i).unwrap().to_string().unwrap(),
-                "-- keys in node:"
-            );
+    #[cfg(test)]
+    {
+        if let Some("debug") = option_env!("RUSQL_DEBUG") {
+            debug!(idx, "looking through {:?}...", node.get_type());
+            debug!("---------");
+            for i in 0..node.get_nkeys() {
+                debug!(
+                    idx = i,
+                    key = node.get_key(i).unwrap().to_string().unwrap(),
+                    "-- keys in node:"
+                );
+            }
+            debug!("---------");
+        } else {
+            ()
         }
-        debug!("---------");
-    } else {
-        ()
     }
 }
 

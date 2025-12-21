@@ -5,6 +5,7 @@ use tracing::debug;
 use tracing::info;
 use tracing::instrument;
 
+use crate::database::pager::EnvoyV1;
 use crate::database::{
     btree::node::*, errors::Error, helper::debug_print_tree, pager::diskpager::NodeFlag, types::*,
 };
@@ -67,6 +68,7 @@ impl<P: Pager> Tree for BTree<P> {
             );
             return Ok(());
         }
+
         // in case of split tree grows in height
         let mut new_root = TreeNode::new();
         new_root.set_header(NodeType::Node, split.0);
@@ -97,10 +99,12 @@ impl<P: Pager> Tree for BTree<P> {
                 ));
             }
         };
+
         let updated = self
             .tree_delete(self.decode(root_ptr), &key)
             .ok_or(Error::DeleteError("key not found!".to_string()))?;
         self.dealloc(root_ptr);
+
         match updated.get_nkeys() {
             // check if tree needs to shrink in height
             1 if updated.get_type() == NodeType::Node => {
@@ -151,15 +155,15 @@ impl<P: Pager> BTree<P> {
     }
     // callbacks
     pub fn decode(&self, ptr: Pointer) -> TreeNode {
-        let strong = self.pager.upgrade().unwrap();
+        let strong = self.pager.upgrade().expect("tree callback decode failed");
         strong.page_read(ptr, NodeFlag::Tree).as_tree()
     }
     pub fn encode(&self, node: TreeNode) -> Pointer {
-        let strong = self.pager.upgrade().unwrap();
+        let strong = self.pager.upgrade().expect("tree callback encode failed");
         strong.page_alloc(Node::Tree(node))
     }
     pub fn dealloc(&self, ptr: Pointer) {
-        let strong = self.pager.upgrade().unwrap();
+        let strong = self.pager.upgrade().expect("tree callback dealloc failed");
         strong.dealloc(ptr);
     }
 
@@ -169,17 +173,15 @@ impl<P: Pager> BTree<P> {
         let idx = node.lookupidx(&key);
         match node.get_type() {
             NodeType::Leaf => {
-                if cfg!(test) {
-                    debug_print_tree(&node, idx);
-                }
+                debug_print_tree(&node, idx);
+
                 // updating or inserting kv
                 new.insert(node, key, val, idx);
             }
             // walking down the tree until we hit a leaf node
             NodeType::Node => {
-                if cfg!(test) {
-                    debug_print_tree(&node, idx);
-                }
+                debug_print_tree(&node, idx);
+
                 let kptr = node.get_ptr(idx); // ptr of child below us
                 let knode = BTree::tree_insert(self, self.decode(kptr), key, val); // node below us
                 assert_eq!(knode.get_key(0).unwrap(), node.get_key(idx).unwrap());
@@ -198,9 +200,7 @@ impl<P: Pager> BTree<P> {
         let idx = node.lookupidx(key);
         match node.get_type() {
             NodeType::Leaf => {
-                if cfg!(test) {
-                    debug_print_tree(&node, idx);
-                }
+                debug_print_tree(&node, idx);
 
                 if node.get_key(idx).unwrap() == *key {
                     debug!("deleting key {} at idx {idx}", key.to_string().unwrap());
@@ -214,9 +214,8 @@ impl<P: Pager> BTree<P> {
                 }
             }
             NodeType::Node => {
-                if cfg!(test) {
-                    debug_print_tree(&node, idx);
-                }
+                debug_print_tree(&node, idx);
+
                 let kptr = node.get_ptr(idx);
                 match BTree::tree_delete(self, self.decode(kptr), key) {
                     // no update below us
@@ -250,7 +249,7 @@ impl<P: Pager> BTree<P> {
                                             merged_node.get_type(),
                                             merged_node.get_nkeys()
                                         );
-                                        new.merge_setptr(self, node, merged_node, idx - 1).unwrap();
+                                        new.merge_setptr(self, node, merged_node, idx - 1).ok()?;
                                     }
                                     MergeDirection::Right(sibling) => {
                                         debug!(
@@ -267,7 +266,7 @@ impl<P: Pager> BTree<P> {
                                             merged_node.get_type(),
                                             merged_node.get_nkeys()
                                         );
-                                        new.merge_setptr(self, node, merged_node, idx).unwrap();
+                                        new.merge_setptr(self, node, merged_node, idx).ok()?;
                                     }
                                 };
                                 // delete old nodes
@@ -318,9 +317,8 @@ impl<P: Pager> BTree<P> {
 
         match node.get_type() {
             NodeType::Leaf => {
-                if cfg!(test) {
-                    debug_print_tree(&node, idx);
-                }
+                debug_print_tree(&node, idx);
+
                 if node.get_key(idx).unwrap() == key {
                     debug!("key {key_s:?} found!");
                     return Some(node.get_val(idx).unwrap());
@@ -330,13 +328,21 @@ impl<P: Pager> BTree<P> {
                 }
             }
             NodeType::Node => {
-                if cfg!(test) {
-                    debug_print_tree(&node, idx);
-                }
+                debug_print_tree(&node, idx);
+
                 let kptr = node.get_ptr(idx);
                 BTree::tree_search(self, self.decode(kptr), key)
             }
         }
+    }
+
+    fn seek_le(&self, key: Key) -> Cursor<'_, P> {
+        let mut cursor = Cursor::new(self);
+        let mut ptr = self.get_root();
+        while let Some(ptr) = ptr {
+            let mut node = self.decode(ptr);
+        }
+        cursor
     }
 }
 
@@ -345,6 +351,52 @@ impl<P: Pager> Debug for BTree<P> {
         f.debug_struct("BTree")
             .field("root_ptr", &self.root_ptr)
             .finish()
+    }
+}
+/*
+path = [R1, N2, L2] Nodes to be read
+pos  = [1, 1 , 2]   indices correspond to an idx to a given key
+
+*/
+struct Cursor<'a, P: Pager> {
+    tree: &'a BTree<P>,
+    path: Vec<TreeNode>, // from root to leaf
+    pos: Vec<u16>,       // indices
+}
+
+impl<'a, P: Pager> Cursor<'a, P> {
+    fn new(tree: &'a BTree<P>) -> Self {
+        Cursor {
+            tree: tree,
+            path: vec![],
+            pos: vec![], // idx
+        }
+    }
+    fn next(&mut self) {
+        self.iter_next(self.path.len() - 1)
+    }
+
+    fn iter_next(&mut self, level: usize) {
+        if self.pos[level] + 1 < self.path[level].get_nkeys() {
+            // move within node
+            self.pos[level] += 1;
+        } else if level > 0 {
+            // we reached the last key of the node, so we go up one level to access the sibling
+            self.iter_next(level - 1)
+        } else {
+            // past last key
+            let n = self.pos.len() - 1;
+            self.pos[n]; // move within node += 1;
+            return; // possibly return with none
+        }
+        if level + 1 < self.pos.len() {
+            // we are in a non leaf node and need to retrieve the next sibling
+            let node = &self.path[level];
+            let kid = self.tree.decode(node.get_ptr(self.pos[level]));
+
+            self.path[level + 1] = kid;
+            self.pos[level + 1] = 0;
+        }
     }
 }
 
