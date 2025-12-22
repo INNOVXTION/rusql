@@ -230,6 +230,7 @@ impl EnvoyV1 {
     #[instrument(name = "pager get", skip_all)]
     fn get(&self, key: Key) -> Result<Value, Error> {
         info!("getting...");
+
         self.tree
             .borrow()
             .search(key)
@@ -238,8 +239,9 @@ impl EnvoyV1 {
 
     #[instrument(name = "pager set", skip_all)]
     fn set(&self, key: Key, val: Value) -> Result<(), Error> {
-        let recov_page = metapage_save(self); // saving current metapage for possible rollback
         info!("inserting...");
+
+        let recov_page = metapage_save(self); // saving current metapage for possible rollback
         self.tree.borrow_mut().insert(key, val).map_err(|e| {
             error!(%e, "tree error");
             e
@@ -250,6 +252,7 @@ impl EnvoyV1 {
     #[instrument(name = "pager delete", skip_all)]
     fn delete(&self, key: Key) -> Result<(), Error> {
         info!("deleting...");
+
         let recov_page = metapage_save(self); // saving current metapage for possible rollback
         self.tree.borrow_mut().delete(key)?;
         self.update_or_revert(&recov_page)
@@ -258,6 +261,7 @@ impl EnvoyV1 {
     #[instrument(name = "pager update file", skip_all)]
     fn update_or_revert(&self, recov_page: &MetaPage) -> Result<(), Error> {
         debug!("tree operation complete, updating file");
+
         if self.failed.get() {
             debug!("failed update detected...");
             // checking after previous error to see if the meta page on disk fits with page in memory
@@ -272,6 +276,7 @@ impl EnvoyV1 {
                 self.failed.set(false);
             }
         };
+
         if let Err(e) = self.file_update() {
             warn!(%e, "file update failed! Reverting meta page...");
             metapage_load(self, recov_page); // in case the file writing fails, we revert back to the old meta page
@@ -286,14 +291,15 @@ impl EnvoyV1 {
     fn file_update(&self) -> Result<(), PagerError> {
         // updating free list for next update
         self.freelist.borrow_mut().set_max_seq();
+
         // flush buffer to disk
         self.page_write()?;
         rustix::fs::fsync(&self.database)?;
+
         // write currently loaded metapage to disk
         metapage_write(self, &metapage_save(self))?;
         rustix::fs::fsync(&self.database)?;
-        // assert!(self.tree.root_ptr != self.freelist.head_page);
-        // assert!(self.tree.root_ptr != self.freelist.tail_page);
+
         Ok(())
     }
 
@@ -390,10 +396,10 @@ impl EnvoyV1 {
                     let ptr = self.freelist.borrow_mut().get().unwrap();
                     assert_eq!(list[i as usize], ptr);
                 }
-                self.update_or_revert(&metapage_save(self));
+                self.update_or_revert(&metapage_save(self))?;
                 rustix::fs::ftruncate(&self.database, (npages - count) * PAGE_SIZE as u64)
                     .expect("truncate failed");
-                rustix::fs::fsync(&self.database);
+                rustix::fs::fsync(&self.database)?;
                 Ok(())
             }
             None => Ok(()),

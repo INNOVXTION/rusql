@@ -25,11 +25,11 @@ impl Key {
     /// outputs string of Key data
     pub fn to_string(&self) -> Result<String, TableError> {
         let mut st = String::new();
-        write!(st, "{}", self.get_tid());
+        write!(st, "{}", self.get_tid())?;
         for cell in self.iter() {
             match cell {
-                DataCellRef::Str(s) => write!(st, "{}", s),
-                DataCellRef::Int(i) => write!(st, "{}", i),
+                DataCellRef::Str(s) => write!(st, "{}", s)?,
+                DataCellRef::Int(i) => write!(st, "{}", i)?,
             };
         }
         Ok(st)
@@ -71,12 +71,8 @@ impl Key {
     }
 
     /// turns key back into Records, doesnt return TID
-    fn decode(self) -> Result<Record, TableError> {
-        let mut rec = Record::new();
-        for cell in self {
-            rec = rec.add(cell);
-        }
-        Ok(rec)
+    fn decode(self) -> Vec<DataCell> {
+        self.into_iter().collect()
     }
 }
 
@@ -276,11 +272,7 @@ pub(crate) struct Value(Rc<[u8]>);
 
 impl Value {
     pub fn decode(self) -> Vec<DataCell> {
-        let mut v = Vec::new();
-        for cell in self {
-            v.push(cell);
-        }
-        v
+        self.into_iter().collect()
     }
     /// assumes proper encoding
     pub fn from_encoded_slice(data: &[u8]) -> Self {
@@ -579,6 +571,25 @@ impl Record {
             Key::from_encoded_slice(&buf[..key_idx]),
             Value::from_encoded_slice(&buf[key_idx..]),
         ))
+    }
+
+    pub fn from_kv(kv: (Key, Value)) -> Record {
+        let mut v = Vec::new();
+        v.extend(kv.0.into_iter());
+        v.extend(kv.1.into_iter());
+        Record { data: v }
+    }
+
+    /// outputs record as string, no TID
+    pub fn to_string(&self) -> Result<String, TableError> {
+        let mut st = String::new();
+        for cell in self.data.iter() {
+            match cell {
+                DataCell::Str(s) => write!(st, "{}", s)?,
+                DataCell::Int(i) => write!(st, "{}", i)?,
+            };
+        }
+        Ok(st)
     }
 }
 

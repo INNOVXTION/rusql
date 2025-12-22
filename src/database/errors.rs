@@ -31,6 +31,7 @@ pub enum Error {
     IntCastError(#[from] Option<TryFromIntError>),
 
     FileError(#[from] io::Error),
+    SysFileError(#[from] rustix::io::Errno),
 }
 
 impl Display for Error {
@@ -52,6 +53,7 @@ impl Display for Error {
             E::FreeListError(e) => write!(f, "Free List Error {e}"),
             E::SearchError(e) => write!(f, "Search Error {e}"),
             E::TableError(e) => write!(f, "Table Error {e}"),
+            E::SysFileError(e) => write!(f, "Errno {e}"),
         }
     }
 }

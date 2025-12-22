@@ -313,8 +313,6 @@ impl TreeNode {
 
     /// find the last index that is less than or equal to the key
     /// if the key is not found, returns the nkeys - 1
-    ///
-    /// TODO: binary search
     pub fn lookupidx(&self, key: &Key) -> u16 {
         let nkeys = self.get_nkeys();
         debug!("lookupidx in {:?} nkeys {}", self.get_type(), nkeys);
@@ -338,9 +336,9 @@ impl TreeNode {
                 lo = m + 1;
             }
         }
-        if lo < nkeys && self.get_key(lo).unwrap() == *n {
-            return lo;
-        }
+        // if lo < nkeys && self.get_key(lo).unwrap() == *n {
+        //     return lo;
+        // }
         if lo == 0 {
             return 0;
         }

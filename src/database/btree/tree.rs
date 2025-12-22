@@ -5,6 +5,9 @@ use tracing::debug;
 use tracing::info;
 use tracing::instrument;
 
+use crate::database::btree::cursor::Compare;
+use crate::database::btree::cursor::Cursor;
+use crate::database::btree::cursor::node_lookup;
 use crate::database::pager::EnvoyV1;
 use crate::database::{
     btree::node::*, errors::Error, helper::debug_print_tree, pager::diskpager::NodeFlag, types::*,
@@ -185,9 +188,13 @@ impl<P: Pager> BTree<P> {
                 let kptr = node.get_ptr(idx); // ptr of child below us
                 let knode = BTree::tree_insert(self, self.decode(kptr), key, val); // node below us
                 assert_eq!(knode.get_key(0).unwrap(), node.get_key(idx).unwrap());
-                let split = knode.split().unwrap(); // potential split
+
+                // potential split
+                let split = knode.split().unwrap();
+
                 // delete old child
                 self.dealloc(kptr);
+
                 // update child ptr
                 new.insert_nkids(self, node, idx, split).unwrap();
             }
@@ -336,13 +343,24 @@ impl<P: Pager> BTree<P> {
         }
     }
 
-    fn seek_le(&self, key: Key) -> Cursor<'_, P> {
+    // finds the starting position for the cursor
+    pub(crate) fn seek(&self, key: &Key, flag: Compare) -> Option<Cursor<'_, P>> {
         let mut cursor = Cursor::new(self);
         let mut ptr = self.get_root();
-        while let Some(ptr) = ptr {
-            let mut node = self.decode(ptr);
+
+        while let Some(p) = ptr {
+            let node = self.decode(p);
+            let idx = node_lookup(&node, &key, &flag)?;
+
+            ptr = match node.get_type() {
+                NodeType::Node => Some(node.get_ptr(idx)),
+                NodeType::Leaf => None,
+            };
+
+            cursor.path.push(node);
+            cursor.pos.push(idx);
         }
-        cursor
+        Some(cursor)
     }
 }
 
@@ -351,52 +369,6 @@ impl<P: Pager> Debug for BTree<P> {
         f.debug_struct("BTree")
             .field("root_ptr", &self.root_ptr)
             .finish()
-    }
-}
-/*
-path = [R1, N2, L2] Nodes to be read
-pos  = [1, 1 , 2]   indices correspond to an idx to a given key
-
-*/
-struct Cursor<'a, P: Pager> {
-    tree: &'a BTree<P>,
-    path: Vec<TreeNode>, // from root to leaf
-    pos: Vec<u16>,       // indices
-}
-
-impl<'a, P: Pager> Cursor<'a, P> {
-    fn new(tree: &'a BTree<P>) -> Self {
-        Cursor {
-            tree: tree,
-            path: vec![],
-            pos: vec![], // idx
-        }
-    }
-    fn next(&mut self) {
-        self.iter_next(self.path.len() - 1)
-    }
-
-    fn iter_next(&mut self, level: usize) {
-        if self.pos[level] + 1 < self.path[level].get_nkeys() {
-            // move within node
-            self.pos[level] += 1;
-        } else if level > 0 {
-            // we reached the last key of the node, so we go up one level to access the sibling
-            self.iter_next(level - 1)
-        } else {
-            // past last key
-            let n = self.pos.len() - 1;
-            self.pos[n]; // move within node += 1;
-            return; // possibly return with none
-        }
-        if level + 1 < self.pos.len() {
-            // we are in a non leaf node and need to retrieve the next sibling
-            let node = &self.path[level];
-            let kid = self.tree.decode(node.get_ptr(self.pos[level]));
-
-            self.path[level + 1] = kid;
-            self.pos[level + 1] = 0;
-        }
     }
 }
 
