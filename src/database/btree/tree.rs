@@ -5,16 +5,19 @@ use tracing::debug;
 use tracing::info;
 use tracing::instrument;
 
-use crate::database::btree::cursor::Compare;
-use crate::database::btree::cursor::Cursor;
-use crate::database::btree::cursor::node_lookup;
-use crate::database::pager::EnvoyV1;
 use crate::database::{
-    btree::node::*, errors::Error, helper::debug_print_tree, pager::diskpager::NodeFlag, types::*,
-};
-use crate::database::{
-    pager::diskpager::{KVEngine, Pager},
-    tables::{Key, Value},
+    btree::{
+        cursor::{Compare, Cursor, ScanMode, node_lookup},
+        node::*,
+    },
+    errors::Error,
+    helper::debug_print_tree,
+    pager::{
+        EnvoyV1,
+        diskpager::{KVEngine, NodeFlag, Pager},
+    },
+    tables::{Key, Record, Value},
+    types::*,
 };
 
 pub(crate) struct BTree<P: Pager> {
@@ -343,8 +346,24 @@ impl<P: Pager> BTree<P> {
         }
     }
 
-    // finds the starting position for the cursor
-    pub(crate) fn seek(&self, key: &Key, flag: Compare) -> Option<Cursor<'_, P>> {
+    fn query(&self, mode: ScanMode) -> Option<Vec<Record>> {
+        if self.root_ptr.is_none() {
+            return None;
+        }
+        let mut res: Vec<Record> = vec![];
+        match mode {
+            ScanMode::Single(key) => {
+                let cursor = self.seek(&key, Compare::LE)?;
+                res.push(Record::from_kv(cursor.deref()));
+                Some(res)
+            }
+            ScanMode::Open(key, compare) => todo!(),
+            ScanMode::Closed { lo, hi } => todo!(),
+        }
+    }
+
+    /// creates a new cursor
+    fn seek(&self, key: &Key, flag: Compare) -> Option<Cursor<'_, P>> {
         let mut cursor = Cursor::new(self);
         let mut ptr = self.get_root();
 
