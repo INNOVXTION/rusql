@@ -2,7 +2,7 @@ use tracing::debug;
 
 use crate::database::{
     BTree,
-    btree::TreeNode,
+    btree::{Tree, TreeNode, node::NodeType},
     errors::Result,
     pager::diskpager::Pager,
     tables::{Key, Query, Record, Value},
@@ -17,8 +17,35 @@ pub(crate) enum ScanMode {
     },
 }
 
-impl ScanMode {
-    fn valid() {}
+pub(super) fn scan_single<P: Pager>(tree: &BTree<P>, key: &Key) -> Option<Vec<(Key, Value)>> {
+    let mut res: Vec<(Key, Value)> = vec![];
+    let cursor = seek(tree, &key, Compare::LE)?;
+    res.push(cursor.deref());
+    Some(res)
+}
+
+pub(super) fn scan_open<P: Pager>(
+    tree: &BTree<P>,
+    key: &Key,
+    cmp: Compare,
+) -> Option<Vec<(Key, Value)>> {
+    let mut res: Vec<(Key, Value)> = vec![];
+    let mut cursor = seek(tree, &key, cmp)?;
+    res.push(cursor.deref());
+    while let Some(()) = cursor.next() {
+        let (k, v) = cursor.deref();
+        debug!(key = %k, value = %v);
+        res.push((k, v));
+    }
+    Some(res)
+}
+
+pub(super) fn scan_closed<P: Pager>(
+    tree: &BTree<P>,
+    lo: (Key, Compare),
+    hi: (Key, Compare),
+) -> Option<Vec<(Key, Value)>> {
+    todo!()
 }
 
 /*
@@ -114,7 +141,27 @@ impl<'a, P: Pager> Cursor<'a, P> {
     }
 }
 
-pub(super) fn node_lookup(node: &TreeNode, key: &Key, flag: &Compare) -> Option<u16> {
+// creates a new cursor
+fn seek<'a, P: Pager>(tree: &'a BTree<P>, key: &Key, flag: Compare) -> Option<Cursor<'a, P>> {
+    let mut cursor = Cursor::new(tree);
+    let mut ptr = tree.get_root();
+
+    while let Some(p) = ptr {
+        let node = tree.decode(p);
+        let idx = node_lookup(&node, &key, &flag)?;
+
+        ptr = match node.get_type() {
+            NodeType::Node => Some(node.get_ptr(idx)),
+            NodeType::Leaf => None,
+        };
+
+        cursor.path.push(node);
+        cursor.pos.push(idx);
+    }
+    Some(cursor)
+}
+
+fn node_lookup(node: &TreeNode, key: &Key, flag: &Compare) -> Option<u16> {
     if node.get_nkeys() == 0 {
         return None;
     }
@@ -243,4 +290,67 @@ fn cmp_eq(node: &TreeNode, key: &Key) -> Option<u16> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod test {
+    use std::error::Error;
+
+    use test_log::test;
+
+    use crate::database::{
+        btree::{
+            Tree,
+            cursor::{Compare, ScanMode},
+        },
+        pager::{diskpager::KVEngine, mempage_tree},
+        tables::Record,
+    };
+
+    #[test]
+    fn scan_single() -> Result<(), Box<dyn Error>> {
+        let tree = mempage_tree();
+
+        for i in 1u16..=100u16 {
+            tree.set(format!("{i}").into(), "value".into()).unwrap()
+        }
+
+        for i in 1u16..=100u16 {
+            let key = format!("{i}").into();
+            let q = ScanMode::Single(key);
+            let res = tree.pager.btree.borrow().query(q);
+
+            assert!(res.is_some());
+            let res: Vec<Record> = res.unwrap().into_iter().map(Record::from_kv).collect();
+
+            assert_eq!(res[0].to_string()?, format!("{i}value"));
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn scan_open() -> Result<(), Box<dyn Error>> {
+        let tree = mempage_tree();
+
+        for i in 1i64..=10i64 {
+            tree.set(i.into(), "value".into()).unwrap()
+        }
+
+        let key = 5i64.into();
+        let q = ScanMode::Open(key, Compare::GT);
+        let res = tree.pager.btree.borrow().query(q);
+
+        assert!(res.is_some());
+        assert_eq!(res.as_ref().unwrap().len(), 5);
+
+        let mut recs = res.unwrap().into_iter().map(Record::from_kv).into_iter();
+
+        assert_eq!(recs.next().unwrap().to_string()?, "6value");
+        assert_eq!(recs.next().unwrap().to_string()?, "7value");
+        assert_eq!(recs.next().unwrap().to_string()?, "8value");
+        assert_eq!(recs.next().unwrap().to_string()?, "9value");
+        assert_eq!(recs.next().unwrap().to_string()?, "10value");
+        Ok(())
+    }
 }

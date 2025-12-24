@@ -5,9 +5,11 @@ use tracing::debug;
 use tracing::info;
 use tracing::instrument;
 
+use crate::database::btree::cursor::scan_open;
+use crate::database::btree::cursor::scan_single;
 use crate::database::{
     btree::{
-        cursor::{Compare, Cursor, ScanMode, node_lookup},
+        cursor::{Compare, Cursor, ScanMode},
         node::*,
     },
     errors::Error,
@@ -31,6 +33,7 @@ pub(crate) trait Tree {
     fn insert(&mut self, key: Key, value: Value) -> Result<(), Error>;
     fn delete(&mut self, key: Key) -> Result<(), Error>;
     fn search(&self, key: Key) -> Option<Value>;
+    fn query(&self, mode: ScanMode) -> Option<Vec<(Key, Value)>>;
 
     fn set_root(&mut self, ptr: Option<Pointer>);
     fn get_root(&self) -> Option<Pointer>;
@@ -142,6 +145,18 @@ impl<P: Pager> Tree for BTree<P> {
     fn search(&self, key: Key) -> Option<Value> {
         info!("searching: {key}",);
         self.tree_search(self.decode(self.root_ptr?), key)
+    }
+
+    // entry point for scan query
+    fn query(&self, mode: ScanMode) -> Option<Vec<(Key, Value)>> {
+        if self.root_ptr.is_none() {
+            return None;
+        }
+        match mode {
+            ScanMode::Single(key) => scan_single(self, &key),
+            ScanMode::Open(key, compare) => scan_open(self, &key, compare),
+            ScanMode::Closed { lo, hi } => todo!(),
+        }
     }
 
     fn get_root(&self) -> Option<Pointer> {
@@ -345,42 +360,6 @@ impl<P: Pager> BTree<P> {
             }
         }
     }
-
-    fn query(&self, mode: ScanMode) -> Option<Vec<Record>> {
-        if self.root_ptr.is_none() {
-            return None;
-        }
-        let mut res: Vec<Record> = vec![];
-        match mode {
-            ScanMode::Single(key) => {
-                let cursor = self.seek(&key, Compare::LE)?;
-                res.push(Record::from_kv(cursor.deref()));
-                Some(res)
-            }
-            ScanMode::Open(key, compare) => todo!(),
-            ScanMode::Closed { lo, hi } => todo!(),
-        }
-    }
-
-    /// creates a new cursor
-    fn seek(&self, key: &Key, flag: Compare) -> Option<Cursor<'_, P>> {
-        let mut cursor = Cursor::new(self);
-        let mut ptr = self.get_root();
-
-        while let Some(p) = ptr {
-            let node = self.decode(p);
-            let idx = node_lookup(&node, &key, &flag)?;
-
-            ptr = match node.get_type() {
-                NodeType::Node => Some(node.get_ptr(idx)),
-                NodeType::Leaf => None,
-            };
-
-            cursor.path.push(node);
-            cursor.pos.push(idx);
-        }
-        Some(cursor)
-    }
 }
 
 impl<P: Pager> Debug for BTree<P> {
@@ -393,6 +372,8 @@ impl<P: Pager> Debug for BTree<P> {
 
 #[cfg(test)]
 mod test {
+    use std::error::Error;
+
     use crate::database::pager::mempage_tree;
 
     use super::*;
@@ -588,21 +569,49 @@ mod test {
     }
 
     #[test]
-    fn insert_split_log() {
+    fn scan_single() -> Result<(), Box<dyn Error>> {
         let tree = mempage_tree();
 
-        for i in 1u16..=11u16 {
+        for i in 1u16..=100u16 {
             tree.set(format!("{i}").into(), "value".into()).unwrap()
         }
-        // let t_ref = tree.pager.btree.borrow();
-        // assert_eq!(
-        //     t_ref.decode(t_ref.get_root().unwrap()).get_type(),
-        //     NodeType::Node
-        // );
-        // assert_eq!(tree.get("40".into()).unwrap(), "value".into());
-        // assert_eq!(tree.get("90".into()).unwrap(), "value".into());
-        // assert_eq!(tree.get("150".into()).unwrap(), "value".into());
-        // assert_eq!(tree.get("170".into()).unwrap(), "value".into());
-        // assert_eq!(tree.get("200".into()).unwrap(), "value".into());
+
+        for i in 1u16..=100u16 {
+            let key = format!("{i}").into();
+            let q = ScanMode::Single(key);
+            let res = tree.pager.btree.borrow().query(q);
+
+            assert!(res.is_some());
+            let res: Vec<Record> = res.unwrap().into_iter().map(Record::from_kv).collect();
+
+            assert_eq!(res[0].to_string()?, format!("{i}value"));
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn scan_open() -> Result<(), Box<dyn Error>> {
+        let tree = mempage_tree();
+
+        for i in 1i64..=10i64 {
+            tree.set(i.into(), "value".into()).unwrap()
+        }
+
+        let key = 5i64.into();
+        let q = ScanMode::Open(key, Compare::GT);
+        let res = tree.pager.btree.borrow().query(q);
+
+        assert!(res.is_some());
+        assert_eq!(res.as_ref().unwrap().len(), 5);
+
+        let mut recs = res.unwrap().into_iter().map(Record::from_kv).into_iter();
+
+        assert_eq!(recs.next().unwrap().to_string()?, "6value");
+        assert_eq!(recs.next().unwrap().to_string()?, "7value");
+        assert_eq!(recs.next().unwrap().to_string()?, "8value");
+        assert_eq!(recs.next().unwrap().to_string()?, "9value");
+        assert_eq!(recs.next().unwrap().to_string()?, "10value");
+        Ok(())
     }
 }

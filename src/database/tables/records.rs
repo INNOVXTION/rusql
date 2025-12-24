@@ -76,6 +76,7 @@ impl Key {
     }
 }
 
+// the following conversions should only be used for testing!
 impl From<&str> for Key {
     fn from(value: &str) -> Self {
         Key::from_unencoded_str(value)
@@ -86,15 +87,24 @@ impl From<String> for Key {
         Key::from_unencoded_str(value)
     }
 }
+impl From<i64> for Key {
+    fn from(value: i64) -> Self {
+        let mut buf: Vec<u8> = vec![0; 8];
+        // artificial tid for testing purposes
+        buf.write_u64(1);
+        buf.extend_from_slice(&value.encode());
+        Key(Rc::from(buf))
+    }
+}
 
 impl std::fmt::Display for Key {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // outputs string of Key data
-        write!(f, "{} ", self.get_tid())?;
+        write!(f, "{}", self.get_tid())?;
         for cell in self.iter() {
             match cell {
-                DataCellRef::Str(s) => write!(f, "{} ", s)?,
-                DataCellRef::Int(i) => write!(f, "{} ", i)?,
+                DataCellRef::Str(s) => write!(f, " {}", s)?,
+                DataCellRef::Int(i) => write!(f, " {}", i)?,
             };
         }
         Ok(())
