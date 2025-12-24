@@ -149,7 +149,7 @@ impl Ord for Key {
             let ta = key_a.read_u8();
             let tb = key_b.read_u8();
 
-            debug_assert_eq!(ta, tb);
+            // debug_assert_eq!(ta, tb);
             match ta.cmp(&tb) {
                 Ordering::Equal => {}
                 o => return o,

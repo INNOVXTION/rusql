@@ -47,7 +47,7 @@ pub(super) fn scan_open<P: Pager>(
                     return Some(res);
                 }
             }
-            Some(res)
+            if res.is_empty() { None } else { Some(res) }
         }
         Compare::GT | Compare::GE => {
             while let Some((k, v)) = cursor.next() {
@@ -60,7 +60,7 @@ pub(super) fn scan_open<P: Pager>(
                     return Some(res);
                 }
             }
-            Some(res)
+            if res.is_empty() { None } else { Some(res) }
         }
         Compare::EQ => scan_single(tree, key),
     }
@@ -153,7 +153,7 @@ impl<'a, P: Pager> Cursor<'a, P> {
             return None;
         }
         let res = self.deref();
-        if res.0.to_string().unwrap() == "1" {
+        if res.1.to_string().unwrap() == "" {
             // empty key edge case!
             self.empty = true;
             return None;
@@ -192,16 +192,24 @@ fn seek<'a, P: Pager>(tree: &'a BTree<P>, key: &Key, flag: Compare) -> Option<Cu
 
     while let Some(p) = ptr {
         let node = tree.decode(p);
-        let idx = node_lookup(&node, &key, &flag)?;
 
         ptr = match node.get_type() {
-            NodeType::Node => Some(node.get_ptr(idx)),
-            NodeType::Leaf => None,
-        };
-
-        cursor.path.push(node);
-        cursor.pos.push(idx);
+            NodeType::Node => {
+                let idx = node_lookup(&node, &key, &Compare::LE)?; // navigating nodes
+                let ptr = node.get_ptr(idx);
+                cursor.path.push(node);
+                cursor.pos.push(idx);
+                Some(ptr)
+            }
+            NodeType::Leaf => {
+                let idx = node_lookup(&node, &key, &flag)?;
+                cursor.path.push(node);
+                cursor.pos.push(idx);
+                None
+            }
+        }
     }
+    debug!("creating cursor , pos: {:?}", cursor.pos);
     Some(cursor)
 }
 
@@ -641,6 +649,110 @@ mod test {
         let q = ScanMode::Open(key, Compare::LT);
         let res = tree.pager.btree.borrow().query(q);
         assert!(res.is_none());
+
+        Ok(())
+    }
+    // Test with large dataset
+    #[test]
+    fn scan_large_dataset() -> Result<()> {
+        let tree = mempage_tree();
+
+        for i in 1i64..=1000i64 {
+            tree.set(i.into(), format!("val{}", i).into()).unwrap();
+        }
+
+        let key = 500i64.into();
+        let q = ScanMode::Open(key, Compare::GT);
+        let res = tree.pager.btree.borrow().query(q);
+
+        assert!(res.is_some());
+        let records: Vec<Record> = res.unwrap().into_iter().map(Record::from_kv).collect();
+        assert_eq!(records.len(), 500);
+        assert_eq!(records[0].to_string()?, "501val501");
+        assert_eq!(records[499].to_string()?, "1000val1000");
+
+        Ok(())
+    }
+
+    // Test seek with different Compare flags
+    #[test]
+    fn seek_with_different_compares() -> Result<()> {
+        let tree = mempage_tree();
+
+        for i in 1i64..=10i64 {
+            tree.set(i.into(), format!("val{}", i).into()).unwrap();
+        }
+
+        let btree = tree.pager.btree.borrow();
+
+        // Test EQ - deref should return the exact match
+        let key = 5i64.into();
+        let cursor = seek(&btree, &key, Compare::EQ).unwrap();
+        let (k, _) = cursor.deref();
+        assert_eq!(k.to_string()?, "15");
+
+        // Test GE - deref should return the exact match or next greater
+        let cursor = seek(&btree, &key, Compare::GE).unwrap();
+        let (k, _) = cursor.deref();
+        assert_eq!(k.to_string()?, "15");
+
+        // Test GT - deref should return the next value after key
+        let cursor = seek(&btree, &key, Compare::GT).unwrap();
+        let (k, _) = cursor.deref();
+        assert_eq!(k.to_string()?, "16");
+
+        // Test LE - deref should return the exact match or next smaller
+        let cursor = seek(&btree, &key, Compare::LE).unwrap();
+        let (k, _) = cursor.deref();
+        assert_eq!(k.to_string()?, "15");
+
+        // Test LT - deref should return the value before key
+        let cursor = seek(&btree, &key, Compare::LT).unwrap();
+        let (k, _) = cursor.deref();
+        assert_eq!(k.to_string()?, "14");
+
+        Ok(())
+    }
+
+    #[test]
+    fn empty_tree_scan() -> Result<()> {
+        let tree = mempage_tree();
+
+        let key = 1i64.into();
+        let q = ScanMode::Single(key);
+        let res = tree.pager.btree.borrow().query(q);
+
+        assert!(res.is_none());
+
+        let q = ScanMode::Open(1i64.into(), Compare::GT);
+        let res = tree.pager.btree.borrow().query(q);
+
+        assert!(res.is_none());
+
+        Ok(())
+    }
+
+    #[test]
+    fn single_element_tree() -> Result<()> {
+        let tree = mempage_tree();
+        tree.set(1i64.into(), "value".into()).unwrap();
+
+        // Scan single
+        let q = ScanMode::Single(1i64.into());
+        let res = tree.pager.btree.borrow().query(q);
+        assert!(res.is_some());
+        assert_eq!(res.unwrap().len(), 1);
+
+        // Scan GT (should return none)
+        let q = ScanMode::Open(1i64.into(), Compare::GT);
+        let res = tree.pager.btree.borrow().query(q);
+        assert!(res.is_none());
+
+        // Scan GE (should return the element)
+        let q = ScanMode::Open(1i64.into(), Compare::GE);
+        let res = tree.pager.btree.borrow().query(q);
+        assert!(res.is_some());
+        assert_eq!(res.unwrap().len(), 1);
 
         Ok(())
     }
