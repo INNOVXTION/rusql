@@ -323,6 +323,11 @@ impl From<&str> for Value {
         Value::from_unencoded_str(value)
     }
 }
+impl From<String> for Value {
+    fn from(value: String) -> Self {
+        Value::from_unencoded_str(value)
+    }
+}
 
 pub(crate) struct ValueIter {
     data: Value,

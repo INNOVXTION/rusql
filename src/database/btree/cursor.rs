@@ -9,7 +9,9 @@ use crate::database::{
 };
 
 pub(crate) enum ScanMode {
+    // scanning for a single matching key
     Single(Key),
+    // scanning the entire table starting from key
     Open(Key, Compare),
     Closed {
         lo: (Key, Compare),
@@ -19,7 +21,7 @@ pub(crate) enum ScanMode {
 
 pub(super) fn scan_single<P: Pager>(tree: &BTree<P>, key: &Key) -> Option<Vec<(Key, Value)>> {
     let mut res: Vec<(Key, Value)> = vec![];
-    let cursor = seek(tree, &key, Compare::LE)?;
+    let cursor = seek(tree, &key, Compare::EQ)?;
     res.push(cursor.deref());
     Some(res)
 }
@@ -31,13 +33,37 @@ pub(super) fn scan_open<P: Pager>(
 ) -> Option<Vec<(Key, Value)>> {
     let mut res: Vec<(Key, Value)> = vec![];
     let mut cursor = seek(tree, &key, cmp)?;
-    res.push(cursor.deref());
-    while let Some(()) = cursor.next() {
-        let (k, v) = cursor.deref();
-        debug!(key = %k, value = %v);
-        res.push((k, v));
+    let tid = key.get_tid();
+
+    match cmp {
+        Compare::LT | Compare::LE => {
+            while let Some((k, v)) = cursor.prev() {
+                debug!(key = %k, value = %v);
+
+                if k.get_tid() == tid {
+                    res.push((k, v));
+                } else {
+                    // return as soon as we see a key belonging to a different table
+                    return Some(res);
+                }
+            }
+            Some(res)
+        }
+        Compare::GT | Compare::GE => {
+            while let Some((k, v)) = cursor.next() {
+                debug!(key = %k, value = %v);
+
+                if k.get_tid() == tid {
+                    res.push((k, v));
+                } else {
+                    // return as soon as we see a key belonging to a different table
+                    return Some(res);
+                }
+            }
+            Some(res)
+        }
+        Compare::EQ => scan_single(tree, key),
     }
-    Some(res)
 }
 
 pub(super) fn scan_closed<P: Pager>(
@@ -56,10 +82,12 @@ in this case, the key would be located at:
 idx 1 in root, index 1 in Node 2 and index 2 in Leaf 2
 */
 
+#[derive(Debug)]
 pub(crate) struct Cursor<'a, P: Pager> {
     pub tree: &'a BTree<P>,
     pub path: Vec<TreeNode>, // from root to leaf
     pub pos: Vec<u16>,       // indices
+    empty: bool,
 }
 
 impl<'a, P: Pager> Cursor<'a, P> {
@@ -68,6 +96,7 @@ impl<'a, P: Pager> Cursor<'a, P> {
             tree: tree,
             path: vec![],
             pos: vec![],
+            empty: false,
         }
     }
 
@@ -87,11 +116,16 @@ impl<'a, P: Pager> Cursor<'a, P> {
     }
 
     // moves the path one idx forward
-    pub fn next(&mut self) -> Option<()> {
-        self.iter_next(self.path.len() - 1)
+    pub fn next(&mut self) -> Option<(Key, Value)> {
+        if self.empty {
+            return None;
+        }
+        let res = self.deref();
+        self.iter_next(self.path.len() - 1);
+        Some(res)
     }
 
-    fn iter_next(&mut self, level: usize) -> Option<()> {
+    fn iter_next(&mut self, level: usize) {
         if self.pos[level] + 1 < self.path[level].get_nkeys() {
             // move within node
             self.pos[level] += 1;
@@ -100,7 +134,8 @@ impl<'a, P: Pager> Cursor<'a, P> {
             self.iter_next(level - 1);
         } else {
             // past last key
-            return None;
+            self.empty = true;
+            return;
         }
         if level + 1 < self.pos.len() {
             // we are in a non leaf node and need to retrieve the next sibling
@@ -110,24 +145,34 @@ impl<'a, P: Pager> Cursor<'a, P> {
             self.path[level + 1] = kid;
             self.pos[level + 1] = 0;
         }
-        Some(())
     }
 
     // moves the path one idx backwards
-    pub fn prev(&mut self) -> Option<()> {
-        self.iter_prev(self.path.len() - 1)
+    pub fn prev(&mut self) -> Option<(Key, Value)> {
+        if self.empty {
+            return None;
+        }
+        let res = self.deref();
+        if res.0.to_string().unwrap() == "1" {
+            // empty key edge case!
+            self.empty = true;
+            return None;
+        }
+        self.iter_prev(self.path.len() - 1);
+        Some(res)
     }
 
-    fn iter_prev(&mut self, level: usize) -> Option<()> {
+    fn iter_prev(&mut self, level: usize) {
         if self.pos[level] > 0 {
             // move within node
             self.pos[level] -= 1;
         } else if level > 0 {
             // we reached the last key of the node, so we go up one level to access the sibling
-            self.iter_next(level - 1);
+            self.iter_prev(level - 1);
         } else {
             // past last key
-            return None;
+            self.empty = true;
+            return;
         }
         if level + 1 < self.pos.len() {
             // we are in a non leaf node and need to retrieve the next sibling
@@ -137,7 +182,6 @@ impl<'a, P: Pager> Cursor<'a, P> {
             self.pos[level + 1] = kid.get_nkeys() - 1;
             self.path[level + 1] = kid;
         }
-        Some(())
     }
 }
 
@@ -161,19 +205,30 @@ fn seek<'a, P: Pager>(tree: &'a BTree<P>, key: &Key, flag: Compare) -> Option<Cu
     Some(cursor)
 }
 
+fn key_cmp(k1: &Key, k2: &Key, pred: Compare) -> bool {
+    match pred {
+        Compare::LT => k1 < k2,
+        Compare::LE => k1 <= k2,
+        Compare::GT => k1 > k2,
+        Compare::GE => k1 >= k2,
+        Compare::EQ => k1 == k2,
+    }
+}
+
 fn node_lookup(node: &TreeNode, key: &Key, flag: &Compare) -> Option<u16> {
     if node.get_nkeys() == 0 {
         return None;
     }
     match flag {
-        Compare::LT => cmp_le(node, key),
-        Compare::LE => cmp_lt(node, key),
+        Compare::LT => cmp_lt(node, key),
+        Compare::LE => cmp_le(node, key),
         Compare::GT => cmp_gt(node, key),
         Compare::GE => cmp_ge(node, key),
         Compare::EQ => cmp_eq(node, key),
     }
 }
 
+#[derive(Clone, Copy)]
 pub(crate) enum Compare {
     LT, // <
     LE, // <=
@@ -195,7 +250,8 @@ fn cmp_lt(node: &TreeNode, key: &Key) -> Option<u16> {
         // if v == *key {
         //     return None; // key already exists
         // };
-        if v > *key {
+        if v >= *key {
+            // changed to larger equal
             hi = m;
         } else {
             lo = m + 1;
@@ -236,9 +292,6 @@ fn cmp_gt(node: &TreeNode, key: &Key) -> Option<u16> {
         let m = (hi + lo) / 2; // mid point
         let v = node.get_key(m).ok()?; // key at m
 
-        // if v == *key {
-        //     return None; // key already exists
-        // };
         if v > *key {
             hi = m;
         } else {
@@ -294,6 +347,7 @@ fn cmp_eq(node: &TreeNode, key: &Key) -> Option<u16> {
 
 #[cfg(test)]
 mod test {
+    use super::*;
     use std::error::Error;
 
     use test_log::test;
@@ -308,7 +362,7 @@ mod test {
     };
 
     #[test]
-    fn scan_single() -> Result<(), Box<dyn Error>> {
+    fn scan_single() -> Result<()> {
         let tree = mempage_tree();
 
         for i in 1u16..=100u16 {
@@ -330,7 +384,7 @@ mod test {
     }
 
     #[test]
-    fn scan_open() -> Result<(), Box<dyn Error>> {
+    fn scan_open() -> Result<()> {
         let tree = mempage_tree();
 
         for i in 1i64..=10i64 {
@@ -351,6 +405,184 @@ mod test {
         assert_eq!(recs.next().unwrap().to_string()?, "8value");
         assert_eq!(recs.next().unwrap().to_string()?, "9value");
         assert_eq!(recs.next().unwrap().to_string()?, "10value");
+        Ok(())
+    }
+
+    #[test]
+    fn cursor_next_navigation() -> Result<()> {
+        let tree = mempage_tree();
+
+        for i in 1i64..=10i64 {
+            tree.set(i.into(), format!("val{}", i).into()).unwrap();
+        }
+
+        let key = 1i64.into();
+        let btree = tree.pager.btree.borrow();
+        let mut cursor = seek(&btree, &key, Compare::EQ).unwrap();
+
+        // Navigate through all elements using next()
+        for i in 1i64..=10i64 {
+            let (k, v) = cursor.next().unwrap();
+            assert_eq!(k.to_string()?, format!("1{}", i));
+            assert_eq!(v.to_string()?, format!("val{}", i));
+        }
+
+        // Should return None after last element
+        assert!(cursor.next().is_none());
+
+        Ok(())
+    }
+
+    #[test]
+    fn cursor_prev_navigation() -> Result<()> {
+        let tree = mempage_tree();
+
+        for i in 1i64..=10i64 {
+            tree.set(i.into(), format!("val{}", i).into()).unwrap();
+        }
+
+        let key = 10i64.into();
+        let btree = tree.pager.btree.borrow();
+        let mut cursor = seek(&btree, &key, Compare::EQ).unwrap();
+
+        // Navigate backwards using prev()
+        for i in (1i64..=10i64).rev() {
+            let (k, v) = cursor.prev().unwrap();
+            assert_eq!(k.to_string()?, format!("1{}", i));
+            assert_eq!(v.to_string()?, format!("val{}", i));
+        }
+
+        // Should return None before first element
+        assert!(cursor.prev().is_none());
+
+        Ok(())
+    }
+
+    #[test]
+    fn scan_single_existing_keys() -> Result<()> {
+        let tree = mempage_tree();
+
+        for i in 1i64..=50i64 {
+            tree.set(format!("{}", i).into(), format!("value{}", i).into())
+                .unwrap();
+        }
+
+        // Test random keys
+        for i in &[1i64, 10, 25, 40, 50] {
+            let key = format!("{}", i).into();
+            let q = ScanMode::Single(key);
+            let res = tree.pager.btree.borrow().query(q);
+
+            assert!(res.is_some());
+            let records: Vec<Record> = res.unwrap().into_iter().map(Record::from_kv).collect();
+            assert_eq!(records.len(), 1);
+            assert_eq!(records[0].to_string()?, format!("{}value{}", i, i));
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn scan_single_nonexistent_key() -> Result<()> {
+        let tree = mempage_tree();
+
+        for i in 1i64..=10i64 {
+            tree.set(i.into(), "value".into()).unwrap();
+        }
+
+        let key = 999i64.into();
+        let q = ScanMode::Single(key);
+        let res = tree.pager.btree.borrow().query(q);
+
+        assert!(res.is_none());
+        Ok(())
+    }
+
+    // Test scan_open with GT (greater than)
+    #[test]
+    fn scan_open_gt() -> Result<()> {
+        let tree = mempage_tree();
+
+        for i in 1i64..=10i64 {
+            tree.set(i.into(), format!("val{}", i).into()).unwrap();
+        }
+
+        let key = 5i64.into();
+        let q = ScanMode::Open(key, Compare::GT);
+        let res = tree.pager.btree.borrow().query(q);
+
+        assert!(res.is_some());
+        let records: Vec<Record> = res.unwrap().into_iter().map(Record::from_kv).collect();
+
+        assert_eq!(records.len(), 5);
+        assert_eq!(records[0].to_string()?, "6val6");
+        assert_eq!(records[4].to_string()?, "10val10");
+
+        Ok(())
+    }
+
+    #[test]
+    fn scan_open_ge() -> Result<()> {
+        let tree = mempage_tree();
+
+        for i in 1i64..=10i64 {
+            tree.set(i.into(), format!("val{}", i).into()).unwrap();
+        }
+
+        let key = 5i64.into();
+        let q = ScanMode::Open(key, Compare::GE);
+        let res = tree.pager.btree.borrow().query(q);
+
+        assert!(res.is_some());
+        let records: Vec<Record> = res.unwrap().into_iter().map(Record::from_kv).collect();
+
+        assert_eq!(records.len(), 6);
+        assert_eq!(records[0].to_string()?, "5val5");
+        assert_eq!(records[5].to_string()?, "10val10");
+
+        Ok(())
+    }
+    #[test]
+    fn scan_open_lt() -> Result<()> {
+        let tree = mempage_tree();
+
+        for i in 1i64..=10i64 {
+            tree.set(i.into(), format!("val{}", i).into()).unwrap();
+        }
+
+        let key = 6i64.into();
+        let q = ScanMode::Open(key, Compare::LT);
+        let res = tree.pager.btree.borrow().query(q);
+
+        assert!(res.is_some());
+        let records: Vec<Record> = res.unwrap().into_iter().map(Record::from_kv).collect();
+
+        assert_eq!(records.len(), 5);
+        assert_eq!(records[0].to_string()?, "5val5");
+        assert_eq!(records[4].to_string()?, "1val1");
+
+        Ok(())
+    }
+
+    #[test]
+    fn scan_open_le() -> Result<()> {
+        let tree = mempage_tree();
+
+        for i in 1i64..=10i64 {
+            tree.set(i.into(), format!("val{}", i).into()).unwrap();
+        }
+
+        let key = 6i64.into();
+        let q = ScanMode::Open(key, Compare::LE);
+        let res = tree.pager.btree.borrow().query(q);
+
+        assert!(res.is_some());
+        let records: Vec<Record> = res.unwrap().into_iter().map(Record::from_kv).collect();
+
+        assert_eq!(records.len(), 6);
+        assert_eq!(records[0].to_string()?, "6val6");
+        assert_eq!(records[5].to_string()?, "1val1");
+
         Ok(())
     }
 }
