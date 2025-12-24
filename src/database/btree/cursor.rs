@@ -585,4 +585,63 @@ mod test {
 
         Ok(())
     }
+    // Test edge cases
+    #[test]
+    fn scan_open_from_first_element() -> Result<()> {
+        let tree = mempage_tree();
+
+        for i in 1i64..=10i64 {
+            tree.set(i.into(), "value".into()).unwrap();
+        }
+
+        let key = 1i64.into();
+        let q = ScanMode::Open(key, Compare::GE);
+        let res = tree.pager.btree.borrow().query(q);
+
+        assert!(res.is_some());
+        assert_eq!(res.unwrap().len(), 10);
+
+        Ok(())
+    }
+
+    #[test]
+    fn scan_open_from_last_element() -> Result<()> {
+        let tree = mempage_tree();
+
+        for i in 1i64..=10i64 {
+            tree.set(i.into(), "value".into()).unwrap();
+        }
+
+        let key = 10i64.into();
+        let q = ScanMode::Open(key, Compare::LE);
+        let res = tree.pager.btree.borrow().query(q);
+
+        assert!(res.is_some());
+        assert_eq!(res.unwrap().len(), 10);
+
+        Ok(())
+    }
+
+    #[test]
+    fn scan_open_beyond_range() -> Result<()> {
+        let tree = mempage_tree();
+
+        for i in 1i64..=10i64 {
+            tree.set(i.into(), "value".into()).unwrap();
+        }
+
+        // GT from last element
+        let key = 10i64.into();
+        let q = ScanMode::Open(key, Compare::GT);
+        let res = tree.pager.btree.borrow().query(q);
+        assert!(res.is_none());
+
+        // LT from first element
+        let key = 1i64.into();
+        let q = ScanMode::Open(key, Compare::LT);
+        let res = tree.pager.btree.borrow().query(q);
+        assert!(res.is_none());
+
+        Ok(())
+    }
 }
