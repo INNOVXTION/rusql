@@ -281,7 +281,7 @@ mod test {
         let key: Key = "hello".into();
         let val: Value = "world".into();
 
-        assert_eq!(key.to_string()?, "1hello");
+        assert_eq!(key.to_string(), "1 hello");
 
         let w_slice = &mut buf[..];
         w_slice
@@ -297,11 +297,11 @@ mod test {
         assert_eq!(r_slice.read_u64(), 9);
 
         assert_eq!(
-            Key::from_encoded_slice(r_slice.read_bytes(key.len())).to_string()?,
-            "1hello"
+            Key::from_encoded_slice(r_slice.read_bytes(key.len())).to_string(),
+            "1 hello"
         );
         assert_eq!(
-            Value::from_encoded_slice(r_slice.read_bytes(val.len())).to_string()?,
+            Value::from_encoded_slice(r_slice.read_bytes(val.len())).to_string(),
             "world"
         );
         Ok(())
@@ -316,8 +316,8 @@ mod test {
         slice.write_bytes(key.as_slice());
 
         assert_eq!(
-            Key::from_encoded_slice((&buf[..]).read_bytes(key.len())).to_string()?,
-            "15"
+            Key::from_encoded_slice((&buf[..]).read_bytes(key.len())).to_string(),
+            "1 5"
         );
         Ok(())
     }

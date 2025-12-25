@@ -128,7 +128,7 @@ pub fn debug_print_tree(node: &TreeNode, idx: u16) {
             for i in 0..node.get_nkeys() {
                 debug!(
                     idx = i,
-                    key = node.get_key(i).unwrap().to_string().unwrap(),
+                    key = node.get_key(i).unwrap().to_string(),
                     "-- keys in node:"
                 );
             }

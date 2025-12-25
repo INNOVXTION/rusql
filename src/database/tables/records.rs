@@ -22,19 +22,6 @@ use crate::database::{
 pub(crate) struct Key(Rc<[u8]>);
 
 impl Key {
-    /// outputs string of Key data
-    pub fn to_string(&self) -> Result<String, TableError> {
-        let mut st = String::new();
-        write!(st, "{}", self.get_tid())?;
-        for cell in self.iter() {
-            match cell {
-                DataCellRef::Str(s) => write!(st, "{}", s)?,
-                DataCellRef::Int(i) => write!(st, "{}", i)?,
-            };
-        }
-        Ok(st)
-    }
-
     pub fn iter(&self) -> KeyIterRef<'_> {
         KeyIterRef {
             data: self,
@@ -99,7 +86,6 @@ impl From<i64> for Key {
 
 impl std::fmt::Display for Key {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // outputs string of Key data
         write!(f, "{}", self.get_tid())?;
         for cell in self.iter() {
             match cell {
@@ -287,17 +273,6 @@ impl Value {
     /// assumes proper encoding
     pub fn from_encoded_slice(data: &[u8]) -> Self {
         Value(Rc::from(data))
-    }
-    /// outputs string of Key data
-    pub fn to_string(&self) -> Result<String, TableError> {
-        let mut st = String::new();
-        for cell in self.iter() {
-            match cell {
-                DataCellRef::Str(s) => write!(st, "{}", s)?,
-                DataCellRef::Int(i) => write!(st, "{}", i)?,
-            };
-        }
-        Ok(st)
     }
 
     pub fn iter(&self) -> ValueIterRef<'_> {
@@ -489,13 +464,14 @@ impl Ord for Value {
 
 impl std::fmt::Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // outputs string of Value data
+        let mut str = String::new();
         for cell in self.iter() {
             match cell {
-                DataCellRef::Str(s) => write!(f, "{} ", s)?,
-                DataCellRef::Int(i) => write!(f, "{} ", i)?,
+                DataCellRef::Str(s) => write!(str, "{} ", s)?,
+                DataCellRef::Int(i) => write!(str, "{} ", i)?,
             };
         }
+        write!(f, "{}", str.trim())?;
         Ok(())
     }
 }
@@ -594,17 +570,19 @@ impl Record {
         v.extend(kv.1.into_iter());
         Record { data: v }
     }
+}
 
-    /// outputs record as string, no TID
-    pub fn to_string(&self) -> Result<String, TableError> {
-        let mut st = String::new();
+impl std::fmt::Display for Record {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut s = String::new();
         for cell in self.data.iter() {
             match cell {
-                DataCell::Str(s) => write!(st, "{}", s)?,
-                DataCell::Int(i) => write!(st, "{}", i)?,
+                DataCell::Str(str) => write!(s, "{} ", str)?,
+                DataCell::Int(i) => write!(s, "{} ", i)?,
             };
         }
-        Ok(st)
+        write!(f, "{}", s.trim())?;
+        Ok(())
     }
 }
 
@@ -757,8 +735,8 @@ mod test {
         let rec = Record::new().add(s1).add(i1).add(s2);
 
         let (key, value) = rec.encode(&table).unwrap();
-        assert_eq!(key.to_string()?, "2hello10");
-        assert_eq!(value.to_string()?, "world");
+        assert_eq!(key.to_string(), "2 hello 10");
+        assert_eq!(value.to_string(), "world");
         Ok(())
     }
 
@@ -789,7 +767,7 @@ mod test {
             .encode(&table)?;
 
         assert_eq!(key1, key2);
-        assert_eq!(key1.to_string()?, "2hello10");
+        assert_eq!(key1.to_string(), "2 hello 10");
 
         let (key3, value3) = Record::new()
             .add("smol")
@@ -798,23 +776,23 @@ mod test {
             .encode(&table)?;
 
         assert!(key2 < key3);
-        assert_eq!(key3.to_string()?, "2smol5");
+        assert_eq!(key3.to_string(), "2 smol 5");
         Ok(())
     }
 
     #[test]
     fn records_test_str() -> Result<(), Box<dyn std::error::Error>> {
         let key = Key::from_unencoded_str("hello");
-        assert_eq!(key.to_string()?, "1hello");
+        assert_eq!(key.to_string(), "1 hello");
 
         let key: Key = "hello".into();
-        assert_eq!(key.to_string()?, "1hello");
+        assert_eq!(key.to_string(), "1 hello");
 
         let key = Key::from_unencoded_str("owned hello".to_string());
-        assert_eq!(key.to_string()?, "1owned hello");
+        assert_eq!(key.to_string(), "1 owned hello");
 
         let val: Value = "world".into();
-        assert_eq!(val.to_string()?, "world");
+        assert_eq!(val.to_string(), "world");
         Ok(())
     }
 

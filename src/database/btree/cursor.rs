@@ -153,7 +153,7 @@ impl<'a, P: Pager> Cursor<'a, P> {
             return None;
         }
         let res = self.deref();
-        if res.1.to_string().unwrap() == "" {
+        if res.1.to_string() == "" {
             // empty key edge case!
             self.empty = true;
             return None;
@@ -356,8 +356,6 @@ fn cmp_eq(node: &TreeNode, key: &Key) -> Option<u16> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use std::error::Error;
-
     use test_log::test;
 
     use crate::database::{
@@ -385,7 +383,7 @@ mod test {
             assert!(res.is_some());
             let res: Vec<Record> = res.unwrap().into_iter().map(Record::from_kv).collect();
 
-            assert_eq!(res[0].to_string()?, format!("{i}value"));
+            assert_eq!(res[0].to_string(), format!("{i} value"));
         }
 
         Ok(())
@@ -408,11 +406,11 @@ mod test {
 
         let mut recs = res.unwrap().into_iter().map(Record::from_kv).into_iter();
 
-        assert_eq!(recs.next().unwrap().to_string()?, "6value");
-        assert_eq!(recs.next().unwrap().to_string()?, "7value");
-        assert_eq!(recs.next().unwrap().to_string()?, "8value");
-        assert_eq!(recs.next().unwrap().to_string()?, "9value");
-        assert_eq!(recs.next().unwrap().to_string()?, "10value");
+        assert_eq!(recs.next().unwrap().to_string(), "6 value");
+        assert_eq!(recs.next().unwrap().to_string(), "7 value");
+        assert_eq!(recs.next().unwrap().to_string(), "8 value");
+        assert_eq!(recs.next().unwrap().to_string(), "9 value");
+        assert_eq!(recs.next().unwrap().to_string(), "10 value");
         Ok(())
     }
 
@@ -431,8 +429,8 @@ mod test {
         // Navigate through all elements using next()
         for i in 1i64..=10i64 {
             let (k, v) = cursor.next().unwrap();
-            assert_eq!(k.to_string()?, format!("1{}", i));
-            assert_eq!(v.to_string()?, format!("val{}", i));
+            assert_eq!(k.to_string(), format!("1 {}", i));
+            assert_eq!(v.to_string(), format!("val{}", i));
         }
 
         // Should return None after last element
@@ -456,8 +454,8 @@ mod test {
         // Navigate backwards using prev()
         for i in (1i64..=10i64).rev() {
             let (k, v) = cursor.prev().unwrap();
-            assert_eq!(k.to_string()?, format!("1{}", i));
-            assert_eq!(v.to_string()?, format!("val{}", i));
+            assert_eq!(k.to_string(), format!("1 {}", i));
+            assert_eq!(v.to_string(), format!("val{}", i));
         }
 
         // Should return None before first element
@@ -484,7 +482,7 @@ mod test {
             assert!(res.is_some());
             let records: Vec<Record> = res.unwrap().into_iter().map(Record::from_kv).collect();
             assert_eq!(records.len(), 1);
-            assert_eq!(records[0].to_string()?, format!("{}value{}", i, i));
+            assert_eq!(records[0].to_string(), format!("{} value{}", i, i));
         }
 
         Ok(())
@@ -523,8 +521,8 @@ mod test {
         let records: Vec<Record> = res.unwrap().into_iter().map(Record::from_kv).collect();
 
         assert_eq!(records.len(), 5);
-        assert_eq!(records[0].to_string()?, "6val6");
-        assert_eq!(records[4].to_string()?, "10val10");
+        assert_eq!(records[0].to_string(), "6 val6");
+        assert_eq!(records[4].to_string(), "10 val10");
 
         Ok(())
     }
@@ -545,8 +543,8 @@ mod test {
         let records: Vec<Record> = res.unwrap().into_iter().map(Record::from_kv).collect();
 
         assert_eq!(records.len(), 6);
-        assert_eq!(records[0].to_string()?, "5val5");
-        assert_eq!(records[5].to_string()?, "10val10");
+        assert_eq!(records[0].to_string(), "5 val5");
+        assert_eq!(records[5].to_string(), "10 val10");
 
         Ok(())
     }
@@ -566,8 +564,8 @@ mod test {
         let records: Vec<Record> = res.unwrap().into_iter().map(Record::from_kv).collect();
 
         assert_eq!(records.len(), 5);
-        assert_eq!(records[0].to_string()?, "5val5");
-        assert_eq!(records[4].to_string()?, "1val1");
+        assert_eq!(records[0].to_string(), "5 val5");
+        assert_eq!(records[4].to_string(), "1 val1");
 
         Ok(())
     }
@@ -588,8 +586,8 @@ mod test {
         let records: Vec<Record> = res.unwrap().into_iter().map(Record::from_kv).collect();
 
         assert_eq!(records.len(), 6);
-        assert_eq!(records[0].to_string()?, "6val6");
-        assert_eq!(records[5].to_string()?, "1val1");
+        assert_eq!(records[0].to_string(), "6 val6");
+        assert_eq!(records[5].to_string(), "1 val1");
 
         Ok(())
     }
@@ -668,8 +666,8 @@ mod test {
         assert!(res.is_some());
         let records: Vec<Record> = res.unwrap().into_iter().map(Record::from_kv).collect();
         assert_eq!(records.len(), 500);
-        assert_eq!(records[0].to_string()?, "501val501");
-        assert_eq!(records[499].to_string()?, "1000val1000");
+        assert_eq!(records[0].to_string(), "501 val501");
+        assert_eq!(records[499].to_string(), "1000 val1000");
 
         Ok(())
     }
@@ -689,27 +687,27 @@ mod test {
         let key = 5i64.into();
         let cursor = seek(&btree, &key, Compare::EQ).unwrap();
         let (k, _) = cursor.deref();
-        assert_eq!(k.to_string()?, "15");
+        assert_eq!(k.to_string(), "1 5");
 
         // Test GE - deref should return the exact match or next greater
         let cursor = seek(&btree, &key, Compare::GE).unwrap();
         let (k, _) = cursor.deref();
-        assert_eq!(k.to_string()?, "15");
+        assert_eq!(k.to_string(), "1 5");
 
         // Test GT - deref should return the next value after key
         let cursor = seek(&btree, &key, Compare::GT).unwrap();
         let (k, _) = cursor.deref();
-        assert_eq!(k.to_string()?, "16");
+        assert_eq!(k.to_string(), "1 6");
 
         // Test LE - deref should return the exact match or next smaller
         let cursor = seek(&btree, &key, Compare::LE).unwrap();
         let (k, _) = cursor.deref();
-        assert_eq!(k.to_string()?, "15");
+        assert_eq!(k.to_string(), "1 5");
 
         // Test LT - deref should return the value before key
         let cursor = seek(&btree, &key, Compare::LT).unwrap();
         let (k, _) = cursor.deref();
-        assert_eq!(k.to_string()?, "14");
+        assert_eq!(k.to_string(), "1 4");
 
         Ok(())
     }

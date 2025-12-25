@@ -242,7 +242,7 @@ impl Table {
 
     /// decodes JSON string into table
     pub fn decode(value: Value) -> Result<Self> {
-        serde_json::from_str(&value.to_string()?).map_err(|e| {
+        serde_json::from_str(&value.to_string()).map_err(|e| {
             error!(%e, "error when decoding table");
             TableError::EncodeTableError(e).into()
         })

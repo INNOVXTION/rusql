@@ -228,7 +228,7 @@ impl<P: Pager> BTree<P> {
                 debug_print_tree(&node, idx);
 
                 if node.get_key(idx).unwrap() == *key {
-                    debug!("deleting key {} at idx {idx}", key.to_string().unwrap());
+                    debug!("deleting key {} at idx {idx}", key.to_string());
                     let mut new = TreeNode::new();
                     new.leaf_kvdelete(&node, idx).unwrap();
                     new.set_header(NodeType::Leaf, node.get_nkeys() - 1);
