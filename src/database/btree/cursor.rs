@@ -9,14 +9,51 @@ use crate::database::{
 };
 
 pub(crate) enum ScanMode {
-    // scanning for a single matching key
-    Single(Key),
     // scanning the entire table starting from key
     Open(Key, Compare),
-    Closed {
+    // scans table within range
+    Range {
         lo: (Key, Compare),
         hi: (Key, Compare),
     },
+}
+
+impl ScanMode {
+    pub(super) fn into_iter<P: Pager>(self, tree: &BTree<P>) -> Option<ScanIter<'_, P>> {
+        match self {
+            ScanMode::Open(key, compare) => {
+                let dir = match compare {
+                    Compare::LT | Compare::LE => CursorDir::Prev,
+                    Compare::GT | Compare::GE => CursorDir::Next,
+                    Compare::EQ => return None,
+                };
+                Some(ScanIter {
+                    cursor: seek(tree, &key, compare)?,
+                    tid: key.get_tid(),
+                    dir,
+                    range: None,
+                    finished: false,
+                })
+            }
+            ScanMode::Range { lo, hi } => {
+                let tid = lo.0.get_tid();
+                if tid != hi.0.get_tid() {
+                    return None;
+                }
+                if lo.0 >= hi.0 {
+                    return None;
+                }
+
+                Some(ScanIter {
+                    cursor: seek(tree, &lo.0, lo.1)?,
+                    tid,
+                    dir: CursorDir::Next,
+                    range: Some(hi),
+                    finished: false,
+                })
+            }
+        }
+    }
 }
 
 pub(super) fn scan_single<P: Pager>(tree: &BTree<P>, key: &Key) -> Option<Vec<(Key, Value)>> {
@@ -24,6 +61,65 @@ pub(super) fn scan_single<P: Pager>(tree: &BTree<P>, key: &Key) -> Option<Vec<(K
     let cursor = seek(tree, &key, Compare::EQ)?;
     res.push(cursor.deref());
     Some(res)
+}
+
+pub(crate) struct OpenScanIter<'a, P: Pager> {
+    cursor: Cursor<'a, P>,
+    tid: u64,
+    key: Key,
+    cmp: Compare,
+    finished: bool,
+}
+
+impl<'a, P: Pager> OpenScanIter<'a, P> {
+    fn new(tree: &'a BTree<P>, key: Key, cmp: Compare) -> Option<Self> {
+        if cmp == Compare::EQ {
+            return None;
+        }
+        Some(Self {
+            cursor: seek(tree, &key, cmp)?,
+            tid: key.get_tid(),
+            key,
+            cmp,
+            finished: false,
+        })
+    }
+}
+
+impl<'a, P: Pager> Iterator for OpenScanIter<'a, P> {
+    type Item = (Key, Value);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.finished {
+            return None;
+        }
+        match self.cmp {
+            Compare::LT | Compare::LE => {
+                let (k, v) = self.cursor.prev()?;
+                debug!(key = %k, value = %v);
+
+                if k.get_tid() != self.tid {
+                    // return as soon as we see a key belonging to a different table
+                    self.finished = true;
+                    return None;
+                };
+                Some((k, v))
+            }
+            Compare::GT | Compare::GE => {
+                let (k, v) = self.cursor.next()?;
+                debug!(key = %k, value = %v);
+
+                if k.get_tid() != self.tid {
+                    // return as soon as we see a key belonging to a different table
+                    self.finished = true;
+                    return None;
+                };
+                Some((k, v))
+            }
+            // we check for Compare::EQ when creating the iterator
+            _ => unreachable!(),
+        }
+    }
 }
 
 pub(super) fn scan_open<P: Pager>(
@@ -66,12 +162,66 @@ pub(super) fn scan_open<P: Pager>(
     }
 }
 
-pub(super) fn scan_closed<P: Pager>(
-    tree: &BTree<P>,
-    lo: (Key, Compare),
-    hi: (Key, Compare),
-) -> Option<Vec<(Key, Value)>> {
-    todo!()
+pub(crate) struct ScanIter<'a, P: Pager> {
+    cursor: Cursor<'a, P>,
+    tid: u64,
+    dir: CursorDir,
+    range: Option<(Key, Compare)>,
+    finished: bool,
+}
+
+enum CursorDir {
+    Next,
+    Prev,
+}
+
+impl<'a, P: Pager> Iterator for ScanIter<'a, P> {
+    type Item = (Key, Value);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.finished {
+            return None;
+        }
+
+        match self.range {
+            // range scan
+            Some(ref hi) => {
+                let (k, v) = self.cursor.next()?;
+
+                if !key_cmp(&k, &hi.0, hi.1) {
+                    // return as soon as key doesnt match range key predicate
+                    self.finished = true;
+                    return None;
+                }
+                Some((k, v))
+            }
+            // open scan
+            None => {
+                match self.dir {
+                    CursorDir::Next => {
+                        let (k, v) = self.cursor.next()?;
+
+                        if k.get_tid() != self.tid {
+                            // return as soon as we see a key belonging to a different table
+                            self.finished = true;
+                            return None;
+                        };
+                        Some((k, v))
+                    }
+                    CursorDir::Prev => {
+                        let (k, v) = self.cursor.prev()?;
+
+                        if k.get_tid() != self.tid {
+                            // return as soon as we see a key belonging to a different table
+                            self.finished = true;
+                            return None;
+                        };
+                        Some((k, v))
+                    }
+                }
+            }
+        }
+    }
 }
 
 /*
@@ -108,11 +258,6 @@ impl<'a, P: Pager> Cursor<'a, P> {
         let key = node.get_key(idx).unwrap();
         let val = node.get_val(idx).unwrap();
         (key, val)
-    }
-
-    // pre condition for get
-    pub fn valid(&self) -> bool {
-        todo!()
     }
 
     // moves the path one idx forward
@@ -153,7 +298,7 @@ impl<'a, P: Pager> Cursor<'a, P> {
             return None;
         }
         let res = self.deref();
-        if res.1.to_string() == "" {
+        if res.0.to_string() == "1 " {
             // empty key edge case!
             self.empty = true;
             return None;
@@ -197,20 +342,30 @@ fn seek<'a, P: Pager>(tree: &'a BTree<P>, key: &Key, flag: Compare) -> Option<Cu
             NodeType::Node => {
                 let idx = node_lookup(&node, &key, &Compare::LE)?; // navigating nodes
                 let ptr = node.get_ptr(idx);
+
                 cursor.path.push(node);
                 cursor.pos.push(idx);
+
                 Some(ptr)
             }
             NodeType::Leaf => {
                 let idx = node_lookup(&node, &key, &flag)?;
+
                 cursor.path.push(node);
                 cursor.pos.push(idx);
+
                 None
             }
         }
     }
-    debug!("creating cursor , pos: {:?}", cursor.pos);
-    Some(cursor)
+    debug!("creating cursor, pos: {:?}", cursor.pos);
+    if cursor.pos.is_empty() {
+        None
+    } else if cursor.deref().0.to_string() == "1 " {
+        None
+    } else {
+        Some(cursor)
+    }
 }
 
 fn key_cmp(k1: &Key, k2: &Key, pred: Compare) -> bool {
@@ -236,7 +391,7 @@ fn node_lookup(node: &TreeNode, key: &Key, flag: &Compare) -> Option<u16> {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, PartialOrd)]
 pub(crate) enum Compare {
     LT, // <
     LE, // <=
@@ -368,7 +523,7 @@ mod test {
     };
 
     #[test]
-    fn scan_single() -> Result<()> {
+    fn scan_single1() -> Result<()> {
         let tree = mempage_tree();
 
         for i in 1u16..=100u16 {
@@ -376,9 +531,9 @@ mod test {
         }
 
         for i in 1u16..=100u16 {
-            let key = format!("{i}").into();
-            let q = ScanMode::Single(key);
-            let res = tree.pager.btree.borrow().query(q);
+            let key = format!("{}", i).into();
+            let tree_ref = tree.pager.btree.borrow();
+            let res = scan_single(&tree_ref, &key);
 
             assert!(res.is_some());
             let res: Vec<Record> = res.unwrap().into_iter().map(Record::from_kv).collect();
@@ -399,12 +554,12 @@ mod test {
 
         let key = 5i64.into();
         let q = ScanMode::Open(key, Compare::GT);
-        let res = tree.pager.btree.borrow().query(q);
+        let tree_ref = tree.pager.btree.borrow();
+        let res = tree_ref.scan(q);
 
-        assert!(res.is_some());
-        assert_eq!(res.as_ref().unwrap().len(), 5);
+        assert!(res.is_ok());
 
-        let mut recs = res.unwrap().into_iter().map(Record::from_kv).into_iter();
+        let mut recs = res.unwrap().map(Record::from_kv).into_iter();
 
         assert_eq!(recs.next().unwrap().to_string(), "6 value");
         assert_eq!(recs.next().unwrap().to_string(), "7 value");
@@ -476,8 +631,8 @@ mod test {
         // Test random keys
         for i in &[1i64, 10, 25, 40, 50] {
             let key = format!("{}", i).into();
-            let q = ScanMode::Single(key);
-            let res = tree.pager.btree.borrow().query(q);
+            let tree_ref = tree.pager.btree.borrow();
+            let res = scan_single(&tree_ref, &key);
 
             assert!(res.is_some());
             let records: Vec<Record> = res.unwrap().into_iter().map(Record::from_kv).collect();
@@ -497,8 +652,8 @@ mod test {
         }
 
         let key = 999i64.into();
-        let q = ScanMode::Single(key);
-        let res = tree.pager.btree.borrow().query(q);
+        let tree_ref = tree.pager.btree.borrow();
+        let res = scan_single(&tree_ref, &key);
 
         assert!(res.is_none());
         Ok(())
@@ -515,9 +670,10 @@ mod test {
 
         let key = 5i64.into();
         let q = ScanMode::Open(key, Compare::GT);
-        let res = tree.pager.btree.borrow().query(q);
+        let tree_ref = tree.pager.btree.borrow();
+        let res = tree_ref.scan(q);
 
-        assert!(res.is_some());
+        assert!(res.is_ok());
         let records: Vec<Record> = res.unwrap().into_iter().map(Record::from_kv).collect();
 
         assert_eq!(records.len(), 5);
@@ -537,9 +693,10 @@ mod test {
 
         let key = 5i64.into();
         let q = ScanMode::Open(key, Compare::GE);
-        let res = tree.pager.btree.borrow().query(q);
+        let tree_ref = tree.pager.btree.borrow();
+        let res = tree_ref.scan(q);
 
-        assert!(res.is_some());
+        assert!(res.is_ok());
         let records: Vec<Record> = res.unwrap().into_iter().map(Record::from_kv).collect();
 
         assert_eq!(records.len(), 6);
@@ -558,9 +715,10 @@ mod test {
 
         let key = 6i64.into();
         let q = ScanMode::Open(key, Compare::LT);
-        let res = tree.pager.btree.borrow().query(q);
+        let tree_ref = tree.pager.btree.borrow();
+        let res = tree_ref.scan(q);
 
-        assert!(res.is_some());
+        assert!(res.is_ok());
         let records: Vec<Record> = res.unwrap().into_iter().map(Record::from_kv).collect();
 
         assert_eq!(records.len(), 5);
@@ -580,9 +738,10 @@ mod test {
 
         let key = 6i64.into();
         let q = ScanMode::Open(key, Compare::LE);
-        let res = tree.pager.btree.borrow().query(q);
+        let tree_ref = tree.pager.btree.borrow();
+        let res = tree_ref.scan(q);
 
-        assert!(res.is_some());
+        assert!(res.is_ok());
         let records: Vec<Record> = res.unwrap().into_iter().map(Record::from_kv).collect();
 
         assert_eq!(records.len(), 6);
@@ -602,10 +761,11 @@ mod test {
 
         let key = 1i64.into();
         let q = ScanMode::Open(key, Compare::GE);
-        let res = tree.pager.btree.borrow().query(q);
+        let tree_ref = tree.pager.btree.borrow();
+        let res = tree_ref.scan(q);
 
-        assert!(res.is_some());
-        assert_eq!(res.unwrap().len(), 10);
+        assert!(res.is_ok());
+        assert_eq!(res.unwrap().count(), 10);
 
         Ok(())
     }
@@ -620,10 +780,11 @@ mod test {
 
         let key = 10i64.into();
         let q = ScanMode::Open(key, Compare::LE);
-        let res = tree.pager.btree.borrow().query(q);
+        let tree_ref = tree.pager.btree.borrow();
+        let res = tree_ref.scan(q);
 
-        assert!(res.is_some());
-        assert_eq!(res.unwrap().len(), 10);
+        assert!(res.is_ok());
+        assert_eq!(res.unwrap().count(), 10);
 
         Ok(())
     }
@@ -636,17 +797,21 @@ mod test {
             tree.set(i.into(), "value".into()).unwrap();
         }
 
+        let tree_ref = tree.pager.btree.borrow();
+
         // GT from last element
         let key = 10i64.into();
         let q = ScanMode::Open(key, Compare::GT);
-        let res = tree.pager.btree.borrow().query(q);
-        assert!(res.is_none());
+        let res = tree_ref.scan(q);
+
+        assert!(res.is_err());
 
         // LT from first element
         let key = 1i64.into();
         let q = ScanMode::Open(key, Compare::LT);
-        let res = tree.pager.btree.borrow().query(q);
-        assert!(res.is_none());
+        let res = tree_ref.scan(q);
+
+        assert!(res.is_err());
 
         Ok(())
     }
@@ -661,10 +826,13 @@ mod test {
 
         let key = 500i64.into();
         let q = ScanMode::Open(key, Compare::GT);
-        let res = tree.pager.btree.borrow().query(q);
+        let tree_ref = tree.pager.btree.borrow();
+        let res = tree_ref.scan(q);
 
-        assert!(res.is_some());
-        let records: Vec<Record> = res.unwrap().into_iter().map(Record::from_kv).collect();
+        assert!(res.is_ok());
+
+        let records: Vec<Record> = res.unwrap().map(Record::from_kv).collect();
+
         assert_eq!(records.len(), 500);
         assert_eq!(records[0].to_string(), "501 val501");
         assert_eq!(records[499].to_string(), "1000 val1000");
@@ -717,15 +885,15 @@ mod test {
         let tree = mempage_tree();
 
         let key = 1i64.into();
-        let q = ScanMode::Single(key);
-        let res = tree.pager.btree.borrow().query(q);
+        let tree_ref = tree.pager.btree.borrow();
+        let res = scan_single(&tree_ref, &key);
 
         assert!(res.is_none());
 
         let q = ScanMode::Open(1i64.into(), Compare::GT);
-        let res = tree.pager.btree.borrow().query(q);
+        let res = tree_ref.scan(q);
 
-        assert!(res.is_none());
+        assert!(res.is_err());
 
         Ok(())
     }
@@ -734,23 +902,23 @@ mod test {
     fn single_element_tree() -> Result<()> {
         let tree = mempage_tree();
         tree.set(1i64.into(), "value".into()).unwrap();
+        let tree_ref = tree.pager.btree.borrow();
 
         // Scan single
-        let q = ScanMode::Single(1i64.into());
-        let res = tree.pager.btree.borrow().query(q);
+        let res = scan_single(&tree_ref, &1i64.into());
         assert!(res.is_some());
         assert_eq!(res.unwrap().len(), 1);
 
         // Scan GT (should return none)
         let q = ScanMode::Open(1i64.into(), Compare::GT);
-        let res = tree.pager.btree.borrow().query(q);
-        assert!(res.is_none());
+        let res = tree_ref.scan(q);
+        assert!(res.is_err());
 
         // Scan GE (should return the element)
         let q = ScanMode::Open(1i64.into(), Compare::GE);
-        let res = tree.pager.btree.borrow().query(q);
-        assert!(res.is_some());
-        assert_eq!(res.unwrap().len(), 1);
+        let res = tree_ref.scan(q);
+        assert!(res.is_ok());
+        assert_eq!(res.unwrap().count(), 1);
 
         Ok(())
     }

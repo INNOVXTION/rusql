@@ -570,6 +570,10 @@ impl Record {
         v.extend(kv.1.into_iter());
         Record { data: v }
     }
+
+    fn test(id: u64, key: &str, val: &str) -> Self {
+        todo!()
+    }
 }
 
 impl std::fmt::Display for Record {

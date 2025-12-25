@@ -5,14 +5,13 @@ use tracing::debug;
 use tracing::info;
 use tracing::instrument;
 
-use crate::database::btree::cursor::scan_open;
-use crate::database::btree::cursor::scan_single;
+use crate::database::btree::cursor::ScanIter;
 use crate::database::{
     btree::{
         cursor::{Compare, Cursor, ScanMode},
         node::*,
     },
-    errors::Error,
+    errors::{Error, Result},
     helper::debug_print_tree,
     pager::{
         EnvoyV1,
@@ -30,20 +29,21 @@ pub(crate) struct BTree<P: Pager> {
 pub(crate) trait Tree {
     type Codec: Pager;
 
-    fn insert(&mut self, key: Key, value: Value) -> Result<(), Error>;
-    fn delete(&mut self, key: Key) -> Result<(), Error>;
+    fn insert(&mut self, key: Key, value: Value) -> Result<()>;
+    fn delete(&mut self, key: Key) -> Result<()>;
     fn search(&self, key: Key) -> Option<Value>;
-    fn query(&self, mode: ScanMode) -> Option<Vec<(Key, Value)>>;
 
     fn set_root(&mut self, ptr: Option<Pointer>);
     fn get_root(&self) -> Option<Pointer>;
+
+    fn scan(&self, mode: ScanMode) -> Result<ScanIter<'_, Self::Codec>>;
 }
 
 impl<P: Pager> Tree for BTree<P> {
     type Codec = P;
 
     #[instrument(name = "tree insert", skip_all)]
-    fn insert(&mut self, key: Key, val: Value) -> Result<(), Error> {
+    fn insert(&mut self, key: Key, val: Value) -> Result<()> {
         info!("inserting key: {key}, val: {val}",);
         // get root node
         let root = match self.root_ptr {
@@ -98,7 +98,7 @@ impl<P: Pager> Tree for BTree<P> {
     }
 
     #[instrument(name = "tree delete", skip_all)]
-    fn delete(&mut self, key: Key) -> Result<(), Error> {
+    fn delete(&mut self, key: Key) -> Result<()> {
         info!("deleting kv: {key}",);
         let root_ptr = match self.root_ptr {
             Some(n) => n,
@@ -147,23 +147,19 @@ impl<P: Pager> Tree for BTree<P> {
         self.tree_search(self.decode(self.root_ptr?), key)
     }
 
-    // entry point for scan query
-    fn query(&self, mode: ScanMode) -> Option<Vec<(Key, Value)>> {
-        if self.root_ptr.is_none() {
-            return None;
-        }
-        match mode {
-            ScanMode::Single(key) => scan_single(self, &key),
-            ScanMode::Open(key, compare) => scan_open(self, &key, compare),
-            ScanMode::Closed { lo, hi } => todo!(),
-        }
-    }
-
     fn get_root(&self) -> Option<Pointer> {
         self.root_ptr
     }
     fn set_root(&mut self, ptr: Option<Pointer>) {
         self.root_ptr = ptr
+    }
+    // entry point for scan query
+    fn scan(&self, mode: ScanMode) -> Result<ScanIter<'_, P>> {
+        if self.root_ptr.is_none() {
+            return Err(Error::SearchError("tree is empty".to_string()));
+        }
+        mode.into_iter(self)
+            .ok_or(Error::SearchError("couldnt turn into iter".to_string()))
     }
 }
 
