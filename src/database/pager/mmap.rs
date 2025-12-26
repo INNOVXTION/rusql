@@ -85,6 +85,8 @@ fn mmap_new(fd: &OwnedFd, offset: u64, length: usize) -> Result<Chunk, PagerErro
 pub fn mmap_extend(db: &EnvoyV1, size: usize) -> Result<(), PagerError> {
     let mmap_ref = db.mmap.borrow();
     let buf_ref = db.buffer.borrow();
+
+    // do we need to extend?
     if size <= mmap_ref.total {
         debug!(
             "no mmap extension needed: mmap_size {size} ({}), file_size {}",
@@ -93,6 +95,8 @@ pub fn mmap_extend(db: &EnvoyV1, size: usize) -> Result<(), PagerError> {
         );
         return Ok(()); // enough range
     };
+
+    // extending the mmap
     debug!("extending mmap: for file size {size}, {}", as_mb(size));
     let mut alloc = 64 << 20; // allocating 64 MiB
     while mmap_ref.total + alloc < size {
@@ -104,6 +108,8 @@ pub fn mmap_extend(db: &EnvoyV1, size: usize) -> Result<(), PagerError> {
         e
     })?;
     drop(mmap_ref);
+
+    // updating values
     let mut mmap_ref = db.mmap.borrow_mut();
     mmap_ref.total += alloc;
     mmap_ref.chunks.push(chunk);

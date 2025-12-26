@@ -260,13 +260,15 @@ fn seek<'a, P: Pager>(tree: &'a BTree<P>, key: &Key, flag: Compare) -> Option<Cu
         }
     }
     debug!("creating cursor, pos: {:?}", cursor.pos);
-    if cursor.pos.is_empty() {
-        None
-    } else if cursor.deref().0.to_string() == "1 " {
-        None
-    } else {
-        Some(cursor)
+    if cursor.pos.is_empty() || cursor.path.is_empty() {
+        return None;
     }
+    if cursor.deref().0.to_string() == "1 " {
+        return None;
+    }
+    assert_eq!(cursor.pos.len(), cursor.path.len());
+
+    Some(cursor)
 }
 
 fn key_cmp(k1: &Key, k2: &Key, pred: Compare) -> bool {

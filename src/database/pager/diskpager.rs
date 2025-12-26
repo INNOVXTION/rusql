@@ -61,11 +61,6 @@ pub(crate) enum NodeFlag {
     Freelist,
 }
 
-enum ErrorStatus {
-    Buffer,
-    MetaPage { expected: MetaPage },
-}
-
 pub(crate) struct EnvoyV1 {
     path: &'static str,
     pub database: OwnedFd,
@@ -73,7 +68,7 @@ pub(crate) struct EnvoyV1 {
     pub mmap: RefCell<Mmap>,
 
     failed: Cell<bool>,
-    // update_status: RefCell<Option<ErrorStatus>>,
+
     tree: Rc<RefCell<dyn Tree<Codec = Self>>>,
     freelist: Rc<RefCell<dyn GC<Codec = Self>>>,
     // WIP
@@ -270,18 +265,12 @@ impl EnvoyV1 {
         debug!("tree operation complete, updating file");
 
         if self.failed.get() {
-            debug!("failed update detected...");
-            // checking after previous error to see if the meta page on disk fits with page in memory
-            if self.mmap.borrow().chunks[0].to_slice()[..METAPAGE_SIZE] == **recov_page {
-                debug!("meta page intact!");
-                self.failed.set(false);
-            // reverting to in memory meta page
-            } else {
-                debug!("meta page corrupted, reverting state...");
-                metapage_write(self, recov_page).expect("meta page recovery write error");
-                rustix::fs::fsync(&self.database).expect("fsync metapage for restoration failed");
-                self.failed.set(false);
-            }
+            // making sure the meta page is a known good state after a potential write error
+            debug!("failed update detected, restoring meta page...");
+
+            metapage_write(self, recov_page).expect("meta page recovery write error");
+            rustix::fs::fsync(&self.database).expect("fsync metapage for restoration failed");
+            self.failed.set(false);
         };
         if let Err(e) = self.file_update() {
             // in case the file writing fails, we revert back to the old meta page
@@ -289,7 +278,9 @@ impl EnvoyV1 {
 
             // save the pager from before the current operation to be rewritten later
             metapage_load(self, recov_page);
-            self.buffer.borrow_mut().hmap.clear(); // discard buffer
+
+            // discard buffer
+            self.buffer.borrow_mut().hmap.clear();
             self.failed.set(true);
 
             return Err(Error::PagerError(e));
@@ -583,7 +574,7 @@ fn metapage_read(pager: &EnvoyV1, file_size: u64) {
     }
     debug!("root read: loading meta page");
     let mut meta = MetaPage::new();
-    meta.copy_from_slice(&pager.mmap.borrow().chunks[0].to_slice()[..PAGE_SIZE]);
+    meta.copy_from_slice(&pager.mmap.borrow().chunks[0].to_slice()[..METAPAGE_SIZE]);
     metapage_load(pager, &meta);
     assert!(pager.buffer.borrow().npages != 0);
 }

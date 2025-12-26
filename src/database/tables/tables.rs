@@ -1,6 +1,7 @@
 use std::{collections::HashMap, marker::PhantomData, ops::Deref};
 
 use crate::database::{
+    btree::ScanMode,
     codec::Codec,
     errors::{Error, Result, TableError},
     pager::diskpager::KVEngine,
@@ -318,7 +319,7 @@ impl<KV: KVEngine> Database<KV> {
                     })?;
                     Ok(i as u64 + 1)
                 } else {
-                    // error when types dont match
+                    // types dont match
                     return Err(TableError::TableIdError(
                         "id doesnt match expected int".to_string(),
                     ))?;
@@ -332,13 +333,13 @@ impl<KV: KVEngine> Database<KV> {
                     .add(META_TABLE_ID_ROW)
                     .add(3)
                     .encode(&meta)
-                    .expect("this cant fail"); // tid 1 and 2 are taken
+                    .expect("this cant fail");
 
                 self.kve.set(k, v).map_err(|e| {
                     error!(?e);
                     TableError::TableIdError("error when retrieving id".to_string())
                 })?;
-                Ok(3)
+                Ok(3) // tid 1 and 2 are taken
             }
         }
     }
@@ -401,6 +402,7 @@ impl<KV: KVEngine> Database<KV> {
         }
     }
 
+    // TODO: decrement/free up table id
     #[instrument(name = "drop table", skip_all)]
     pub fn drop_table(&mut self, name: &str) -> Result<()> {
         info!(name, "dropping table");
@@ -412,6 +414,7 @@ impl<KV: KVEngine> Database<KV> {
         }
         let qu = Query::new().add(DEF_TABLE_COL1, name).encode(&self.tdef)?;
 
+        self.buffer.remove(name);
         self.kve.delete(qu).map_err(|e| {
             error!(%e, "error when dropping table");
             TableError::DeleteTableError("dropping table error when deleting".to_string()).into()
@@ -426,10 +429,13 @@ impl<KV: KVEngine> Database<KV> {
         let _ = self.kve.set(key, value);
         Ok(())
     }
+
     fn get_rec(&self, query: Query, schema: &Table) -> Option<Value> {
         info!(?query, "querying");
         self.kve.get(query.encode(schema).ok()?).ok()
     }
+
+    fn range_query(&self, moder: ScanMode) {}
 }
 
 // outward API
@@ -464,7 +470,7 @@ mod test {
     }
 
     #[test]
-    fn tables_insert1() {
+    fn tables_encode_decode() {
         let pager = mempage_tree();
         let mut db = Database::new(pager);
 
@@ -487,7 +493,7 @@ mod test {
     }
 
     #[test]
-    fn tables_insert2() {
+    fn records_insert_search() {
         let pager = mempage_tree();
         let mut db = Database::new(pager);
 
@@ -576,5 +582,133 @@ mod test {
         assert_eq!(db.new_tid().unwrap(), 3);
         assert_eq!(db.new_tid().unwrap(), 4);
         assert_eq!(db.new_tid().unwrap(), 5);
+    }
+
+    #[test]
+    fn table_builder_validations() {
+        let pager = mempage_tree();
+        let mut db = Database::new(pager);
+
+        // empty name
+        assert!(
+            TableBuilder::new()
+                .name("")
+                .id(10)
+                .add_col("a", TypeCol::BYTES)
+                .pkey(1)
+                .build(&mut db)
+                .is_err()
+        );
+
+        // zero pkeys
+        assert!(
+            TableBuilder::new()
+                .name("t")
+                .id(11)
+                .add_col("a", TypeCol::BYTES)
+                .pkey(0)
+                .build(&mut db)
+                .is_err()
+        );
+
+        // more pkeys than cols
+        assert!(
+            TableBuilder::new()
+                .name("t")
+                .id(12)
+                .add_col("a", TypeCol::BYTES)
+                .pkey(2)
+                .build(&mut db)
+                .is_err()
+        );
+
+        // not enough columns (less than required for your logic)
+        assert!(
+            TableBuilder::new()
+                .name("t")
+                .id(13)
+                .pkey(1)
+                .build(&mut db)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn duplicate_table_name_rejected() {
+        let pager = mempage_tree();
+        let mut db = Database::new(pager);
+
+        let table = TableBuilder::new()
+            .id(12)
+            .name("dup")
+            .add_col("x", TypeCol::BYTES)
+            .pkey(1)
+            .build(&mut db)
+            .unwrap();
+
+        assert!(db.insert_table(&table).is_ok());
+        assert!(db.insert_table(&table).is_err());
+    }
+
+    #[test]
+    fn drop_table_removes_table() {
+        let pager = mempage_tree();
+        let mut db = Database::new(pager);
+
+        let table = TableBuilder::new()
+            .id(13)
+            .name("droppable")
+            .add_col("x", TypeCol::BYTES)
+            .pkey(1)
+            .build(&mut db)
+            .unwrap();
+
+        db.insert_table(&table).unwrap();
+        assert!(db.get_table("droppable").is_some());
+
+        db.drop_table("droppable").unwrap();
+        assert!(db.get_table("droppable").is_none());
+    }
+
+    #[test]
+    fn new_tid_persists_with_envoy() {
+        let path = "test-files/tid_persist.rdb";
+        cleanup_file(path);
+        {
+            let pager = Envoy::new(path);
+            let mut db = Database::new(pager);
+            assert_eq!(db.new_tid().unwrap(), 3);
+            assert_eq!(db.new_tid().unwrap(), 4);
+        }
+        // reopen
+        {
+            let pager = Envoy::new(path);
+            let mut db = Database::new(pager);
+            // next tid continues
+            assert_eq!(db.new_tid().unwrap(), 5);
+        }
+        cleanup_file(path);
+    }
+
+    #[test]
+    fn invalid_queries_rejected() {
+        let pager = mempage_tree();
+        let mut db = Database::new(pager);
+
+        let table = TableBuilder::new()
+            .id(16)
+            .name("invalid")
+            .add_col("x", TypeCol::BYTES)
+            .pkey(1)
+            .build(&mut db)
+            .unwrap();
+
+        db.insert_table(&table).unwrap();
+
+        // missing primary key
+        assert!(Query::new().encode(&table).is_err());
+
+        // wrong column name
+        assert!(Query::new().add("nope", "x").encode(&table).is_err());
     }
 }
