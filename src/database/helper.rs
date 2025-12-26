@@ -33,6 +33,7 @@ pub(crate) fn as_page(offset: usize) -> String {
 
 /// creates or opens a .rdb file
 pub fn create_file_sync(file: &str) -> Result<OwnedFd, PagerError> {
+    assert!(!file.is_empty());
     let path = Path::new(file);
     if let None = path.file_name() {
         error!("invalid file name");
@@ -104,15 +105,13 @@ pub fn create_file_sync(file: &str) -> Result<OwnedFd, PagerError> {
 pub fn debug_print_buffer(buf: &HashMap<Pointer, Node>) {
     #[cfg(test)]
     {
-        if let Some("debug") = option_env!("RUSQL_DEBUG") {
+        if let Ok("debug") = std::env::var("RUSQL_LOG_PAGER").as_deref() {
             debug!("current buffer:");
             debug!("---------");
             for kv in buf {
                 debug!("{}, {:?}", kv.0, kv.1.get_type())
             }
             debug!("---------")
-        } else {
-            ()
         }
     }
 }
@@ -122,7 +121,7 @@ pub fn debug_print_buffer(buf: &HashMap<Pointer, Node>) {
 pub fn debug_print_tree(node: &TreeNode, idx: u16) {
     #[cfg(test)]
     {
-        if let Some("debug") = option_env!("RUSQL_DEBUG") {
+        if let Ok("debug") = std::env::var("RUSQL_LOG_TREE").as_deref() {
             debug!(idx, "looking through {:?}...", node.get_type());
             debug!("---------");
             for i in 0..node.get_nkeys() {
@@ -133,8 +132,6 @@ pub fn debug_print_tree(node: &TreeNode, idx: u16) {
                 );
             }
             debug!("---------");
-        } else {
-            ()
         }
     }
 }

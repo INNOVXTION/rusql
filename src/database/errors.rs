@@ -26,6 +26,7 @@ pub enum Error {
     PagerError(#[from] PagerError),
     FreeListError(#[from] FLError),
     TableError(#[from] TableError),
+    ScanError(#[from] ScanError),
 
     StrCastError(#[from] Utf8Error),
     IntCastError(#[from] Option<TryFromIntError>),
@@ -54,57 +55,41 @@ impl Display for Error {
             E::SearchError(e) => write!(f, "Search Error {e}"),
             E::TableError(e) => write!(f, "Table Error {e}"),
             E::SysFileError(e) => write!(f, "Errno {e}"),
+            E::ScanError(e) => write!(f, "Scan error {e}"),
         }
     }
 }
 
 #[derive(Debug, Error)]
 pub enum PagerError {
+    #[error("an unrecovable error occured")]
     UnkownError,
+    #[error("Couldnt retrieve page: {0}")]
     PageNotFound(u64),
+    #[error("No free pages available")]
     NoAvailablePage,
+    #[error("Deallocation failed for page: {0}")]
     DeallocError(u64),
-    CodecError(io::Error),
-    FDError(Errno),
+    #[error("Error when encoding/decoding node: {0}")]
+    CodecError(#[from] io::Error),
+    #[error("Invalid Filename, make sure it doesnt end with / ")]
     FileNameError,
+    #[error("Page size but OS is not allowed!")]
     UnsupportedOS,
+    #[error("Offset {0} is invalid!")]
     UnalignedOffset(u64),
+    #[error("Length {0} is invalid!")]
     UnalignedLength(usize),
-    MMapError(Errno),
-    WriteFileError(Errno),
-}
 
-impl Display for PagerError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            PagerError::UnkownError => write!(f, "an unrecovable error occured"),
-            PagerError::PageNotFound(e) => write!(f, "Couldnt retrieve page: {}", e),
-            PagerError::NoAvailablePage => write!(f, "No free pages available"),
-            PagerError::DeallocError(e) => write!(f, "Deallocation failed for page: {}", e),
-            PagerError::CodecError(e) => write!(f, "Error when encoding/decoding node: {}", e),
-            PagerError::FDError(e) => write!(f, "Error when handling file: {}", e),
-            PagerError::FileNameError => {
-                write!(f, "Invalid Filename, make sure it doesnt end with / ")
-            }
-            PagerError::UnsupportedOS => write!(f, "Page size but OS is not allowed!"),
-            PagerError::UnalignedOffset(e) => write!(f, "Offset {} is invalid!", e),
-            PagerError::UnalignedLength(e) => write!(f, "Length {} is invalid!", e),
-            PagerError::MMapError(e) => write!(f, "Error when calling mmap {}", e),
-            PagerError::WriteFileError(e) => write!(f, "Error when calling pwrite {}", e),
-        }
-    }
-}
-
-impl From<io::Error> for PagerError {
-    fn from(value: io::Error) -> Self {
-        Self::CodecError(value)
-    }
-}
-
-impl From<rustix::io::Errno> for PagerError {
-    fn from(value: rustix::io::Errno) -> Self {
-        Self::FDError(value)
-    }
+    // syscalls
+    #[error("Error when handling file: {0}")]
+    FDError(#[from] rustix::io::Errno),
+    #[error("Error when calling fsync {0}")]
+    FsyncError(rustix::io::Errno),
+    #[error("Error when calling mmap {0}")]
+    MMapError(rustix::io::Errno),
+    #[error("Error when calling pwrite {0}")]
+    WriteFileError(rustix::io::Errno),
 }
 
 #[derive(Debug, Error)]
@@ -182,4 +167,14 @@ pub(crate) enum TableError {
     ValueDecodeError(String),
     #[error("Value string error {0}")]
     ValueStringError(std::io::Error),
+}
+
+#[derive(Error, Debug)]
+pub(crate) enum ScanError {
+    #[error("{0}")]
+    SeekError(String),
+    #[error("{0}")]
+    PredicateError(String),
+    #[error("{0}")]
+    InvalidRangeError(String),
 }

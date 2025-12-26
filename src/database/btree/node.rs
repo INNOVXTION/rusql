@@ -158,15 +158,18 @@ impl TreeNode {
                 })?;
         }
 
-        if cfg!(test) {
-            debug!("nkids after insertion:");
-            for i in 0..self.get_nkeys() {
-                debug!(
-                    "idx: {}, key {} ptr {}",
-                    i,
-                    self.get_key(i).unwrap(),
-                    self.get_ptr(i)
-                )
+        #[cfg(test)]
+        {
+            if let Ok("debug") = std::env::var("RUSQL_LOG_TREE").as_deref() {
+                debug!("nkids after insertion:");
+                for i in 0..self.get_nkeys() {
+                    debug!(
+                        "idx: {}, key {} ptr {}",
+                        i,
+                        self.get_key(i).unwrap(),
+                        self.get_ptr(i)
+                    )
+                }
             }
         }
         Ok(())
@@ -453,11 +456,13 @@ impl TreeNode {
     pub fn split_node(self) -> Result<(TreeNode, TreeNode), Error> {
         let mut left = TreeNode::new();
         let mut right = TreeNode::new();
+
         // splitting node in the middle as first guess
         let nkeys = self.get_nkeys();
         if nkeys < 2 {
             return Err(Error::IndexError);
         }
+
         // trying to fit the left half, making sure the new node is not oversized
         let mut nkeys_left = (nkeys / 2) as usize;
         let left_bytes = |n| -> usize {
@@ -466,11 +471,13 @@ impl TreeNode {
                 + OFFSETARR_OFFSET * n
                 + self.get_offset(as_usize(n)).unwrap() as usize
         };
+
         // incremently decreasing amount of keys for new node until it fits
         while left_bytes(nkeys_left) > PAGE_SIZE && nkeys_left > 1 {
             nkeys_left -= 1;
         }
         assert!(nkeys_left >= 1);
+
         // fitting right node
         let right_bytes =
             |n: usize| -> usize { self.nbytes() as usize - left_bytes(n) + HEADER_OFFSET };
@@ -495,7 +502,8 @@ impl TreeNode {
         assert!(right.fits_page());
         assert!(left.fits_page());
 
-        if cfg!(test) {
+        #[cfg(test)]
+        {
             debug!("left node first key: {}", left.get_key(0).unwrap());
             debug!(
                 "left node last key: {}",

@@ -8,6 +8,7 @@ use tracing::{debug, error};
 
 use crate::database::codec::*;
 use crate::database::tables::tables::Column;
+use crate::database::types::{BTREE_MAX_KEY_SIZE, BTREE_MAX_VAL_SIZE};
 use crate::database::{
     errors::TableError,
     tables::tables::{Table, TypeCol},
@@ -146,8 +147,10 @@ impl Ord for Key {
                     let len_a = key_a.read_u32() as usize;
                     let len_b = key_b.read_u32() as usize;
                     let min = min(len_a, len_b);
-                    debug!(key_a = &key_a[..min], key_b = &key_b[..min], "comparing");
-                    debug!(len_a, len_b);
+
+                    // debug!(key_a = &key_a[..min], key_b = &key_b[..min], "comparing");
+                    // debug!(len_a, len_b);
+
                     match key_a[..min].cmp(&key_b[..min]) {
                         // comparing a tail string like "1" with "11" would return equal because for min = 1: "1" == "1"
                         // after it would move the slice up, empyting both keys, returning equal,
@@ -488,7 +491,7 @@ impl Record {
 
     /// add a datacell to the record
     ///
-    /// inserts from lefts to right
+    /// sensitive to order in which input is added
     pub fn add<T: InputData>(mut self, data: T) -> Self {
         self.data.push(data.into_cell());
         self
@@ -558,9 +561,23 @@ impl Record {
                 }
             }
         }
+        let key_slice = &buf[..key_idx];
+        let val_slice = &buf[key_idx..];
+
+        if key_slice.len() > BTREE_MAX_KEY_SIZE {
+            return Err(TableError::RecordError(
+                "maximum key size exceeded".to_string(),
+            ));
+        }
+        if val_slice.len() > BTREE_MAX_VAL_SIZE {
+            return Err(TableError::RecordError(
+                "maximum value size exceeded".to_string(),
+            ));
+        }
+
         Ok((
-            Key::from_encoded_slice(&buf[..key_idx]),
-            Value::from_encoded_slice(&buf[key_idx..]),
+            Key::from_encoded_slice(key_slice),
+            Value::from_encoded_slice(val_slice),
         ))
     }
 

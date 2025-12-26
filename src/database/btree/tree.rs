@@ -7,10 +7,7 @@ use tracing::instrument;
 
 use crate::database::btree::cursor::ScanIter;
 use crate::database::{
-    btree::{
-        cursor::{Compare, Cursor, ScanMode},
-        node::*,
-    },
+    btree::{cursor::ScanMode, node::*},
     errors::{Error, Result},
     helper::debug_print_tree,
     pager::{
@@ -158,8 +155,7 @@ impl<P: Pager> Tree for BTree<P> {
         if self.root_ptr.is_none() {
             return Err(Error::SearchError("tree is empty".to_string()));
         }
-        mode.into_iter(self)
-            .ok_or(Error::SearchError("couldnt turn into iter".to_string()))
+        ScanIter::new(mode, self).ok_or(Error::SearchError("couldnt turn into iter".to_string()))
     }
 }
 
@@ -260,16 +256,19 @@ impl<P: Pager> BTree<P> {
                                             "merging {idx} with left node at idx {}, cur_nkeys {cur_nkeys}...",
                                             idx - 1
                                         );
+
                                         right = kptr;
                                         left = node.get_ptr(idx - 1);
                                         merged_node
                                             .merge(sibling, updated_child, merge_type)
                                             .expect("merge error when merging with left node");
+
                                         debug!(
                                             "merged node: type {:?} nkeys {}",
                                             merged_node.get_type(),
                                             merged_node.get_nkeys()
                                         );
+
                                         new.merge_setptr(self, node, merged_node, idx - 1).ok()?;
                                     }
                                     MergeDirection::Right(sibling) => {
@@ -277,16 +276,19 @@ impl<P: Pager> BTree<P> {
                                             "merging {idx} with right node at idx {}, cur_nkeys {cur_nkeys}...",
                                             idx + 1
                                         );
+
                                         left = kptr;
                                         right = node.get_ptr(idx + 1);
                                         merged_node
                                             .merge(updated_child, sibling, merge_type)
                                             .expect("merge error when merging with right node");
+
                                         debug!(
                                             "merged node: type {:?} nkeys {}",
                                             merged_node.get_type(),
                                             merged_node.get_nkeys()
                                         );
+
                                         new.merge_setptr(self, node, merged_node, idx).ok()?;
                                     }
                                 };
@@ -314,7 +316,7 @@ impl<P: Pager> BTree<P> {
                                         node,
                                         idx,
                                         updated_child.get_key(0).unwrap(),
-                                        " ".into(),
+                                        "".into(),
                                     )
                                     .unwrap();
                                     new.set_header(cur_type, cur_nkeys);
@@ -561,6 +563,144 @@ mod test {
                 "val".into(),
             )
             .unwrap()
+        }
+    }
+
+    #[test]
+    fn update_existing_key() {
+        let tree = mempage_tree();
+
+        tree.set("key".into(), "value1".into()).unwrap();
+        // overwrite same key
+        tree.set("key".into(), "value2".into()).unwrap();
+
+        // value should be updated
+        assert_eq!(tree.get("key".into()).unwrap(), "value2".into());
+    }
+
+    #[test]
+    fn delete_nonexistent() {
+        let tree = mempage_tree();
+
+        // deleting a missing key should return an error (DeleteError)
+        let res = tree.delete("this-key-does-not-exist".into());
+        assert!(
+            res.is_err(),
+            "expected error when deleting non-existent key"
+        );
+    }
+
+    #[test]
+    fn unicode_and_long_values() {
+        let tree = mempage_tree();
+
+        // 🚀 is 4 bytes in UTF-8 → 750 × 4 = 3000 bytes (value size cap)
+        let key = "ключ-ユニコード-🧪".to_string();
+        let long_val = "🚀".repeat(750);
+
+        assert_eq!(long_val.len(), 3000);
+
+        tree.set(key.clone().into(), long_val.clone().into())
+            .unwrap();
+
+        assert_eq!(tree.get(key.into()).unwrap(), long_val.into());
+    }
+
+    // wip return error
+    #[should_panic]
+    #[test]
+    fn value_too_large_rejected() {
+        let tree = mempage_tree();
+
+        let key = "big".to_string();
+        let too_big = "🚀".repeat(2000); // 
+
+        assert!(tree.set(key.into(), too_big.into()).is_err());
+    }
+
+    #[test]
+    fn reinsert_after_delete() {
+        let tree = mempage_tree();
+
+        tree.set("re".into(), "first".into()).unwrap();
+        tree.delete("re".into()).unwrap();
+        // now reinsert with a different value
+        tree.set("re".into(), "second".into()).unwrap();
+
+        assert_eq!(tree.get("re".into()).unwrap(), "second".into());
+    }
+
+    #[test]
+    fn encode_decode_roundtrip() {
+        // direct encode/decode roundtrip for a single node using the pager/btree ref
+        let tree = mempage_tree();
+        let t_ref = tree.pager.btree.borrow();
+
+        let mut node = TreeNode::new();
+        node.set_header(NodeType::Leaf, 1);
+        node.kvptr_append(0, Pointer::from(0), "round".into(), "trip".into())
+            .unwrap();
+
+        let ptr = t_ref.encode(node);
+        let decoded = t_ref.decode(ptr);
+
+        assert_eq!(decoded.get_type(), NodeType::Leaf);
+        assert_eq!(decoded.get_nkeys(), 1);
+        assert_eq!(decoded.get_key(0).unwrap(), "round".into());
+        assert_eq!(decoded.get_val(0).unwrap(), "trip".into());
+
+        // cleanup
+        t_ref.dealloc(ptr);
+    }
+
+    #[test]
+    fn random_ops_oracle() {
+        use rand::Rng;
+        use std::collections::BTreeMap;
+
+        let mut rng = rand::rng();
+        let tree = mempage_tree();
+
+        // oracle stores logical (user-level) keys
+        let mut oracle: BTreeMap<String, String> = BTreeMap::new();
+
+        for _ in 0..1500 {
+            let k = format!("{}", rng.random_range(1..=800));
+
+            if rng.random_bool(0.7) {
+                // insert
+                let v = format!("v{}", rng.random::<u32>());
+                tree.set(k.clone().into(), v.clone().into()).unwrap();
+                oracle.insert(k, v);
+            } else {
+                // delete (ignore error if key is missing)
+                let _ = tree.delete(k.clone().into());
+                oracle.remove(&k);
+            }
+        }
+
+        // all oracle keys must exist in tree with correct value
+        for (k, v) in oracle.iter() {
+            let res = tree.get(k.clone().into());
+            assert!(res.is_ok(), "expected key {} to exist in tree", k);
+            assert_eq!(
+                res.unwrap(),
+                v.clone().into(),
+                "value mismatch for key {}",
+                k
+            );
+        }
+
+        // spot-check some keys that likely do not exist
+        for _ in 0..50 {
+            let k = format!("{}", rng.random_range(900..=1200));
+            if !oracle.contains_key(&k) {
+                assert!(
+                    tree.get(k.clone().into()).is_err(),
+                    "unexpected key {} found in tree",
+                    k
+                );
+            }
         }
     }
 }

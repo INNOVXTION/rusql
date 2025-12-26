@@ -5,7 +5,7 @@ use crate::database::{
     btree::{Tree, TreeNode, node::NodeType},
     errors::Result,
     pager::diskpager::Pager,
-    tables::{Key, Query, Record, Value},
+    tables::{Key, Value},
 };
 
 pub(crate) enum ScanMode {
@@ -18,16 +18,31 @@ pub(crate) enum ScanMode {
     },
 }
 
-impl ScanMode {
-    pub(super) fn into_iter<P: Pager>(self, tree: &BTree<P>) -> Option<ScanIter<'_, P>> {
-        match self {
+pub(super) fn scan_single<P: Pager>(tree: &BTree<P>, key: &Key) -> Option<Vec<(Key, Value)>> {
+    let mut res: Vec<(Key, Value)> = vec![];
+    let cursor = seek(tree, &key, Compare::EQ)?;
+    res.push(cursor.deref());
+    Some(res)
+}
+
+pub(crate) struct ScanIter<'a, P: Pager> {
+    cursor: Cursor<'a, P>,
+    tid: u64,
+    dir: CursorDir,
+    range: Option<(Key, Compare)>,
+    finished: bool,
+}
+
+impl<'a, P: Pager> ScanIter<'a, P> {
+    pub fn new(mode: ScanMode, tree: &'a BTree<P>) -> Option<Self> {
+        match mode {
             ScanMode::Open(key, compare) => {
                 let dir = match compare {
                     Compare::LT | Compare::LE => CursorDir::Prev,
                     Compare::GT | Compare::GE => CursorDir::Next,
                     Compare::EQ => return None,
                 };
-                Some(ScanIter {
+                Some(Self {
                     cursor: seek(tree, &key, compare)?,
                     tid: key.get_tid(),
                     dir,
@@ -44,7 +59,7 @@ impl ScanMode {
                     return None;
                 }
 
-                Some(ScanIter {
+                Some(Self {
                     cursor: seek(tree, &lo.0, lo.1)?,
                     tid,
                     dir: CursorDir::Next,
@@ -54,21 +69,6 @@ impl ScanMode {
             }
         }
     }
-}
-
-pub(super) fn scan_single<P: Pager>(tree: &BTree<P>, key: &Key) -> Option<Vec<(Key, Value)>> {
-    let mut res: Vec<(Key, Value)> = vec![];
-    let cursor = seek(tree, &key, Compare::EQ)?;
-    res.push(cursor.deref());
-    Some(res)
-}
-
-pub(crate) struct ScanIter<'a, P: Pager> {
-    cursor: Cursor<'a, P>,
-    tid: u64,
-    dir: CursorDir,
-    range: Option<(Key, Compare)>,
-    finished: bool,
 }
 
 enum CursorDir {
