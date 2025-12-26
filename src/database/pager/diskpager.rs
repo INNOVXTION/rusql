@@ -275,12 +275,14 @@ impl EnvoyV1 {
             if self.mmap.borrow().chunks[0].to_slice()[..METAPAGE_SIZE] == **recov_page {
                 debug!("meta page intact!");
                 self.failed.set(false);
-                // reverting to in memory meta page
-                metapage_write(self, recov_page)?;
-                rustix::fs::fsync(&self.database)?;
+            // reverting to in memory meta page
+            } else {
+                debug!("meta page corrupted, reverting state...");
+                metapage_write(self, recov_page).expect("meta page recovery write error");
+                rustix::fs::fsync(&self.database).expect("fsync metapage for restoration failed");
                 self.failed.set(false);
-            };
-        }
+            }
+        };
         if let Err(e) = self.file_update() {
             // in case the file writing fails, we revert back to the old meta page
             warn!(%e, "file update failed! Reverting meta page...");
