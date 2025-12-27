@@ -3,9 +3,9 @@ use tracing::debug;
 use crate::database::{
     BTree,
     btree::{Tree, TreeNode, node::NodeType},
-    errors::Result,
+    errors::{Result, ScanError},
     pager::diskpager::Pager,
-    tables::{Key, Value},
+    tables::{Key, Record, Value},
 };
 
 pub(crate) enum ScanMode {
@@ -16,6 +16,36 @@ pub(crate) enum ScanMode {
         lo: (Key, Compare),
         hi: (Key, Compare),
     },
+}
+
+impl ScanMode {
+    /// scans the entire table starting from key
+    fn new_open(key: Key, cmp: Compare) -> Result<Self> {
+        if cmp == Compare::EQ {
+            return Err(ScanError::ScanCreateError(
+                "invalid input: EQ predicate cant be used for open scans".to_string(),
+            )
+            .into());
+        }
+        Ok(ScanMode::Open(key, cmp))
+    }
+    /// scans a range between two keys, predicates dictate starting position for lo and hi
+    fn new_range(lo: (Key, Compare), hi: (Key, Compare)) -> Result<Self> {
+        let tid = lo.0.get_tid();
+        if tid != hi.0.get_tid() {
+            return Err(ScanError::ScanCreateError(
+                "invalid input: keys from different tables provided".to_string(),
+            )
+            .into());
+        }
+        if lo.0 >= hi.0 {
+            return Err(ScanError::ScanCreateError(
+                "invalid input: low point exceeds high point".to_string(),
+            )
+            .into());
+        }
+        Ok(ScanMode::Range { lo, hi })
+    }
 }
 
 pub(super) fn scan_single<P: Pager>(tree: &BTree<P>, key: &Key) -> Option<Vec<(Key, Value)>> {
@@ -40,7 +70,7 @@ impl<'a, P: Pager> ScanIter<'a, P> {
                 let dir = match compare {
                     Compare::LT | Compare::LE => CursorDir::Prev,
                     Compare::GT | Compare::GE => CursorDir::Next,
-                    Compare::EQ => return None,
+                    Compare::EQ => unreachable!(), // we validate scanmode creation
                 };
                 Some(Self {
                     cursor: seek(tree, &key, compare)?,
@@ -52,13 +82,6 @@ impl<'a, P: Pager> ScanIter<'a, P> {
             }
             ScanMode::Range { lo, hi } => {
                 let tid = lo.0.get_tid();
-                if tid != hi.0.get_tid() {
-                    return None;
-                }
-                if lo.0 >= hi.0 {
-                    return None;
-                }
-
                 Some(Self {
                     cursor: seek(tree, &lo.0, lo.1)?,
                     tid,
@@ -68,6 +91,11 @@ impl<'a, P: Pager> ScanIter<'a, P> {
                 })
             }
         }
+    }
+
+    pub fn collect_records(self) -> Vec<Record> {
+        let v: Vec<Record> = self.into_iter().map(|kv| Record::from_kv(kv)).collect();
+        v
     }
 }
 

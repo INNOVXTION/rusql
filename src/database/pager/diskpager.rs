@@ -11,10 +11,12 @@ use tracing::{debug, error, info, instrument, warn};
 
 use crate::create_file_sync;
 use crate::database::BTree;
+use crate::database::btree::{ScanIter, ScanMode};
+use crate::database::errors::FLError;
 use crate::database::helper::{as_page, debug_print_buffer};
 use crate::database::pager::freelist::{FLConfig, FLNode, FreeList, GC};
 use crate::database::pager::mmap::*;
-use crate::database::tables::{Key, Value};
+use crate::database::tables::{Key, Record, Value};
 use crate::database::{
     btree::{SetFlag, Tree, TreeNode},
     errors::{Error, PagerError},
@@ -23,6 +25,7 @@ use crate::database::{
 /// outward facing api
 pub(crate) trait KVEngine {
     fn get(&self, key: Key) -> Result<Value, Error>;
+    fn scan<P: Pager>(&self, mode: ScanMode) -> Result<Vec<Record>, Error>;
     fn set(&self, key: Key, val: Value, flag: SetFlag) -> Result<(), Error>;
     fn delete(&self, key: Key) -> Result<(), Error>;
 }
@@ -43,6 +46,10 @@ impl Envoy {
 impl KVEngine for Envoy {
     fn get(&self, key: Key) -> Result<Value, Error> {
         self.envoy.get(key)
+    }
+
+    fn scan<P: Pager>(&self, mode: ScanMode) -> Result<Vec<Record>, Error> {
+        self.envoy.scan(mode)
     }
 
     fn set(&self, key: Key, val: Value, flag: SetFlag) -> Result<(), Error> {
@@ -237,6 +244,18 @@ impl EnvoyV1 {
             .ok_or(Error::SearchError("value not found".to_string()))
     }
 
+    #[instrument(name = "pager scan", skip_all)]
+    fn scan(&self, mode: ScanMode) -> Result<Vec<Record>, Error> {
+        info!("scanning...");
+
+        Ok(self
+            .tree
+            .borrow()
+            .scan(mode)
+            .map_err(|e| Error::SearchError(format!("scan error {e}")))?
+            .collect_records())
+    }
+
     #[instrument(name = "pager set", skip_all)]
     fn set(&self, key: Key, val: Value, flag: SetFlag) -> Result<(), Error> {
         info!("inserting...");
@@ -382,16 +401,32 @@ impl EnvoyV1 {
         panic!()
     }
 
-    #[instrument(skip(self))]
+    fn should_truncate() -> bool {
+        todo!()
+    }
+
     /// WIP
     ///
     /// attempts to truncate the file. Makes call to and modifies freelist. This function should therefore be called
     /// after tree operations. Truncation amount is based on cleanup_check algorithm
+    #[instrument(skip_all)]
     fn truncate(&self) -> Result<(), Error> {
-        let list: Vec<Pointer> = self.freelist.borrow().peek_ptr();
         let npages = self.buffer.borrow().npages;
+        if npages <= 2 {
+            return Err(
+                FLError::TruncateError("cant truncate from empty database".to_string()).into(),
+            );
+        }
 
-        match Self::cleanup_check(npages, &list) {
+        let list: Vec<Pointer> =
+            self.freelist
+                .borrow()
+                .peek_ptr()
+                .ok_or(FLError::TruncateError(
+                    "could not retrieve pointer from FL".to_string(),
+                ))?;
+
+        match count_trunc_pages(npages, &list) {
             Some(count) => {
                 for i in 0..count {
                     // removing items from freelist
@@ -409,38 +444,38 @@ impl EnvoyV1 {
             None => Ok(()),
         }
     }
+}
 
-    /// returns the number of pages that can be truncated, by evaluating a contiguous sequence at the end of the freelist.
-    /// Doesnt capture the full sequence as of now and has O(n) performance. See unit test below for sample behaviour.
-    fn cleanup_check(npages: u64, list: &[Pointer]) -> Option<u64> {
-        if list.is_empty() || npages == 2 {
-            return None;
-        }
+/// returns the number of pages that can be truncated, by evaluating a contiguous sequence at the end of the freelist.
+/// Doesnt capture the full sequence as of now and has O(n) performance. See unit test below for sample behaviour.
+fn count_trunc_pages(npages: u64, list: &[Pointer]) -> Option<u64> {
+    if list.is_empty() || npages <= 2 {
+        return None;
+    }
 
-        let mut iter = list.iter().map(|ptr| ptr.get());
-        let mut count: u64 = 1;
-        let mut first = iter.next().unwrap();
+    let pages: Vec<u64> = list.iter().map(|p| p.get()).collect();
 
-        assert_ne!(first, 0);
-        for i in iter {
-            // base case, smaller non adjacent
-            if i + 1 < first {
-                break;
-            }
-            // smaller adjacent number
-            if i == first - 1 {
-                first = i;
-            }
-            // number is larger
-            count += 1;
-        }
-        if first + count == npages {
-            // hit, we can truncate count pages
-            Some(count)
-        } else {
-            None
+    // Start checking from the maximum possible and work down
+    let max_possible = pages.len().min((npages - 2) as usize);
+    assert!(max_possible > 0);
+
+    for count in (1..=max_possible).rev() {
+        let mut prefix: Vec<u64> = pages[0..count].to_vec();
+        prefix.sort_unstable();
+
+        // Check if these pages are exactly [npages-count, ..., npages-1]
+        let tail_start = npages - count as u64;
+        let is_valid_tail = prefix
+            .iter()
+            .enumerate()
+            .all(|(i, &page)| page == tail_start + i as u64);
+
+        if is_valid_tail {
+            return Some(count as u64);
         }
     }
+
+    None
 }
 
 //--------Meta Page Layout-------
@@ -698,23 +733,23 @@ mod test {
     #[test]
     fn cleanup_helper1() {
         let list: Vec<Pointer> = vec![Pointer(6), Pointer(9), Pointer(8), Pointer(7), Pointer(4)];
-        let res = EnvoyV1::cleanup_check(10, &list);
+        let res = count_trunc_pages(10, &list);
         assert_eq!(res, Some(4));
 
         let list: Vec<Pointer> = vec![Pointer(6), Pointer(9), Pointer(8), Pointer(4), Pointer(7)];
-        let res = EnvoyV1::cleanup_check(10, &list);
+        let res = count_trunc_pages(10, &list);
         assert_eq!(res, None);
 
         let list: Vec<Pointer> = vec![Pointer(9), Pointer(8), Pointer(7), Pointer(6), Pointer(5)];
-        let res = EnvoyV1::cleanup_check(10, &list);
+        let res = count_trunc_pages(10, &list);
         assert_eq!(res, Some(5));
 
         let list: Vec<Pointer> = vec![Pointer(9), Pointer(4), Pointer(7), Pointer(6), Pointer(5)];
-        let res = EnvoyV1::cleanup_check(10, &list);
+        let res = count_trunc_pages(10, &list);
         assert_eq!(res, Some(1));
 
         let list: Vec<Pointer> = vec![Pointer(1), Pointer(4), Pointer(7), Pointer(6), Pointer(5)];
-        let res = EnvoyV1::cleanup_check(10, &list);
+        let res = count_trunc_pages(10, &list);
         assert_eq!(res, None);
     }
 
@@ -743,4 +778,161 @@ mod test {
     //     cleanup_file(path);
     //     assert_eq!(fd_size, PAGE_SIZE as u64 * 2);
     // }
+}
+
+#[cfg(test)]
+mod truncation_tests {
+    use super::*;
+
+    fn ptr(page: u64) -> Pointer {
+        Pointer::from(page)
+    }
+
+    #[test]
+    fn test_cleanup_check_empty_list() {
+        let result = count_trunc_pages(100, &[]);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_cleanup_check_npages_too_small() {
+        let list = vec![ptr(0), ptr(1)];
+        let result = count_trunc_pages(2, &list);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_cleanup_check_small_tail_sequence() {
+        // Only 5 pages at tail - function should still return it
+        let list = vec![ptr(99), ptr(98), ptr(97), ptr(96), ptr(95)];
+        let result = count_trunc_pages(100, &list);
+        assert_eq!(result, Some(5), "Should return even small sequences");
+    }
+
+    #[test]
+    fn test_cleanup_check_single_page() {
+        let list = vec![ptr(99)];
+        let result = count_trunc_pages(100, &list);
+        assert_eq!(result, Some(1), "Single tail page should be detected");
+    }
+
+    #[test]
+    fn test_cleanup_check_exactly_100_pages() {
+        let list: Vec<Pointer> = (900..1000).map(ptr).collect();
+        let result = count_trunc_pages(1000, &list);
+        assert_eq!(result, Some(100));
+    }
+
+    #[test]
+    fn test_cleanup_check_tail_sequence_unordered() {
+        let mut list: Vec<Pointer> = (900..1000).map(ptr).collect();
+        list.reverse();
+
+        let result = count_trunc_pages(1000, &list);
+        assert_eq!(result, Some(100), "Order shouldn't matter");
+    }
+
+    #[test]
+    fn test_cleanup_check_large_tail_sequence() {
+        let list: Vec<Pointer> = (800..1000).map(ptr).collect();
+        let result = count_trunc_pages(1000, &list);
+        assert_eq!(result, Some(200));
+    }
+
+    #[test]
+    fn test_cleanup_check_gap_in_sequence() {
+        // Missing page 98
+        let list = vec![ptr(99), ptr(97), ptr(96), ptr(95)];
+        let result = count_trunc_pages(100, &list);
+        assert_eq!(result, Some(1), "Gap breaks the tail sequence");
+    }
+
+    #[test]
+    fn test_cleanup_check_not_at_tail() {
+        let list: Vec<Pointer> = (400..500).map(ptr).collect();
+        let result = count_trunc_pages(1000, &list);
+        assert_eq!(result, None, "Pages not at tail should return None");
+    }
+
+    #[test]
+    fn test_cleanup_check_first_element_breaks_pattern() {
+        let mut list = vec![ptr(500)];
+        list.extend((900..1000).map(ptr));
+
+        let result = count_trunc_pages(1000, &list);
+        assert_eq!(result, None, "First non-tail element breaks pattern");
+    }
+
+    #[test]
+    fn test_cleanup_check_entire_file_nearly_free() {
+        let list: Vec<Pointer> = (2..1000).map(ptr).collect();
+        let result = count_trunc_pages(1000, &list);
+        assert_eq!(result, Some(998));
+    }
+
+    #[test]
+    fn test_cleanup_check_shuffled_valid_tail() {
+        let mut list: Vec<Pointer> = (850..1000).map(ptr).collect();
+        let len = list.len();
+
+        for i in 0..list.len() / 2 {
+            list.swap(i, len - 1 - i);
+        }
+
+        let result = count_trunc_pages(1000, &list);
+        assert_eq!(result, Some(150));
+    }
+
+    #[test]
+    fn test_cleanup_check_duplicate_pages() {
+        // claude got confused, this test might not make sense
+        let list = vec![ptr(999), ptr(999), ptr(998), ptr(997)];
+
+        let result = count_trunc_pages(1000, &list);
+        assert_eq!(
+            result,
+            Some(1),
+            "Finds largest valid tail despite duplicate"
+        );
+    }
+
+    #[test]
+    fn test_cleanup_check_realistic_fragmentation() {
+        let mut list = vec![];
+
+        // 150 tail pages in reverse order
+        for i in (850..1000).rev() {
+            list.push(ptr(i));
+        }
+
+        // Some middle pages
+        list.extend(vec![ptr(500), ptr(501), ptr(502)]);
+
+        let result = count_trunc_pages(1000, &list);
+        assert_eq!(result, Some(150));
+    }
+
+    #[test]
+    fn test_cleanup_check_alternating_gaps() {
+        // Even numbers only: 990, 992, 994, 996, 998
+        let list = vec![ptr(998), ptr(996), ptr(994), ptr(992), ptr(990)];
+        let result = count_trunc_pages(1000, &list);
+        assert_eq!(result, None, "Gaps make it non-consecutive");
+    }
+
+    #[test]
+    fn test_cleanup_check_max_possible_calculation() {
+        // Test that max_possible = min(list.len(), npages-2)
+
+        // Case 1: list.len() < npages-2
+        let list: Vec<Pointer> = (990..1000).map(ptr).collect(); // 10 items
+        let result = count_trunc_pages(1000, &list); // npages-2 = 998
+        assert_eq!(result, Some(10), "Limited by list length");
+
+        // Case 2: list.len() > npages-2
+        let list2: Vec<Pointer> = (0..100).map(ptr).collect(); // 100 items
+        let result2 = count_trunc_pages(50, &list2); // npages-2 = 48
+        // Can only check up to 48 pages
+        assert_eq!(result2, None, "Not a valid tail for npages=50");
+    }
 }

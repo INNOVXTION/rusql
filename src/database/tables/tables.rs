@@ -429,7 +429,7 @@ impl<KV: KVEngine> Database<KV> {
         self.kve.get(query.encode(schema).ok()?).ok()
     }
 
-    fn range_query(&self, moder: ScanMode) {}
+    fn insert_scan(&self, moder: ScanMode) {}
 }
 
 // outward API

@@ -9,7 +9,7 @@ use crate::database::{
     btree::{BTree, SetFlag, Tree},
     errors::Error,
     pager::diskpager::{KVEngine, Pager},
-    tables::{Key, Value},
+    tables::{Key, Record, Value},
     types::{Node, Pointer},
 };
 
@@ -29,6 +29,10 @@ impl KVEngine for MemPager {
 
     fn delete(&self, key: Key) -> Result<(), Error> {
         self.pager.delete(key)
+    }
+
+    fn scan<P: Pager>(&self, mode: crate::database::btree::ScanMode) -> Result<Vec<Record>, Error> {
+        todo!()
     }
 }
 

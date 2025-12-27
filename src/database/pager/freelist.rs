@@ -22,6 +22,18 @@ pub(crate) struct FreeList<P: Pager> {
     pub pager: Weak<P>,
 }
 
+/*
+                     first_item
+                         ↓
+head_page -> [ next |    xxxxx ]
+                ↓
+             [ next | xxxxxxxx ]
+                ↓
+tail_page -> [ NULL | xxxx     ]
+                         ↑
+                     last_item
+*/
+
 pub(crate) struct FLConfig {
     pub head_page: Option<Pointer>,
     pub head_seq: usize,
@@ -38,7 +50,7 @@ pub(crate) trait GC {
     fn get_config(&self) -> FLConfig;
     fn set_config(&mut self, flc: &FLConfig);
 
-    fn peek_ptr(&self) -> Vec<Pointer>;
+    fn peek_ptr(&self) -> Option<Vec<Pointer>>;
     fn set_max_seq(&mut self);
 }
 
@@ -111,28 +123,40 @@ impl<P: Pager> GC for FreeList<P> {
         }
         Ok(())
     }
+
     /// retrieves list of all pointers inside freelist, as if popped by head
     ///
     /// calls encode and does not interact with the buffer so it should be called after the database has been written down
-    fn peek_ptr(&self) -> Vec<Pointer> {
+    fn peek_ptr(&self) -> Option<Vec<Pointer>> {
+        if self.is_empty() {
+            return None;
+        }
+
         let mut list: Vec<Pointer> = vec![];
         let mut head = self.head_seq;
 
-        let head_page = self.head_page;
-        let tail_page = self.tail_page;
+        let mut head_page = self.head_page?;
+        let tail_page = self.tail_page?;
 
         let max = self.max_seq;
         let mut node = self.decode(self.head_page.unwrap());
 
-        while head < max && head_page != tail_page {
+        loop {
+            if head_page == tail_page && head == max {
+                // both pointer meet on the same page = free list is empty
+                break;
+            }
+
             list.push(node.get_ptr(seq_to_idx(head)));
             head += 1;
+
             if seq_to_idx(head) == 0 {
-                node = self.decode(node.get_next());
+                head_page = node.get_next();
+                node = self.decode(head_page);
                 head = 0;
             }
         }
-        list
+        Some(list)
     }
 
     fn get_config(&self) -> FLConfig {
@@ -210,11 +234,12 @@ impl<P: Pager> FreeList<P> {
             let head = self.head_page.unwrap();
             // self.head_page = Some(node.get_next());
             self.head_page = Some(self.update_get_next(self.head_page.unwrap()));
-            self.head_seq = 0; // experimental
+            self.head_seq = 0; // experimental: resetting the counter
             return (Some(ptr), Some(head));
         }
         (Some(ptr), None)
     }
+
     /// safety function to call update()
     /// gets pointer from idx
     fn update_get_ptr(&self, node: Pointer, idx: u16) -> Pointer {
@@ -253,6 +278,15 @@ impl<P: Pager> FreeList<P> {
             let node_ptr = self.update(node);
             (*node_ptr).set_next(ptr);
         }
+    }
+
+    fn is_empty(&self) -> bool {
+        if self.head_page != self.tail_page {
+            return false;
+        } else if self.head_seq != self.tail_seq {
+            return false;
+        }
+        true
     }
 }
 
@@ -336,5 +370,19 @@ impl<P: Pager> Debug for FreeList<P> {
             .field("tail page", &self.tail_page)
             .field("tail seq", &self.tail_seq)
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod test {
+
+    #[test]
+    fn modulo() {
+        let x = 7;
+        assert_eq!(x % 10, 7);
+        let x = 0;
+        assert_eq!(x % 10, 0);
+        let x = 1;
+        assert_eq!(x % 10, 1);
     }
 }

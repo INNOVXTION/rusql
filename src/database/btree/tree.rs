@@ -6,6 +6,7 @@ use tracing::info;
 use tracing::instrument;
 
 use crate::database::btree::cursor::ScanIter;
+use crate::database::errors::ScanError;
 use crate::database::{
     btree::{cursor::ScanMode, node::*},
     errors::{Error, Result},
@@ -173,7 +174,8 @@ impl<P: Pager> Tree for BTree<P> {
         if self.root_ptr.is_none() {
             return Err(Error::SearchError("tree is empty".to_string()));
         }
-        ScanIter::new(mode, self).ok_or(Error::SearchError("couldnt turn into iter".to_string()))
+        ScanIter::new(mode, self)
+            .ok_or(ScanError::IterCreateError("couldnt turn into iter".to_string()).into())
     }
 }
 

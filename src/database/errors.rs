@@ -94,15 +94,10 @@ pub enum PagerError {
 
 #[derive(Debug, Error)]
 pub enum FLError {
+    #[error("an unkown error occured")]
     UnknownError,
-}
-
-impl Display for FLError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            FLError::UnknownError => write!(f, "an unkown error occured"),
-        }
-    }
+    #[error("{0}")]
+    TruncateError(String),
 }
 
 // #[error("{var}")]    ⟶   write!("{}", self.var)
@@ -177,4 +172,8 @@ pub(crate) enum ScanError {
     PredicateError(String),
     #[error("{0}")]
     InvalidRangeError(String),
+    #[error("{0}")]
+    ScanCreateError(String),
+    #[error("{0}")]
+    IterCreateError(String),
 }

@@ -364,11 +364,9 @@ impl TreeNode {
             // only add if missing
             SetFlag::INSERT => {
                 if !key_exists {
-                    debug!("key doesnt exist, inserting...");
                     self.leaf_kvinsert(node, idx + 1, key, val).unwrap();
                     Some(())
                 } else {
-                    debug!("key exists, returning None");
                     None
                 }
             }
