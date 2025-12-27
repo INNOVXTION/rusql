@@ -1,6 +1,7 @@
 use std::ops::{Deref, DerefMut};
 
 use super::super::codec::*;
+use super::tree::SetFlag;
 use crate::database::btree::BTree;
 use crate::database::pager::diskpager::Pager;
 use crate::database::tables::{Key, Value};
@@ -349,13 +350,47 @@ impl TreeNode {
     }
 
     /// abstracted API over leaf_kvinsert and leaf_kvupdate
-    pub fn insert(&mut self, node: TreeNode, key: Key, val: Value, idx: u16) {
-        if node.get_key(idx).unwrap() == key {
-            debug!("upating in leaf at idx: {}", idx);
-            self.leaf_kvupdate(node, idx, key, val).unwrap();
-        } else {
-            debug!("inserting in leaf at idx: {}", idx + 1);
-            self.leaf_kvinsert(node, idx + 1, key, val).unwrap();
+    pub fn insert(
+        &mut self,
+        node: TreeNode,
+        key: Key,
+        val: Value,
+        idx: u16,
+        flag: SetFlag,
+    ) -> Option<()> {
+        let key_exists: bool = node.get_key(idx).ok()? == key;
+
+        match flag {
+            // only add if missing
+            SetFlag::INSERT => {
+                if !key_exists {
+                    debug!("key doesnt exist, inserting...");
+                    self.leaf_kvinsert(node, idx + 1, key, val).unwrap();
+                    Some(())
+                } else {
+                    debug!("key exists, returning None");
+                    None
+                }
+            }
+            // only update existing
+            SetFlag::UPDATE => {
+                if key_exists {
+                    self.leaf_kvupdate(node, idx, key, val).unwrap();
+                    Some(())
+                } else {
+                    None
+                }
+            }
+            // update or insert
+            SetFlag::UPSERT => {
+                if key_exists {
+                    self.leaf_kvupdate(node, idx, key, val).unwrap();
+                    Some(())
+                } else {
+                    self.leaf_kvinsert(node, idx + 1, key, val).unwrap();
+                    Some(())
+                }
+            }
         }
     }
 

@@ -6,4 +6,5 @@ mod tree;
 pub(crate) use cursor::ScanMode;
 pub(super) use node::TreeNode;
 pub(super) use tree::BTree;
+pub(crate) use tree::SetFlag;
 pub(crate) use tree::Tree;

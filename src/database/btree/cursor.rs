@@ -418,7 +418,7 @@ mod test {
 
     use crate::database::{
         btree::{
-            Tree,
+            SetFlag, Tree,
             cursor::{Compare, ScanMode},
         },
         pager::{diskpager::KVEngine, mempage_tree},
@@ -430,7 +430,8 @@ mod test {
         let tree = mempage_tree();
 
         for i in 1u16..=100u16 {
-            tree.set(format!("{i}").into(), "value".into()).unwrap()
+            tree.set(format!("{i}").into(), "value".into(), SetFlag::UPSERT)
+                .unwrap()
         }
 
         for i in 1u16..=100u16 {
@@ -452,7 +453,7 @@ mod test {
         let tree = mempage_tree();
 
         for i in 1i64..=10i64 {
-            tree.set(i.into(), "value".into()).unwrap()
+            tree.set(i.into(), "value".into(), SetFlag::UPSERT).unwrap()
         }
 
         let key = 5i64.into();
@@ -477,7 +478,8 @@ mod test {
         let tree = mempage_tree();
 
         for i in 1i64..=10i64 {
-            tree.set(i.into(), format!("val{}", i).into()).unwrap();
+            tree.set(i.into(), format!("val{}", i).into(), SetFlag::UPSERT)
+                .unwrap();
         }
 
         let key = 1i64.into();
@@ -502,7 +504,8 @@ mod test {
         let tree = mempage_tree();
 
         for i in 1i64..=10i64 {
-            tree.set(i.into(), format!("val{}", i).into()).unwrap();
+            tree.set(i.into(), format!("val{}", i).into(), SetFlag::UPSERT)
+                .unwrap();
         }
 
         let key = 10i64.into();
@@ -527,8 +530,12 @@ mod test {
         let tree = mempage_tree();
 
         for i in 1i64..=50i64 {
-            tree.set(format!("{}", i).into(), format!("value{}", i).into())
-                .unwrap();
+            tree.set(
+                format!("{}", i).into(),
+                format!("value{}", i).into(),
+                SetFlag::UPSERT,
+            )
+            .unwrap();
         }
 
         // Test random keys
@@ -551,7 +558,7 @@ mod test {
         let tree = mempage_tree();
 
         for i in 1i64..=10i64 {
-            tree.set(i.into(), "value".into()).unwrap();
+            tree.set(i.into(), "value".into(), SetFlag::UPSERT).unwrap();
         }
 
         let key = 999i64.into();
@@ -568,7 +575,8 @@ mod test {
         let tree = mempage_tree();
 
         for i in 1i64..=10i64 {
-            tree.set(i.into(), format!("val{}", i).into()).unwrap();
+            tree.set(i.into(), format!("val{}", i).into(), SetFlag::UPSERT)
+                .unwrap();
         }
 
         let key = 5i64.into();
@@ -591,7 +599,8 @@ mod test {
         let tree = mempage_tree();
 
         for i in 1i64..=10i64 {
-            tree.set(i.into(), format!("val{}", i).into()).unwrap();
+            tree.set(i.into(), format!("val{}", i).into(), SetFlag::UPSERT)
+                .unwrap();
         }
 
         let key = 5i64.into();
@@ -613,7 +622,8 @@ mod test {
         let tree = mempage_tree();
 
         for i in 1i64..=10i64 {
-            tree.set(i.into(), format!("val{}", i).into()).unwrap();
+            tree.set(i.into(), format!("val{}", i).into(), SetFlag::UPSERT)
+                .unwrap();
         }
 
         let key = 6i64.into();
@@ -636,7 +646,8 @@ mod test {
         let tree = mempage_tree();
 
         for i in 1i64..=10i64 {
-            tree.set(i.into(), format!("val{}", i).into()).unwrap();
+            tree.set(i.into(), format!("val{}", i).into(), SetFlag::UPSERT)
+                .unwrap();
         }
 
         let key = 6i64.into();
@@ -659,7 +670,7 @@ mod test {
         let tree = mempage_tree();
 
         for i in 1i64..=10i64 {
-            tree.set(i.into(), "value".into()).unwrap();
+            tree.set(i.into(), "value".into(), SetFlag::UPSERT).unwrap();
         }
 
         let key = 1i64.into();
@@ -678,7 +689,7 @@ mod test {
         let tree = mempage_tree();
 
         for i in 1i64..=10i64 {
-            tree.set(i.into(), "value".into()).unwrap();
+            tree.set(i.into(), "value".into(), SetFlag::UPSERT).unwrap();
         }
 
         let key = 10i64.into();
@@ -697,7 +708,7 @@ mod test {
         let tree = mempage_tree();
 
         for i in 1i64..=10i64 {
-            tree.set(i.into(), "value".into()).unwrap();
+            tree.set(i.into(), "value".into(), SetFlag::UPSERT).unwrap();
         }
 
         let tree_ref = tree.pager.btree.borrow();
@@ -724,7 +735,8 @@ mod test {
         let tree = mempage_tree();
 
         for i in 1i64..=1000i64 {
-            tree.set(i.into(), format!("val{}", i).into()).unwrap();
+            tree.set(i.into(), format!("val{}", i).into(), SetFlag::UPSERT)
+                .unwrap();
         }
 
         let key = 500i64.into();
@@ -749,7 +761,8 @@ mod test {
         let tree = mempage_tree();
 
         for i in 1i64..=10i64 {
-            tree.set(i.into(), format!("val{}", i).into()).unwrap();
+            tree.set(i.into(), format!("val{}", i).into(), SetFlag::UPSERT)
+                .unwrap();
         }
 
         let btree = tree.pager.btree.borrow();
@@ -804,7 +817,8 @@ mod test {
     #[test]
     fn single_element_tree() -> Result<()> {
         let tree = mempage_tree();
-        tree.set(1i64.into(), "value".into()).unwrap();
+        tree.set(1i64.into(), "value".into(), SetFlag::UPSERT)
+            .unwrap();
         let tree_ref = tree.pager.btree.borrow();
 
         // Scan single

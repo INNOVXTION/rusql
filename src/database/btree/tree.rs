@@ -23,10 +23,20 @@ pub(crate) struct BTree<P: Pager> {
     pager: Weak<P>,
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum SetFlag {
+    /// only add new rows
+    INSERT,
+    /// only modifies existing
+    UPDATE,
+    /// add or modify
+    UPSERT,
+}
+
 pub(crate) trait Tree {
     type Codec: Pager;
 
-    fn insert(&mut self, key: Key, value: Value) -> Result<()>;
+    fn set(&mut self, key: Key, value: Value, flag: SetFlag) -> Result<()>;
     fn delete(&mut self, key: Key) -> Result<()>;
     fn search(&self, key: Key) -> Option<Value>;
 
@@ -40,8 +50,8 @@ impl<P: Pager> Tree for BTree<P> {
     type Codec = P;
 
     #[instrument(name = "tree insert", skip_all)]
-    fn insert(&mut self, key: Key, val: Value) -> Result<()> {
-        info!("inserting key: {key}, val: {val}",);
+    fn set(&mut self, key: Key, val: Value, flag: SetFlag) -> Result<()> {
+        info!("inserting key: {key}, val: {val} flag: {flag:?}",);
         // get root node
         let root = match self.root_ptr {
             Some(ptr) => {
@@ -49,6 +59,10 @@ impl<P: Pager> Tree for BTree<P> {
                 self.decode(ptr)
             }
             None => {
+                if flag == SetFlag::UPDATE {
+                    // edge case: updating in empty tree
+                    return Err(Error::InsertError("cant update in empty tree".to_string()));
+                }
                 debug!("no root found, creating new root");
                 let mut new_root = TreeNode::new();
                 new_root.set_header(NodeType::Leaf, 2);
@@ -60,7 +74,11 @@ impl<P: Pager> Tree for BTree<P> {
         };
 
         // recursively insert kv
-        let updated_root = self.tree_insert(root, key, val);
+        let updated_root = self
+            .tree_insert(root, key, val, flag)
+            .ok_or(Error::InsertError(
+                "couldnt fulfill set request".to_string(),
+            ))?;
         let mut split = updated_root.split()?;
 
         // deleting old root and creating a new one
@@ -181,7 +199,13 @@ impl<P: Pager> BTree<P> {
     }
 
     /// recursive insertion, node = current node, returns updated node
-    fn tree_insert(&mut self, node: TreeNode, key: Key, val: Value) -> TreeNode {
+    fn tree_insert(
+        &mut self,
+        node: TreeNode,
+        key: Key,
+        val: Value,
+        flag: SetFlag,
+    ) -> Option<TreeNode> {
         let mut new = TreeNode::new();
         let idx = node.lookupidx(&key);
         match node.get_type() {
@@ -189,27 +213,33 @@ impl<P: Pager> BTree<P> {
                 debug_print_tree(&node, idx);
 
                 // updating or inserting kv
-                new.insert(node, key, val, idx);
+                new.insert(node, key, val, idx, flag)?;
+                Some(new)
             }
             // walking down the tree until we hit a leaf node
             NodeType::Node => {
                 debug_print_tree(&node, idx);
 
                 let kptr = node.get_ptr(idx); // ptr of child below us
-                let knode = BTree::tree_insert(self, self.decode(kptr), key, val); // node below us
-                assert_eq!(knode.get_key(0).unwrap(), node.get_key(idx).unwrap());
+                if let Some(knode) = BTree::tree_insert(self, self.decode(kptr), key, val, flag)
+                // node below us
+                {
+                    assert_eq!(knode.get_key(0).unwrap(), node.get_key(idx).unwrap());
 
-                // potential split
-                let split = knode.split().unwrap();
+                    // potential split
+                    let split = knode.split().unwrap();
 
-                // delete old child
-                self.dealloc(kptr);
+                    // delete old child
+                    self.dealloc(kptr);
 
-                // update child ptr
-                new.insert_nkids(self, node, idx, split).unwrap();
+                    // update child ptr
+                    new.insert_nkids(self, node, idx, split).unwrap();
+                    Some(new)
+                } else {
+                    None
+                }
             }
         }
-        new
     }
 
     /// recursive deletion, node = current node, returns updated node in case a deletion happened
@@ -382,8 +412,10 @@ mod test {
     #[test]
     fn simple_insert() {
         let tree = mempage_tree();
-        tree.set("1".into(), "hello".into()).unwrap();
-        tree.set("2".into(), "world".into()).unwrap();
+        tree.set("1".into(), "hello".into(), SetFlag::UPSERT)
+            .unwrap();
+        tree.set("2".into(), "world".into(), SetFlag::UPSERT)
+            .unwrap();
 
         let t_ref = tree.pager.btree.borrow();
 
@@ -400,9 +432,12 @@ mod test {
     fn simple_delete() {
         let tree = mempage_tree();
 
-        tree.set("1".into(), "hello".into()).unwrap();
-        tree.set("2".into(), "world".into()).unwrap();
-        tree.set("3".into(), "bonjour".into()).unwrap();
+        tree.set("1".into(), "hello".into(), SetFlag::UPSERT)
+            .unwrap();
+        tree.set("2".into(), "world".into(), SetFlag::UPSERT)
+            .unwrap();
+        tree.set("3".into(), "bonjour".into(), SetFlag::UPSERT)
+            .unwrap();
         {
             let t_ref = tree.pager.btree.borrow();
             assert_eq!(
@@ -425,7 +460,8 @@ mod test {
         let tree = mempage_tree();
 
         for i in 1u16..=200u16 {
-            tree.set(format!("{i}").into(), "value".into()).unwrap()
+            tree.set(format!("{i}").into(), "value".into(), SetFlag::UPSERT)
+                .unwrap()
         }
         let t_ref = tree.pager.btree.borrow();
         assert_eq!(
@@ -444,7 +480,8 @@ mod test {
         let tree = mempage_tree();
 
         for i in 1u16..=400u16 {
-            tree.set(format!("{i}").into(), "value".into()).unwrap()
+            tree.set(format!("{i}").into(), "value".into(), SetFlag::UPSERT)
+                .unwrap()
         }
         let t_ref = tree.pager.btree.borrow();
         assert_eq!(
@@ -468,7 +505,8 @@ mod test {
         let _guard = span.enter();
 
         for i in 1u16..=200u16 {
-            tree.set(format!("{i}").into(), "value".into()).unwrap()
+            tree.set(format!("{i}").into(), "value".into(), SetFlag::UPSERT)
+                .unwrap()
         }
         for i in 1u16..=200u16 {
             tree.delete(format!("{i}").into()).unwrap()
@@ -486,7 +524,8 @@ mod test {
         let tree = mempage_tree();
 
         for i in 1u16..=400u16 {
-            tree.set(format!("{i}").into(), "value".into()).unwrap()
+            tree.set(format!("{i}").into(), "value".into(), SetFlag::UPSERT)
+                .unwrap()
         }
         for i in 1u16..=400u16 {
             tree.delete(format!("{i}").into()).unwrap()
@@ -504,7 +543,8 @@ mod test {
         let tree = mempage_tree();
 
         for i in 1u16..=400u16 {
-            tree.set(format!("{i}").into(), "value".into()).unwrap()
+            tree.set(format!("{i}").into(), "value".into(), SetFlag::UPSERT)
+                .unwrap()
         }
         for i in (1..=400u16).rev() {
             tree.delete(format!("{i}").into()).unwrap()
@@ -524,7 +564,8 @@ mod test {
         let _guard = span.enter();
 
         for i in 1u16..=400u16 {
-            tree.set(format!("{i}").into(), "value".into()).unwrap()
+            tree.set(format!("{i}").into(), "value".into(), SetFlag::UPSERT)
+                .unwrap()
         }
         for i in (1..=400u16).rev() {
             tree.delete(format!("{i}").into()).unwrap()
@@ -539,7 +580,8 @@ mod test {
         let tree = mempage_tree();
 
         for i in 1u16..=1000u16 {
-            tree.set(format!("{i}").into(), "value".into()).unwrap()
+            tree.set(format!("{i}").into(), "value".into(), SetFlag::UPSERT)
+                .unwrap()
         }
         {
             let t_ref = tree.pager.btree.borrow();
@@ -561,6 +603,7 @@ mod test {
             tree.set(
                 format!("{:?}", rand::rng().random_range(1..1000)).into(),
                 "val".into(),
+                SetFlag::UPSERT,
             )
             .unwrap()
         }
@@ -570,9 +613,11 @@ mod test {
     fn update_existing_key() {
         let tree = mempage_tree();
 
-        tree.set("key".into(), "value1".into()).unwrap();
+        tree.set("key".into(), "value1".into(), SetFlag::UPSERT)
+            .unwrap();
         // overwrite same key
-        tree.set("key".into(), "value2".into()).unwrap();
+        tree.set("key".into(), "value2".into(), SetFlag::UPSERT)
+            .unwrap();
 
         // value should be updated
         assert_eq!(tree.get("key".into()).unwrap(), "value2".into());
@@ -590,22 +635,6 @@ mod test {
         );
     }
 
-    #[test]
-    fn unicode_and_long_values() {
-        let tree = mempage_tree();
-
-        // 🚀 is 4 bytes in UTF-8 → 750 × 4 = 3000 bytes (value size cap)
-        let key = "ключ-ユニコード-🧪".to_string();
-        let long_val = "🚀".repeat(750);
-
-        assert_eq!(long_val.len(), 3000);
-
-        tree.set(key.clone().into(), long_val.clone().into())
-            .unwrap();
-
-        assert_eq!(tree.get(key.into()).unwrap(), long_val.into());
-    }
-
     // wip return error
     #[should_panic]
     #[test]
@@ -615,17 +644,22 @@ mod test {
         let key = "big".to_string();
         let too_big = "🚀".repeat(2000); // 
 
-        assert!(tree.set(key.into(), too_big.into()).is_err());
+        assert!(
+            tree.set(key.into(), too_big.into(), SetFlag::UPSERT)
+                .is_err()
+        );
     }
 
     #[test]
     fn reinsert_after_delete() {
         let tree = mempage_tree();
 
-        tree.set("re".into(), "first".into()).unwrap();
+        tree.set("re".into(), "first".into(), SetFlag::UPSERT)
+            .unwrap();
         tree.delete("re".into()).unwrap();
         // now reinsert with a different value
-        tree.set("re".into(), "second".into()).unwrap();
+        tree.set("re".into(), "second".into(), SetFlag::UPSERT)
+            .unwrap();
 
         assert_eq!(tree.get("re".into()).unwrap(), "second".into());
     }
@@ -670,7 +704,8 @@ mod test {
             if rng.random_bool(0.7) {
                 // insert
                 let v = format!("v{}", rng.random::<u32>());
-                tree.set(k.clone().into(), v.clone().into()).unwrap();
+                tree.set(k.clone().into(), v.clone().into(), SetFlag::UPSERT)
+                    .unwrap();
                 oracle.insert(k, v);
             } else {
                 // delete (ignore error if key is missing)
@@ -701,6 +736,130 @@ mod test {
                     k
                 );
             }
+        }
+    }
+
+    #[test]
+    fn unicode_and_long_values() {
+        let tree = mempage_tree();
+
+        // 🚀 is 4 bytes in UTF-8 → 750 × 4 = 3000 bytes (value size cap)
+        let key = "ключ-ユニコード-🧪".to_string();
+        let long_val = "🚀".repeat(750);
+
+        assert_eq!(long_val.len(), 3000);
+
+        tree.set(key.clone().into(), long_val.clone().into(), SetFlag::UPSERT)
+            .unwrap();
+
+        assert_eq!(tree.get(key.into()).unwrap(), long_val.into());
+    }
+
+    #[test]
+    fn insert_flag_rejects_duplicates() {
+        let tree = mempage_tree();
+
+        tree.set("key1".into(), "value1".into(), SetFlag::INSERT)
+            .unwrap();
+
+        // INSERT flag should reject duplicate key
+        let result = tree.set("key1".into(), "value2".into(), SetFlag::INSERT);
+        assert!(result.is_err(), "INSERT flag should reject duplicate keys");
+    }
+
+    #[test]
+    fn update_flag_rejects_new_keys() {
+        let tree = mempage_tree();
+
+        // UPDATE flag should reject non-existent key
+        let result = tree.set("nonexistent".into(), "value".into(), SetFlag::UPDATE);
+        assert!(result.is_err(), "UPDATE flag should reject new keys");
+    }
+
+    #[test]
+    fn update_flag_modifies_existing() {
+        let tree = mempage_tree();
+
+        tree.set("key1".into(), "value1".into(), SetFlag::UPSERT)
+            .unwrap();
+
+        // UPDATE flag should modify existing key
+        tree.set("key1".into(), "value2".into(), SetFlag::UPDATE)
+            .unwrap();
+
+        assert_eq!(tree.get("key1".into()).unwrap(), "value2".into());
+    }
+
+    #[test]
+    fn upsert_flag_inserts_new() {
+        let tree = mempage_tree();
+
+        tree.set("key1".into(), "value1".into(), SetFlag::UPSERT)
+            .unwrap();
+
+        assert_eq!(tree.get("key1".into()).unwrap(), "value1".into());
+    }
+
+    #[test]
+    fn upsert_flag_updates_existing() {
+        let tree = mempage_tree();
+
+        tree.set("key1".into(), "value1".into(), SetFlag::UPSERT)
+            .unwrap();
+        tree.set("key1".into(), "value2".into(), SetFlag::UPSERT)
+            .unwrap();
+
+        assert_eq!(tree.get("key1".into()).unwrap(), "value2".into());
+    }
+
+    #[test]
+    fn insert_flag_multiple_keys() {
+        let tree = mempage_tree();
+
+        for i in 1..=10 {
+            tree.set(
+                format!("key{}", i).into(),
+                format!("val{}", i).into(),
+                SetFlag::INSERT,
+            )
+            .unwrap();
+        }
+
+        for i in 1..=10 {
+            assert_eq!(
+                tree.get(format!("key{}", i).into()).unwrap(),
+                format!("val{}", i).into()
+            );
+        }
+    }
+
+    #[test]
+    fn update_flag_multiple_existing_keys() {
+        let tree = mempage_tree();
+
+        for i in 1..=10 {
+            tree.set(
+                format!("key{}", i).into(),
+                format!("val{}", i).into(),
+                SetFlag::UPSERT,
+            )
+            .unwrap();
+        }
+
+        for i in 1..=10 {
+            tree.set(
+                format!("key{}", i).into(),
+                format!("updated{}", i).into(),
+                SetFlag::UPDATE,
+            )
+            .unwrap();
+        }
+
+        for i in 1..=10 {
+            assert_eq!(
+                tree.get(format!("key{}", i).into()).unwrap(),
+                format!("updated{}", i).into()
+            );
         }
     }
 }

@@ -6,7 +6,7 @@ use std::{cell::RefCell, collections::HashMap, rc::Rc};
 use tracing::{debug, error};
 
 use crate::database::{
-    btree::{BTree, Tree},
+    btree::{BTree, SetFlag, Tree},
     errors::Error,
     pager::diskpager::{KVEngine, Pager},
     tables::{Key, Value},
@@ -23,8 +23,8 @@ impl KVEngine for MemPager {
         self.pager.get(key)
     }
 
-    fn set(&self, key: Key, val: Value) -> Result<(), Error> {
-        self.pager.set(key, val)
+    fn set(&self, key: Key, val: Value, flag: SetFlag) -> Result<(), Error> {
+        self.pager.set(key, val, flag)
     }
 
     fn delete(&self, key: Key) -> Result<(), Error> {
@@ -58,8 +58,8 @@ impl MemoryPager {
             .ok_or(Error::SearchError("value not found".to_string()))
     }
 
-    fn set(&self, key: Key, value: Value) -> Result<(), Error> {
-        self.btree.borrow_mut().insert(key, value)
+    fn set(&self, key: Key, value: Value, flag: SetFlag) -> Result<(), Error> {
+        self.btree.borrow_mut().set(key, value, flag)
     }
 
     fn delete(&self, key: Key) -> Result<(), Error> {

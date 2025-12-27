@@ -1,7 +1,7 @@
 use std::{collections::HashMap, marker::PhantomData, ops::Deref};
 
 use crate::database::{
-    btree::ScanMode,
+    btree::{ScanMode, SetFlag},
     codec::Codec,
     errors::{Error, Result, TableError},
     pager::diskpager::KVEngine,
@@ -278,12 +278,6 @@ pub(crate) struct Database<KV: KVEngine> {
     kve: KV,
 }
 
-enum SetFlag {
-    INSERT, // only add new rows
-    UPDATE, // only modifies existing
-    UPSERT, // add or modify
-}
-
 impl<KV: KVEngine> Database<KV> {
     pub fn new(pager: KV) -> Self {
         Database {
@@ -313,7 +307,7 @@ impl<KV: KVEngine> Database<KV> {
                         .encode(&meta)
                         .expect("this cant fail");
 
-                    self.kve.set(k, v).map_err(|e| {
+                    self.kve.set(k, v, SetFlag::UPSERT).map_err(|e| {
                         error!(?e);
                         TableError::TableIdError("error when retrieving id".to_string())
                     })?;
@@ -335,7 +329,7 @@ impl<KV: KVEngine> Database<KV> {
                     .encode(&meta)
                     .expect("this cant fail");
 
-                self.kve.set(k, v).map_err(|e| {
+                self.kve.set(k, v, SetFlag::UPSERT).map_err(|e| {
                     error!(?e);
                     TableError::TableIdError("error when retrieving id".to_string())
                 })?;
@@ -371,7 +365,7 @@ impl<KV: KVEngine> Database<KV> {
             .add(table.encode()?)
             .encode(&self.tdef)?;
 
-        self.kve.set(key, value).map_err(|e| {
+        self.kve.set(key, value, SetFlag::UPSERT).map_err(|e| {
             error!("error when inserting");
             TableError::InsertTableError("error when inserting table".to_string())
         })?;
@@ -422,11 +416,11 @@ impl<KV: KVEngine> Database<KV> {
     }
 
     #[instrument(name = "insert rec", skip_all)]
-    fn insert_rec(&mut self, rec: Record, schema: &Table) -> Result<()> {
+    fn insert_rec(&mut self, rec: Record, schema: &Table, flag: SetFlag) -> Result<()> {
         info!(?rec, "inserting record");
 
         let (key, value) = rec.encode(schema)?;
-        let _ = self.kve.set(key, value);
+        let _ = self.kve.set(key, value, flag);
         Ok(())
     }
 
@@ -516,7 +510,7 @@ mod test {
         entries.push(Record::new().add("Charlie").add(25).add(3));
 
         for entry in entries {
-            db.insert_rec(entry, &table).unwrap()
+            db.insert_rec(entry, &table, SetFlag::UPSERT).unwrap()
         }
 
         let q1 = Query::new().add("name", "Alice");

@@ -16,14 +16,14 @@ use crate::database::pager::freelist::{FLConfig, FLNode, FreeList, GC};
 use crate::database::pager::mmap::*;
 use crate::database::tables::{Key, Value};
 use crate::database::{
-    btree::{Tree, TreeNode},
+    btree::{SetFlag, Tree, TreeNode},
     errors::{Error, PagerError},
     types::*,
 };
 /// outward facing api
 pub(crate) trait KVEngine {
     fn get(&self, key: Key) -> Result<Value, Error>;
-    fn set(&self, key: Key, val: Value) -> Result<(), Error>;
+    fn set(&self, key: Key, val: Value, flag: SetFlag) -> Result<(), Error>;
     fn delete(&self, key: Key) -> Result<(), Error>;
 }
 
@@ -45,8 +45,8 @@ impl KVEngine for Envoy {
         self.envoy.get(key)
     }
 
-    fn set(&self, key: Key, val: Value) -> Result<(), Error> {
-        self.envoy.set(key, val)
+    fn set(&self, key: Key, val: Value, flag: SetFlag) -> Result<(), Error> {
+        self.envoy.set(key, val, flag)
     }
 
     fn delete(&self, key: Key) -> Result<(), Error> {
@@ -238,11 +238,11 @@ impl EnvoyV1 {
     }
 
     #[instrument(name = "pager set", skip_all)]
-    fn set(&self, key: Key, val: Value) -> Result<(), Error> {
+    fn set(&self, key: Key, val: Value, flag: SetFlag) -> Result<(), Error> {
         info!("inserting...");
 
         let recov_page = metapage_save(self); // saving current metapage for possible rollback
-        self.tree.borrow_mut().insert(key, val).map_err(|e| {
+        self.tree.borrow_mut().set(key, val, flag).map_err(|e| {
             error!(%e, "tree error");
             e
         })?;
@@ -612,6 +612,7 @@ mod test {
             .set(
                 Key::from_unencoded_str("1"),
                 Value::from_unencoded_str("val"),
+                SetFlag::UPSERT,
             )
             .unwrap();
         assert_eq!(
@@ -628,7 +629,9 @@ mod test {
         let pager = EnvoyV1::open(path).unwrap();
 
         for i in 1u16..=300u16 {
-            pager.set(format!("{i}").into(), "value".into()).unwrap()
+            pager
+                .set(format!("{i}").into(), "value".into(), SetFlag::UPSERT)
+                .unwrap()
         }
         for i in 1u16..=300u16 {
             assert_eq!(pager.get(format!("{i}").into()).unwrap(), "value".into())
@@ -643,7 +646,9 @@ mod test {
         let pager = EnvoyV1::open(path).unwrap();
 
         for i in 1u16..=300u16 {
-            pager.set(format!("{i}").into(), "value".into()).unwrap()
+            pager
+                .set(format!("{i}").into(), "value".into(), SetFlag::UPSERT)
+                .unwrap()
         }
         for i in 1u16..=300u16 {
             pager.delete(format!("{i}").into()).unwrap();
@@ -662,6 +667,7 @@ mod test {
                 .set(
                     format!("{:?}", rand::rng().random_range(1..1000)).into(),
                     Value::from_unencoded_str("val"),
+                    SetFlag::UPSERT,
                 )
                 .unwrap()
         }
@@ -676,7 +682,11 @@ mod test {
 
         for k in 1u16..=1000 {
             pager
-                .set(format!("{}", k).into(), Value::from_unencoded_str("val"))
+                .set(
+                    format!("{}", k).into(),
+                    Value::from_unencoded_str("val"),
+                    SetFlag::UPSERT,
+                )
                 .unwrap()
         }
         for k in 1u16..=1000 {
