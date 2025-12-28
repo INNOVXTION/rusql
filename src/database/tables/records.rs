@@ -16,9 +16,10 @@ use crate::database::{
 
 /// encoded and parsed key for the pager, should only be created from encoding a record
 ///
-// ----------------------KEY--------------------------|
-// [ TID][      INT      ][            STR           ]|
-// [ 8B ][1B TYPE][8B INT][1B TYPE][2B STRLEN][nB STR]|
+// -----------------------------KEY--------------------------------|
+// [ TID ][IDX PREFIX][      INT      ][            STR           ]|
+// [ 8B  ][    2B    ][1B TYPE][8B INT][1B TYPE][2B STRLEN][nB STR]|
+
 #[derive(Debug)]
 pub(crate) struct Key(Rc<[u8]>);
 

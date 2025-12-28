@@ -33,7 +33,6 @@ use tracing::{debug, error, info, instrument};
  *
  * Data Path:
  * User Input -> DataCell -> Record -> Key, Value -> Tree
- *
  */
 
 const DEF_TABLE_NAME: &'static str = "tdef";
@@ -227,6 +226,7 @@ pub(crate) struct Table {
     pub(crate) id: u64,
     pub(crate) cols: Vec<Column>,
     pub(crate) pkeys: u16,
+    // pub(crate) indices: Vec<Index>,
 
     // ensures tables are built through constructor
     _priv: PhantomData<bool>,
@@ -249,6 +249,13 @@ impl Table {
         })
     }
 }
+
+// #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+// pub(crate) struct Index {
+//     col: Column,
+//     prefix: u16,
+//     is_primary: bool,
+// }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub(crate) struct Column {
