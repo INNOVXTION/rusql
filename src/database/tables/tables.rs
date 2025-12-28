@@ -420,7 +420,7 @@ impl<KV: KVEngine> Database<KV> {
         info!(?rec, "inserting record");
 
         let (key, value) = rec.encode(schema)?;
-        let _ = self.kve.set(key, value, flag);
+        self.kve.set(key, value, flag)?;
         Ok(())
     }
 
@@ -441,13 +441,13 @@ trait DatabaseAPI {
 
     fn get(&self);
     fn insert(&self);
-    fn update(&self);
     fn delete(&self);
 }
 
 #[cfg(test)]
 mod test {
     use crate::database::{
+        btree::Compare,
         pager::{diskpager::Envoy, mempage_tree},
         tables::tables,
     };
@@ -706,5 +706,492 @@ mod test {
 
         // wrong column name
         assert!(Query::new().add("nope", "x").encode(&table).is_err());
+    }
+
+    #[test]
+    fn scan_open() -> Result<()> {
+        let path = "test-files/scan.rdb";
+        cleanup_file(path);
+        let pager = Envoy::new("test-files/scan.rdb");
+        let mut db = Database::new(pager);
+
+        let table1 = TableBuilder::new()
+            .id(5)
+            .name("table_1")
+            .add_col("name", TypeCol::BYTES)
+            .add_col("age", TypeCol::INTEGER)
+            .pkey(1)
+            .build(&mut db)
+            .unwrap();
+
+        let table2 = TableBuilder::new()
+            .id(7)
+            .name("table_2")
+            .add_col("id", TypeCol::INTEGER)
+            .add_col("name", TypeCol::BYTES)
+            .add_col("job", TypeCol::BYTES)
+            .pkey(1)
+            .build(&mut db)
+            .unwrap();
+
+        db.insert_table(&table1)?;
+        db.insert_table(&table2)?;
+
+        assert!(db.get_table("table_1").is_some());
+        assert!(db.get_table("table_2").is_some());
+
+        let mut entries_t1 = vec![];
+        entries_t1.push(Record::new().add("Alice").add(20));
+        entries_t1.push(Record::new().add("Bob").add(15));
+        entries_t1.push(Record::new().add("Charlie").add(25));
+
+        for entry in entries_t1 {
+            db.insert_rec(entry, &table1, SetFlag::UPSERT)?
+        }
+
+        let mut entries_t2 = vec![];
+        entries_t2.push(Record::new().add(20).add("Alice").add("teacher"));
+        entries_t2.push(Record::new().add(15).add("Bob").add("clerk"));
+        entries_t2.push(Record::new().add(25).add("Charlie").add("fire fighter"));
+
+        for entry in entries_t2 {
+            db.insert_rec(entry, &table2, SetFlag::UPSERT)?
+        }
+
+        let open = ScanMode::Open(
+            Query::new().add("name", "Alice").encode(&table1)?,
+            Compare::GE,
+        );
+        let res = db.scan(open)?;
+
+        assert_eq!(res.len(), 3);
+        assert_eq!(res[0].to_string(), "Alice 20");
+        assert_eq!(res[1].to_string(), "Bob 15");
+        assert_eq!(res[2].to_string(), "Charlie 25");
+
+        let open = ScanMode::Open(Query::new().add("id", 20).encode(&table2)?, Compare::GE);
+        let res = db.scan(open)?;
+
+        assert_eq!(res.len(), 2);
+        assert_eq!(res[0].to_string(), "20 Alice teacher");
+        assert_eq!(res[1].to_string(), "25 Charlie fire fighter");
+
+        cleanup_file(path);
+        Ok(())
+    }
+}
+
+// these tests were cooked up by claude, good luck!
+#[cfg(test)]
+mod scan {
+    use crate::database::{btree::Compare, pager::diskpager::Envoy};
+
+    use super::*;
+    use crate::database::helper::cleanup_file;
+    use test_log::test;
+
+    #[test]
+    fn scan_range_between_keys() -> Result<()> {
+        let path = "test-files/scan_range.rdb";
+        cleanup_file(path);
+        let pager = Envoy::new(path);
+        let mut db = Database::new(pager);
+
+        let table = TableBuilder::new()
+            .id(10)
+            .name("range_table")
+            .add_col("id", TypeCol::INTEGER)
+            .add_col("name", TypeCol::BYTES)
+            .pkey(1)
+            .build(&mut db)
+            .unwrap();
+
+        db.insert_table(&table)?;
+
+        // Insert records with ids 1-20
+        for i in 1..=20 {
+            db.insert_rec(
+                Record::new().add(i as i64).add(format!("name_{}", i)),
+                &table,
+                SetFlag::UPSERT,
+            )?;
+        }
+
+        // Scan from id 5 to 15
+        let lo_key = Query::new().add("id", 5i64).encode(&table)?;
+        let hi_key = Query::new().add("id", 15i64).encode(&table)?;
+
+        let range = ScanMode::new_range((lo_key, Compare::GE), (hi_key, Compare::LE))?;
+
+        let res = db.scan(range)?;
+
+        assert_eq!(res.len(), 11); // 5 through 15 inclusive
+        assert_eq!(res[0].to_string(), "5 name_5");
+        assert_eq!(res[10].to_string(), "15 name_15");
+
+        cleanup_file(path);
+        Ok(())
+    }
+
+    #[test]
+    fn scan_multiple_tables_isolation() -> Result<()> {
+        let path = "test-files/scan_isolation.rdb";
+        cleanup_file(path);
+        let pager = Envoy::new(path);
+        let mut db = Database::new(pager);
+
+        let table1 = TableBuilder::new()
+            .id(20)
+            .name("table_a")
+            .add_col("key", TypeCol::BYTES)
+            .add_col("value", TypeCol::BYTES)
+            .pkey(1)
+            .build(&mut db)
+            .unwrap();
+
+        let table2 = TableBuilder::new()
+            .id(21)
+            .name("table_b")
+            .add_col("key", TypeCol::BYTES)
+            .add_col("value", TypeCol::BYTES)
+            .pkey(1)
+            .build(&mut db)
+            .unwrap();
+
+        db.insert_table(&table1)?;
+        db.insert_table(&table2)?;
+
+        // Insert into table1
+        for i in 1..=10 {
+            db.insert_rec(
+                Record::new()
+                    .add(format!("key_a_{}", i))
+                    .add(format!("val_a_{}", i)),
+                &table1,
+                SetFlag::UPSERT,
+            )?;
+        }
+
+        // Insert into table2
+        for i in 1..=10 {
+            db.insert_rec(
+                Record::new()
+                    .add(format!("key_b_{}", i))
+                    .add(format!("val_b_{}", i)),
+                &table2,
+                SetFlag::UPSERT,
+            )?;
+        }
+
+        // Scan table1
+        let open = ScanMode::new_open(
+            Query::new().add("key", "key_a_1").encode(&table1)?,
+            Compare::GE,
+        )?;
+        let res1 = db.scan(open)?;
+
+        // Should only contain table1 records
+        assert!(res1.iter().all(|r| r.to_string().contains("val_a_")));
+        assert_eq!(res1.len(), 10);
+
+        // Scan table2
+        let open = ScanMode::new_open(
+            Query::new().add("key", "key_b_1").encode(&table2)?,
+            Compare::GE,
+        )?;
+        let res2 = db.scan(open)?;
+
+        // Should only contain table2 records
+        assert!(res2.iter().all(|r| r.to_string().contains("val_b_")));
+        assert_eq!(res2.len(), 10);
+
+        cleanup_file(path);
+        Ok(())
+    }
+
+    #[test]
+    fn scan_with_lt_predicate() -> Result<()> {
+        let path = "test-files/scan_lt.rdb";
+        cleanup_file(path);
+        let pager = Envoy::new(path);
+        let mut db = Database::new(pager);
+
+        let table = TableBuilder::new()
+            .id(30)
+            .name("lt_table")
+            .add_col("score", TypeCol::INTEGER)
+            .add_col("player", TypeCol::BYTES)
+            .pkey(1)
+            .build(&mut db)
+            .unwrap();
+
+        db.insert_table(&table)?;
+
+        for i in 1..=10 {
+            db.insert_rec(
+                Record::new()
+                    .add(i as i64 * 10)
+                    .add(format!("player_{}", i)),
+                &table,
+                SetFlag::UPSERT,
+            )?;
+        }
+
+        // Scan backwards from score 50
+        let open = ScanMode::new_open(
+            Query::new().add("score", 50i64).encode(&table)?,
+            Compare::LT,
+        )?;
+
+        let res = db.scan(open)?;
+
+        // Should return scores 40, 30, 20, 10
+        assert_eq!(res.len(), 4);
+        assert_eq!(res[0].to_string(), "40 player_4");
+        assert_eq!(res[3].to_string(), "10 player_1");
+
+        cleanup_file(path);
+        Ok(())
+    }
+
+    #[test]
+    fn scan_empty_result_set() -> Result<()> {
+        let path = "test-files/scan_empty.rdb";
+        cleanup_file(path);
+        let pager = Envoy::new(path);
+        let mut db = Database::new(pager);
+
+        let table = TableBuilder::new()
+            .id(40)
+            .name("empty_table")
+            .add_col("id", TypeCol::INTEGER)
+            .add_col("data", TypeCol::BYTES)
+            .pkey(1)
+            .build(&mut db)
+            .unwrap();
+
+        db.insert_table(&table)?;
+
+        for i in 1..=5 {
+            db.insert_rec(
+                Record::new().add(i as i64).add(format!("data_{}", i)),
+                &table,
+                SetFlag::UPSERT,
+            )?;
+        }
+
+        // Scan for values greater than max
+        let open = ScanMode::new_open(Query::new().add("id", 100i64).encode(&table)?, Compare::GT)?;
+
+        let result = db.scan(open);
+        assert!(result.is_err()); // Should error on empty result
+
+        cleanup_file(path);
+        Ok(())
+    }
+
+    #[test]
+    fn scan_single_record_result() -> Result<()> {
+        let path = "test-files/scan_single.rdb";
+        cleanup_file(path);
+        let pager = Envoy::new(path);
+        let mut db = Database::new(pager);
+
+        let table = TableBuilder::new()
+            .id(50)
+            .name("single_table")
+            .add_col("code", TypeCol::BYTES)
+            .add_col("value", TypeCol::INTEGER)
+            .pkey(1)
+            .build(&mut db)
+            .unwrap();
+
+        db.insert_table(&table)?;
+
+        db.insert_rec(
+            Record::new().add("CODE_001").add(42i64),
+            &table,
+            SetFlag::UPSERT,
+        )?;
+
+        let open = ScanMode::new_open(
+            Query::new().add("code", "CODE_001").encode(&table)?,
+            Compare::EQ,
+        );
+        // EQ is not allowed in open scans, should error
+        assert!(open.is_err());
+
+        cleanup_file(path);
+        Ok(())
+    }
+
+    #[test]
+    fn scan_with_le_predicate() -> Result<()> {
+        let path = "test-files/scan_le.rdb";
+        cleanup_file(path);
+        let pager = Envoy::new(path);
+        let mut db = Database::new(pager);
+
+        let table = TableBuilder::new()
+            .id(60)
+            .name("le_table")
+            .add_col("value", TypeCol::INTEGER)
+            .add_col("label", TypeCol::BYTES)
+            .pkey(1)
+            .build(&mut db)
+            .unwrap();
+
+        db.insert_table(&table)?;
+
+        for i in 10..=50 {
+            db.insert_rec(
+                Record::new().add(i as i64).add(format!("label_{}", i)),
+                &table,
+                SetFlag::UPSERT,
+            )?;
+        }
+
+        // Scan from 35 backwards (LE)
+        let open = ScanMode::new_open(
+            Query::new().add("value", 35i64).encode(&table)?,
+            Compare::LE,
+        )?;
+
+        let res = db.scan(open)?;
+
+        // Should include 35 and go backwards to 10
+        assert_eq!(res.len(), 26); // 35 down to 10
+        assert_eq!(res[0].to_string(), "35 label_35");
+
+        cleanup_file(path);
+        Ok(())
+    }
+
+    #[test]
+    fn scan_large_dataset() -> Result<()> {
+        let path = "test-files/scan_large.rdb";
+        cleanup_file(path);
+        let pager = Envoy::new(path);
+        let mut db = Database::new(pager);
+
+        let table = TableBuilder::new()
+            .id(70)
+            .name("large_table")
+            .add_col("id", TypeCol::INTEGER)
+            .add_col("name", TypeCol::BYTES)
+            .pkey(1)
+            .build(&mut db)
+            .unwrap();
+
+        db.insert_table(&table)?;
+
+        // Insert 500 records
+        for i in 1..=500 {
+            db.insert_rec(
+                Record::new().add(i as i64).add(format!("name_{:04}", i)),
+                &table,
+                SetFlag::UPSERT,
+            )?;
+        }
+
+        // Scan from id 100 onwards
+        let open = ScanMode::new_open(Query::new().add("id", 100i64).encode(&table)?, Compare::GT)?;
+
+        let res = db.scan(open)?;
+
+        assert_eq!(res.len(), 400); // 101 to 500
+        assert_eq!(res[0].to_string(), "101 name_0101");
+        assert_eq!(res[399].to_string(), "500 name_0500");
+
+        cleanup_file(path);
+        Ok(())
+    }
+
+    #[test]
+    fn scan_byte_string_keys() -> Result<()> {
+        let path = "test-files/scan_bytes.rdb";
+        cleanup_file(path);
+        let pager = Envoy::new(path);
+        let mut db = Database::new(pager);
+
+        let table = TableBuilder::new()
+            .id(80)
+            .name("byte_table")
+            .add_col("name", TypeCol::BYTES)
+            .add_col("data", TypeCol::BYTES)
+            .pkey(1)
+            .build(&mut db)
+            .unwrap();
+
+        db.insert_table(&table)?;
+
+        let names = vec!["alice", "bob", "charlie", "david", "eve"];
+        for name in &names {
+            db.insert_rec(
+                Record::new().add(*name).add(format!("data_{}", name)),
+                &table,
+                SetFlag::UPSERT,
+            )?;
+        }
+
+        // Scan from "bob" onwards
+        let open =
+            ScanMode::new_open(Query::new().add("name", "bob").encode(&table)?, Compare::GE)?;
+
+        let res = db.scan(open)?;
+
+        assert_eq!(res.len(), 4); // bob, charlie, david, eve
+        assert_eq!(res[0].to_string(), "bob data_bob");
+
+        cleanup_file(path);
+        Ok(())
+    }
+
+    #[test]
+    fn scan_after_deletes() -> Result<()> {
+        let path = "test-files/scan_after_delete.rdb";
+        cleanup_file(path);
+        let pager = Envoy::new(path);
+        let mut db = Database::new(pager);
+
+        let table = TableBuilder::new()
+            .id(90)
+            .name("delete_table")
+            .add_col("id", TypeCol::INTEGER)
+            .add_col("value", TypeCol::BYTES)
+            .pkey(1)
+            .build(&mut db)
+            .unwrap();
+
+        db.insert_table(&table)?;
+
+        // Insert 10 records
+        for i in 1..=10 {
+            db.insert_rec(
+                Record::new().add(i as i64).add(format!("val_{}", i)),
+                &table,
+                SetFlag::UPSERT,
+            )?;
+        }
+
+        // Delete some records
+        for i in [3, 5, 7].iter() {
+            let key = Query::new().add("id", *i as i64).encode(&table)?;
+            db.kve.delete(key)?;
+        }
+
+        // Scan from beginning
+        let open = ScanMode::new_open(Query::new().add("id", 1i64).encode(&table)?, Compare::GE)?;
+
+        let res = db.scan(open)?;
+
+        // Should have 7 records (10 - 3 deleted)
+        assert_eq!(res.len(), 7);
+        assert!(!res.iter().any(|r| r.to_string().contains("val_3")));
+        assert!(!res.iter().any(|r| r.to_string().contains("val_5")));
+        assert!(!res.iter().any(|r| r.to_string().contains("val_7")));
+
+        cleanup_file(path);
+        Ok(())
     }
 }

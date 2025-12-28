@@ -20,7 +20,7 @@ pub(crate) enum ScanMode {
 
 impl ScanMode {
     /// scans the entire table starting from key
-    fn new_open(key: Key, cmp: Compare) -> Result<Self> {
+    pub fn new_open(key: Key, cmp: Compare) -> Result<Self> {
         if cmp == Compare::EQ {
             return Err(ScanError::ScanCreateError(
                 "invalid input: EQ predicate cant be used for open scans".to_string(),
@@ -30,7 +30,7 @@ impl ScanMode {
         Ok(ScanMode::Open(key, cmp))
     }
     /// scans a range between two keys, predicates dictate starting position for lo and hi
-    fn new_range(lo: (Key, Compare), hi: (Key, Compare)) -> Result<Self> {
+    pub fn new_range(lo: (Key, Compare), hi: (Key, Compare)) -> Result<Self> {
         let tid = lo.0.get_tid();
         if tid != hi.0.get_tid() {
             return Err(ScanError::ScanCreateError(
