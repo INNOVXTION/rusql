@@ -113,5 +113,6 @@ pub fn mmap_extend(db: &EnvoyV1, size: usize) -> Result<(), PagerError> {
     let mut mmap_ref = db.mmap.borrow_mut();
     mmap_ref.total += alloc;
     mmap_ref.chunks.push(chunk);
+
     Ok(())
 }

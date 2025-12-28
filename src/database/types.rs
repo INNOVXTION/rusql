@@ -20,6 +20,7 @@ pub const MERGE_FACTOR: usize = PAGE_SIZE / 4;
 
 /// size of one page on disk
 pub const PAGE_SIZE: usize = 4096; // 4096 bytes
+pub const TRUNC_THRESHOLD: usize = 1000; // amount of free list entries which trigger a truncation call
 
 /// maximum size for nodes inside memory
 pub const NODE_SIZE: usize = PAGE_SIZE * 2;

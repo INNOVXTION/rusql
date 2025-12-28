@@ -76,12 +76,14 @@ impl<P: Pager> GC for FreeList<P> {
     /// add a page to the tail increment tail seq
     /// PushTail
     fn append(&mut self, ptr: Pointer) -> Result<(), FLError> {
-        // updates tail page, by getting a reference to the buffer if its already in there
-        // updating appending the pointer
         debug!("appending {} to free list...", ptr);
         assert!(self.tail_page.is_some());
+
+        // updates tail page, by getting a reference to the buffer if its already in there
+        // updating appending the pointer
         self.update_set_ptr(self.tail_page.unwrap(), ptr, seq_to_idx(self.tail_seq));
         self.tail_seq += 1;
+
         // allocating new node if the the node is full
         if seq_to_idx(self.tail_seq) == 0 {
             debug!("tail page full...");
@@ -181,16 +183,19 @@ impl<P: Pager> GC for FreeList<P> {
 
 impl<P: Pager> FreeList<P> {
     // callbacks
+
     /// reads page, gets page, removes from buffer if available
     fn decode(&self, ptr: Pointer) -> FLNode {
         let strong = self.pager.upgrade().unwrap();
         strong.page_read(ptr, NodeFlag::Freelist).as_fl()
     }
+
     /// appends page to disk, doesnt make a buffer check
     fn encode(&self, node: FLNode) -> Pointer {
         let strong = self.pager.upgrade().unwrap();
         strong.encode(Node::Freelist(node))
     }
+
     /// returns ptr to node inside the allocation buffer
     /// # SAFETY:
     /// needs to be called in isolation, calls to encode can resize the buffer
@@ -216,7 +221,7 @@ impl<P: Pager> FreeList<P> {
     fn pop_head(&mut self) -> (Option<Pointer>, Option<Pointer>) {
         // experimental
         // head seq cant overtake max seq when on the same page as tail
-        if self.head_seq == self.max_seq && self.head_page == self.tail_page {
+        if self.is_empty() {
             // no free page available
             return (None, None);
         }
@@ -281,12 +286,11 @@ impl<P: Pager> FreeList<P> {
     }
 
     fn is_empty(&self) -> bool {
-        if self.head_page != self.tail_page {
-            return false;
-        } else if self.head_seq != self.tail_seq {
-            return false;
+        if self.head_page == self.tail_page && self.head_seq == self.max_seq {
+            true
+        } else {
+            false
         }
-        true
     }
 }
 
@@ -375,6 +379,7 @@ impl<P: Pager> Debug for FreeList<P> {
 
 #[cfg(test)]
 mod test {
+    use crate::database::types::Pointer;
 
     #[test]
     fn modulo() {
@@ -384,5 +389,10 @@ mod test {
         assert_eq!(x % 10, 0);
         let x = 1;
         assert_eq!(x % 10, 1);
+
+        let p1 = Some(Pointer::from(1));
+        let p2 = Some(Pointer::from(2));
+
+        assert_ne!(p1, p2)
     }
 }

@@ -96,14 +96,16 @@ pub(crate) trait Pager {
     fn page_read(&self, ptr: Pointer, flag: NodeFlag) -> Node; //tree decode
     fn page_alloc(&self, node: Node) -> Pointer; //tree encode
     fn dealloc(&self, ptr: Pointer); // tree dealloc/del
+
     // FL callbacks
     fn encode(&self, node: Node) -> Pointer; // FL encode
     fn update(&self, ptr: Pointer) -> *mut FLNode; // FL update
 }
 
 impl Pager for EnvoyV1 {
-    // decodes a page, checks buffer before reading disk
-    // `BTree.get`, reads a page possibly from buffer or disk
+    /// decodes a page, checks buffer before reading disk
+    ///
+    /// `BTree.get`, reads a page possibly from buffer or disk
     fn page_read(&self, ptr: Pointer, flag: NodeFlag) -> Node {
         // check buffer first
         debug!(node=?flag, %ptr, "page read");
@@ -120,6 +122,7 @@ impl Pager for EnvoyV1 {
             self.decode(ptr, flag)
         }
     }
+
     /// allocates a new page to be encoded, checks freelist first before appending to disk
     ///
     /// pageAlloc, new
@@ -138,6 +141,7 @@ impl Pager for EnvoyV1 {
             self.encode(node)
         }
     }
+
     /// PushTail
     fn dealloc(&self, ptr: Pointer) {
         self.freelist
@@ -146,26 +150,35 @@ impl Pager for EnvoyV1 {
             .expect("dealloc error");
         ()
     }
+
     /// adds pages to buffer to be encoded to disk later (append)
+    ///
     /// does not check if node exists in buffer!
+    ///
     /// pageAppend
     fn encode(&self, node: Node) -> Pointer {
         let buf_ref = &mut self.buffer.borrow_mut();
+        let ptr = Pointer(buf_ref.npages + buf_ref.nappend);
+
         // empty db has n_pages = 1 (meta page)
         assert!(node.fits_page());
-        let ptr = Pointer(buf_ref.npages + buf_ref.nappend);
-        buf_ref.nappend += 1;
+
         debug!(
             "encode: adding {:?} at page: {} to buffer",
             node.get_type(),
             ptr.0
         );
+
+        buf_ref.nappend += 1;
         buf_ref.hmap.insert(ptr, node);
         debug_print_buffer(&buf_ref.hmap);
+
         assert_ne!(ptr.0, 0);
         ptr
     }
+
     /// callback for free list
+    ///
     /// checks buffer for allocated page and returns pointer
     fn update(&self, ptr: Pointer) -> *mut FLNode {
         let buf = &mut self.buffer.borrow_mut();
@@ -198,7 +211,6 @@ impl EnvoyV1 {
     /// initializes pager
     ///
     /// opens file, and sets up callbacks for the tree
-
     pub fn open(path: &'static str) -> Result<Rc<Self>, Error> {
         let mut pager = Rc::new_cyclic(|w| EnvoyV1 {
             path,
@@ -216,6 +228,7 @@ impl EnvoyV1 {
             tree: Rc::new(RefCell::new(BTree::<Self>::new(w.clone()))),
             freelist: Rc::new(RefCell::new(FreeList::<Self>::new(w.clone()))),
         });
+
         let fd_size = rustix::fs::fstat(&pager.database)
             .map_err(|e| {
                 error!("Error when getting file size");
@@ -223,14 +236,17 @@ impl EnvoyV1 {
             })
             .unwrap()
             .st_size as u64;
+
         mmap_extend(&pager, PAGE_SIZE).expect("mmap extend error");
         metapage_read(&mut pager, fd_size);
+
         debug!(
             "\npager initialized:\nmmap.total {}\nn_pages {}\nchunks.len {}",
             pager.mmap.borrow().total,
             pager.buffer.borrow().npages,
             pager.mmap.borrow().chunks.len(),
         );
+
         Ok(pager)
     }
 
@@ -283,16 +299,17 @@ impl EnvoyV1 {
     fn update_or_revert(&self, recov_page: &MetaPage) -> Result<(), Error> {
         debug!("tree operation complete, updating file");
 
+        // making sure the meta page is a known good state after a potential write error
         if self.failed.get() {
-            // making sure the meta page is a known good state after a potential write error
             debug!("failed update detected, restoring meta page...");
 
             metapage_write(self, recov_page).expect("meta page recovery write error");
             rustix::fs::fsync(&self.database).expect("fsync metapage for restoration failed");
             self.failed.set(false);
         };
+
+        // in case the file writing fails, we revert back to the old meta page
         if let Err(e) = self.file_update() {
-            // in case the file writing fails, we revert back to the old meta page
             warn!(%e, "file update failed! Reverting meta page...");
 
             // save the pager from before the current operation to be rewritten later
@@ -324,9 +341,9 @@ impl EnvoyV1 {
     }
 
     /// helper function: writePages, flushes the buffer
-    ///
     fn page_write(&self) -> Result<(), PagerError> {
         debug!("writing page...");
+
         let buf = self.buffer.borrow();
         let buf_len = buf.hmap.len();
         let npage = buf.npages;
@@ -360,7 +377,11 @@ impl EnvoyV1 {
                 })?;
         }
         debug!(bytes_written, "bytes written:");
-        assert!(bytes_written == buf_len * PAGE_SIZE);
+        if bytes_written != buf_len * PAGE_SIZE {
+            return Err(PagerError::PageWriteError(
+                "wrong amount of bytes written".to_string(),
+            ));
+        };
 
         //discard in-memory data
         drop(buf);
@@ -372,6 +393,7 @@ impl EnvoyV1 {
     }
 
     /// decodes a page from disk
+    ///
     /// kv.pageRead, db.pageRead -> pagereadfile
     fn decode(&self, ptr: Pointer, node_type: NodeFlag) -> Node {
         let mmap_ref = self.mmap.borrow();
@@ -401,23 +423,7 @@ impl EnvoyV1 {
         panic!()
     }
 
-    fn should_truncate() -> bool {
-        todo!()
-    }
-
-    /// WIP
-    ///
-    /// attempts to truncate the file. Makes call to and modifies freelist. This function should therefore be called
-    /// after tree operations. Truncation amount is based on cleanup_check algorithm
-    #[instrument(skip_all)]
-    fn truncate(&self) -> Result<(), Error> {
-        let npages = self.buffer.borrow().npages;
-        if npages <= 2 {
-            return Err(
-                FLError::TruncateError("cant truncate from empty database".to_string()).into(),
-            );
-        }
-
+    fn cleanup_check(&self) -> Result<(), Error> {
         let list: Vec<Pointer> =
             self.freelist
                 .borrow()
@@ -425,6 +431,24 @@ impl EnvoyV1 {
                 .ok_or(FLError::TruncateError(
                     "could not retrieve pointer from FL".to_string(),
                 ))?;
+
+        if list.len() > TRUNC_THRESHOLD {
+            self.truncate(list)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// attempts to truncate the file. Makes call to and modifies freelist. This function should therefore be called
+    /// after tree operations. Truncation amount is based on count_trunc_pages() algorithm
+    #[instrument(skip_all)]
+    fn truncate(&self, list: Vec<Pointer>) -> Result<(), Error> {
+        let npages = self.buffer.borrow().npages;
+        if npages <= 2 {
+            return Err(
+                FLError::TruncateError("cant truncate from empty database".to_string()).into(),
+            );
+        }
 
         match count_trunc_pages(npages, &list) {
             Some(count) => {
@@ -434,7 +458,10 @@ impl EnvoyV1 {
                     assert_eq!(list[i as usize], ptr);
                 }
 
-                self.update_or_revert(&metapage_save(self))?;
+                self.buffer.borrow_mut().npages = npages - count;
+                metapage_write(self, &metapage_save(self))?;
+                rustix::fs::fsync(&self.database)?;
+
                 rustix::fs::ftruncate(&self.database, (npages - count) * PAGE_SIZE as u64)
                     .expect("truncate failed");
                 rustix::fs::fsync(&self.database)?;
@@ -547,6 +574,7 @@ fn metapage_save(pager: &EnvoyV1) -> MetaPage {
     let flc = pager.freelist.borrow().get_config();
     let tr_ref = pager.tree.borrow();
     let mut data = MetaPage::new();
+
     debug!(
         sig = DB_SIG,
         root_ptr = ?tr_ref.get_root(),
@@ -557,6 +585,7 @@ fn metapage_save(pager: &EnvoyV1) -> MetaPage {
         fl_tail_seq = flc.tail_seq,
         "saving meta page:"
     );
+
     use MpField as M;
     data.set_sig(DB_SIG);
     data.set_ptr(M::RootPtr, tr_ref.get_root());
@@ -566,6 +595,7 @@ fn metapage_save(pager: &EnvoyV1) -> MetaPage {
     data.set_ptr(M::HeadSeq, Some(flc.head_seq.into()));
     data.set_ptr(M::TailPage, flc.tail_page);
     data.set_ptr(M::TailSeq, Some(flc.tail_seq.into()));
+
     data
 }
 
@@ -574,20 +604,24 @@ fn metapage_save(pager: &EnvoyV1) -> MetaPage {
 /// panics when called without initialized mmap
 fn metapage_load(pager: &EnvoyV1, meta: &MetaPage) {
     debug!("loading metapage");
+
     let mut tr_ref = pager.tree.borrow_mut();
 
     match meta.read_ptr(MpField::RootPtr) {
         Pointer(0) => tr_ref.set_root(None),
         n => tr_ref.set_root(Some(n)),
     };
+
     pager.buffer.borrow_mut().npages = meta.read_ptr(MpField::Npages).get();
 
     let flc = FLConfig {
         head_page: Some(meta.read_ptr(MpField::HeadPage)),
         head_seq: meta.read_ptr(MpField::HeadSeq).get() as usize,
+
         tail_page: Some(meta.read_ptr(MpField::TailPage)),
         tail_seq: meta.read_ptr(MpField::TailSeq).get() as usize,
     };
+
     pager.freelist.borrow_mut().set_config(&flc);
 }
 
@@ -608,9 +642,11 @@ fn metapage_read(pager: &EnvoyV1, file_size: u64) {
         return;
     }
     debug!("root read: loading meta page");
+
     let mut meta = MetaPage::new();
     meta.copy_from_slice(&pager.mmap.borrow().chunks[0].to_slice()[..METAPAGE_SIZE]);
     metapage_load(pager, &meta);
+
     assert!(pager.buffer.borrow().npages != 0);
 }
 

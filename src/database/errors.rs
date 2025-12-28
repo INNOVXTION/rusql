@@ -80,6 +80,8 @@ pub enum PagerError {
     UnalignedOffset(u64),
     #[error("Length {0} is invalid!")]
     UnalignedLength(usize),
+    #[error("{0}")]
+    PageWriteError(String),
 
     // syscalls
     #[error("Error when handling file: {0}")]
