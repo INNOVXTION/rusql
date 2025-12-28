@@ -100,6 +100,8 @@ pub enum FLError {
     UnknownError,
     #[error("{0}")]
     TruncateError(String),
+    #[error("{0}")]
+    PopError(String),
 }
 
 // #[error("{var}")]    ⟶   write!("{}", self.var)

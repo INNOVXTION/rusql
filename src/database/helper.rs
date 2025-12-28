@@ -8,10 +8,6 @@ use tracing::{debug, error};
 
 use crate::database::btree::TreeNode;
 
-pub trait DecodeSlice {
-    fn read_u16(&self, offset: usize) -> u16;
-}
-
 /// casts usize to u16
 pub(crate) fn as_usize(n: usize) -> u16 {
     if n > u16::MAX as usize {
@@ -35,6 +31,7 @@ pub(crate) fn as_page(offset: usize) -> String {
 pub fn create_file_sync(file: &str) -> Result<OwnedFd, PagerError> {
     assert!(!file.is_empty());
     let path = Path::new(file);
+
     if let None = path.file_name() {
         error!("invalid file name");
         return Err(PagerError::FileNameError);
@@ -75,33 +72,7 @@ pub fn create_file_sync(file: &str) -> Result<OwnedFd, PagerError> {
     Ok(fd)
 }
 
-// /// input validator
-// pub(crate) fn input_valid(key: &str, value: &str) -> Result<(), Error> {
-//     if key.len() > BTREE_MAX_KEY_SIZE {
-//         error!(
-//             key.len = key.len(),
-//             max = { BTREE_MAX_KEY_SIZE },
-//             "key size exceeds maximum!"
-//         );
-//         return Err(Error::InvalidInput("key size exceeds maximum!"));
-//     };
-//     if value.len() > BTREE_MAX_VAL_SIZE {
-//         error!(
-//             val.len = value.len(),
-//             max = { BTREE_MAX_VAL_SIZE },
-//             "value size exceeds maximum!"
-//         );
-//         return Err(Error::InvalidInput("value size exceeds maximum!"));
-//     };
-//     if key.is_empty() {
-//         error!("key cant be empty");
-//         return Err(Error::InvalidInput("key cant be empty"));
-//     }
-//     Ok(())
-// }
-
 /// helper function for debugging purposes
-
 pub fn debug_print_buffer(buf: &HashMap<Pointer, Node>) {
     #[cfg(test)]
     {
@@ -117,7 +88,6 @@ pub fn debug_print_buffer(buf: &HashMap<Pointer, Node>) {
 }
 
 /// helper function for debugging purposes
-
 pub fn debug_print_tree(node: &TreeNode, idx: u16) {
     #[cfg(test)]
     {

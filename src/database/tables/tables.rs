@@ -375,8 +375,8 @@ impl<KV: KVEngine> Database<KV> {
         Ok(())
     }
 
-    #[instrument(name = "get table", skip_all)]
     /// gets the schema for a table name, schema is stored inside buffer
+    #[instrument(name = "get table", skip_all)]
     pub fn get_table(&mut self, name: &str) -> Option<&Table> {
         info!(name, "getting table");
         // check buffer
@@ -396,7 +396,7 @@ impl<KV: KVEngine> Database<KV> {
         }
     }
 
-    // TODO: decrement/free up table id
+    /// TODO: decrement/free up table id
     #[instrument(name = "drop table", skip_all)]
     pub fn drop_table(&mut self, name: &str) -> Result<()> {
         info!(name, "dropping table");
@@ -429,7 +429,9 @@ impl<KV: KVEngine> Database<KV> {
         self.kve.get(query.encode(schema).ok()?).ok()
     }
 
-    fn insert_scan(&self, moder: ScanMode) {}
+    fn scan(&self, mode: ScanMode) -> Result<Vec<Record>> {
+        self.kve.scan(mode)
+    }
 }
 
 // outward API

@@ -7,6 +7,7 @@ use std::ptr;
 use std::rc::Rc;
 use std::str::FromStr;
 
+use rustix::fs::{fstat, fsync, ftruncate};
 use tracing::{debug, error, info, instrument, warn};
 
 use crate::create_file_sync;
@@ -25,7 +26,7 @@ use crate::database::{
 /// outward facing api
 pub(crate) trait KVEngine {
     fn get(&self, key: Key) -> Result<Value, Error>;
-    fn scan<P: Pager>(&self, mode: ScanMode) -> Result<Vec<Record>, Error>;
+    fn scan(&self, mode: ScanMode) -> Result<Vec<Record>, Error>;
     fn set(&self, key: Key, val: Value, flag: SetFlag) -> Result<(), Error>;
     fn delete(&self, key: Key) -> Result<(), Error>;
 }
@@ -48,7 +49,7 @@ impl KVEngine for Envoy {
         self.envoy.get(key)
     }
 
-    fn scan<P: Pager>(&self, mode: ScanMode) -> Result<Vec<Record>, Error> {
+    fn scan(&self, mode: ScanMode) -> Result<Vec<Record>, Error> {
         self.envoy.scan(mode)
     }
 
@@ -182,6 +183,7 @@ impl Pager for EnvoyV1 {
     /// checks buffer for allocated page and returns pointer
     fn update(&self, ptr: Pointer) -> *mut FLNode {
         let buf = &mut self.buffer.borrow_mut();
+
         // checking buffer,...
         let entry = match buf.hmap.get_mut(&ptr) {
             Some(n) => {
@@ -195,6 +197,7 @@ impl Pager for EnvoyV1 {
                 buf.hmap.get_mut(&ptr).expect("we just inserted it")
             }
         };
+
         match entry {
             Node::Freelist(flnode) => {
                 let ptr = ptr::from_mut(flnode);
@@ -229,7 +232,7 @@ impl EnvoyV1 {
             freelist: Rc::new(RefCell::new(FreeList::<Self>::new(w.clone()))),
         });
 
-        let fd_size = rustix::fs::fstat(&pager.database)
+        let fd_size = fstat(&pager.database)
             .map_err(|e| {
                 error!("Error when getting file size");
                 Error::PagerError(PagerError::FDError(e))
@@ -240,12 +243,15 @@ impl EnvoyV1 {
         mmap_extend(&pager, PAGE_SIZE).expect("mmap extend error");
         metapage_read(&mut pager, fd_size);
 
-        debug!(
-            "\npager initialized:\nmmap.total {}\nn_pages {}\nchunks.len {}",
-            pager.mmap.borrow().total,
-            pager.buffer.borrow().npages,
-            pager.mmap.borrow().chunks.len(),
-        );
+        #[cfg(test)]
+        {
+            debug!(
+                "\npager initialized:\nmmap.total {}\nn_pages {}\nchunks.len {}",
+                pager.mmap.borrow().total,
+                pager.buffer.borrow().npages,
+                pager.mmap.borrow().chunks.len(),
+            );
+        }
 
         Ok(pager)
     }
@@ -304,7 +310,7 @@ impl EnvoyV1 {
             debug!("failed update detected, restoring meta page...");
 
             metapage_write(self, recov_page).expect("meta page recovery write error");
-            rustix::fs::fsync(&self.database).expect("fsync metapage for restoration failed");
+            fsync(&self.database).expect("fsync metapage for restoration failed");
             self.failed.set(false);
         };
 
@@ -331,11 +337,11 @@ impl EnvoyV1 {
 
         // flush buffer to disk
         self.page_write()?;
-        rustix::fs::fsync(&self.database)?;
+        fsync(&self.database)?;
 
         // write currently loaded metapage to disk
         metapage_write(self, &metapage_save(self))?;
-        rustix::fs::fsync(&self.database)?;
+        fsync(&self.database)?;
 
         Ok(())
     }
@@ -349,13 +355,11 @@ impl EnvoyV1 {
         let npage = buf.npages;
 
         // extend the mmap if needed
-        // number of page plus current buffer
         let new_size = (npage as usize + buf_len) * PAGE_SIZE; // amount of pages in bytes
-        mmap_extend(self, new_size)
-            .map_err(|e| {
-                error!(%e, new_size, "Error when extending mmap");
-            })
-            .unwrap();
+        mmap_extend(self, new_size).map_err(|e| {
+            error!(%e, new_size, "Error when extending mmap");
+            e
+        })?;
         debug!(
             nappend = buf.nappend,
             buffer = buf_len,
@@ -397,12 +401,16 @@ impl EnvoyV1 {
     /// kv.pageRead, db.pageRead -> pagereadfile
     fn decode(&self, ptr: Pointer, node_type: NodeFlag) -> Node {
         let mmap_ref = self.mmap.borrow();
-        debug!(
-            "decoding ptr: {}, amount of chunks {}, chunk 0 size {}",
-            ptr.0,
-            mmap_ref.chunks.len(),
-            mmap_ref.chunks[0].len()
-        );
+
+        #[cfg(test)]
+        {
+            debug!(
+                "decoding ptr: {}, amount of chunks {}, chunk 0 size {}",
+                ptr.0,
+                mmap_ref.chunks.len(),
+                mmap_ref.chunks[0].len()
+            );
+        }
 
         let mut start: usize = 0;
         for chunk in mmap_ref.chunks.iter() {
@@ -423,6 +431,7 @@ impl EnvoyV1 {
         panic!()
     }
 
+    /// triggers truncation logic once the freelist exceeds TRUNC_THRESHOLD entries
     fn cleanup_check(&self) -> Result<(), Error> {
         let list: Vec<Pointer> =
             self.freelist
@@ -454,17 +463,30 @@ impl EnvoyV1 {
             Some(count) => {
                 for i in 0..count {
                     // removing items from freelist
-                    let ptr = self.freelist.borrow_mut().get().unwrap();
-                    assert_eq!(list[i as usize], ptr);
+                    let ptr = self
+                        .freelist
+                        .borrow_mut()
+                        .get()
+                        .ok_or(FLError::PopError("couldnt pop from freelist".to_string()))?;
+
+                    debug_assert_eq!(list[i as usize], ptr);
+
+                    if list[i as usize] != ptr {
+                        return Err(FLError::TruncateError(format!(
+                            "pointer {}, doesnt match {}",
+                            list[i as usize], ptr
+                        ))
+                        .into());
+                    }
                 }
+                let new_npage = npages - count;
 
-                self.buffer.borrow_mut().npages = npages - count;
+                self.buffer.borrow_mut().npages = new_npage;
                 metapage_write(self, &metapage_save(self))?;
-                rustix::fs::fsync(&self.database)?;
+                fsync(&self.database)?;
 
-                rustix::fs::ftruncate(&self.database, (npages - count) * PAGE_SIZE as u64)
-                    .expect("truncate failed");
-                rustix::fs::fsync(&self.database)?;
+                ftruncate(&self.database, new_npage * PAGE_SIZE as u64)?;
+                fsync(&self.database)?;
 
                 Ok(())
             }
@@ -473,8 +495,7 @@ impl EnvoyV1 {
     }
 }
 
-/// returns the number of pages that can be truncated, by evaluating a contiguous sequence at the end of the freelist.
-/// Doesnt capture the full sequence as of now and has O(n) performance. See unit test below for sample behaviour.
+/// returns the number of pages that can be safely truncated, by evaluating a contiguous sequence at the end of the freelist. This function has O(n²) performance.
 fn count_trunc_pages(npages: u64, list: &[Pointer]) -> Option<u64> {
     if list.is_empty() || npages <= 2 {
         return None;
@@ -804,7 +825,7 @@ mod test {
     //         pager.delete(format!("{}", k).into()).unwrap()
     //     }
     //     pager.truncate();
-    //     let fd_size = rustix::fs::fstat(&pager.database)
+    //     let fd_size = fs::fstat(&pager.database)
     //         .map_err(|e| {
     //             error!("Error when getting file size");
     //             Error::PagerError(PagerError::FDError(e))
@@ -817,7 +838,7 @@ mod test {
 }
 
 #[cfg(test)]
-mod truncation_tests {
+mod truncate {
     use super::*;
 
     fn ptr(page: u64) -> Pointer {

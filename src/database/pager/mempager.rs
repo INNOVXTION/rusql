@@ -31,7 +31,7 @@ impl KVEngine for MemPager {
         self.pager.delete(key)
     }
 
-    fn scan<P: Pager>(&self, mode: crate::database::btree::ScanMode) -> Result<Vec<Record>, Error> {
+    fn scan(&self, mode: crate::database::btree::ScanMode) -> Result<Vec<Record>, Error> {
         todo!()
     }
 }
