@@ -57,7 +57,7 @@ pub(super) fn scan_single<P: Pager>(tree: &BTree<P>, key: &Key) -> Option<Vec<(K
 
 pub(crate) struct ScanIter<'a, P: Pager> {
     cursor: Cursor<'a, P>,
-    tid: u64,
+    tid: u32,
     dir: CursorDir,
     range: Option<(Key, Compare)>,
     finished: bool,

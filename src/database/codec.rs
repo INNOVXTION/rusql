@@ -31,7 +31,8 @@ pub(crate) const HEADER_SIZE: usize = std::mem::size_of::<u16>();
 pub(crate) const STR_PRE_LEN: usize = std::mem::size_of::<u32>();
 pub(crate) const INT_LEN: usize = std::mem::size_of::<u64>();
 pub(crate) const IDX_LEN: usize = std::mem::size_of::<u64>();
-pub(crate) const TID_LEN: usize = std::mem::size_of::<u64>();
+pub(crate) const TID_LEN: usize = std::mem::size_of::<u32>();
+pub(crate) const PREFIX_LEN: usize = std::mem::size_of::<u16>();
 
 pub(super) trait Codec {
     fn encode(&self) -> Rc<[u8]>;

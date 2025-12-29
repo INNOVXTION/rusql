@@ -39,7 +39,7 @@ const DEF_TABLE_NAME: &'static str = "tdef";
 const DEF_TABLE_COL1: &'static str = "name";
 const DEF_TABLE_COL2: &'static str = "def";
 
-const DEF_TABLE_ID: u64 = 1;
+const DEF_TABLE_ID: u32 = 1;
 const DEF_TABLE_PKEYS: u16 = 1;
 
 const META_TABLE_NAME: &'static str = "tmeta";
@@ -47,7 +47,7 @@ const META_TABLE_COL1: &'static str = "name";
 const META_TABLE_COL2: &'static str = "tid";
 const META_TABLE_ID_ROW: &'static str = "tid";
 
-const META_TABLE_ID: u64 = 2;
+const META_TABLE_ID: u32 = 2;
 const META_TABLE_PKEYS: u16 = 1;
 
 /// wrapper for sentinal value
@@ -114,7 +114,7 @@ impl Deref for TDefTable {
 
 pub(crate) struct TableBuilder {
     name: Option<String>,
-    id: Option<u64>,
+    id: Option<u32>,
     cols: Vec<Column>,
     pkeys: Option<u16>,
 }
@@ -135,7 +135,7 @@ impl TableBuilder {
     }
 
     /// DEPRECTATED, for testing purposes only
-    pub fn id(mut self, id: u64) -> Self {
+    pub fn id(mut self, id: u32) -> Self {
         self.id = Some(id);
         self
     }
@@ -223,7 +223,7 @@ impl TableBuilder {
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub(crate) struct Table {
     pub(crate) name: String,
-    pub(crate) id: u64,
+    pub(crate) id: u32,
     pub(crate) cols: Vec<Column>,
     pub(crate) pkeys: u16,
     // pub(crate) indices: Vec<Index>,
@@ -295,7 +295,7 @@ impl<KV: KVEngine> Database<KV> {
     }
 
     #[instrument(name = "new table id", skip_all)]
-    pub fn new_tid(&mut self) -> Result<u64> {
+    pub fn new_tid(&mut self) -> Result<u32> {
         let key = Query::new()
             .add(META_TABLE_COL1, META_TABLE_ID_ROW) // we query name column, where pkey = tid
             .encode(&self.get_meta())
@@ -318,7 +318,7 @@ impl<KV: KVEngine> Database<KV> {
                         error!(?e);
                         TableError::TableIdError("error when retrieving id".to_string())
                     })?;
-                    Ok(i as u64 + 1)
+                    Ok(i as u32 + 1)
                 } else {
                     // types dont match
                     return Err(TableError::TableIdError(

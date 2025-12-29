@@ -18,7 +18,7 @@ use crate::database::{
 ///
 // -----------------------------KEY--------------------------------|
 // [ TID ][IDX PREFIX][      INT      ][            STR           ]|
-// [ 8B  ][    2B    ][1B TYPE][8B INT][1B TYPE][2B STRLEN][nB STR]|
+// [ 4B  ][    2B    ][1B TYPE][8B INT][1B TYPE][2B STRLEN][nB STR]|
 
 #[derive(Debug)]
 pub(crate) struct Key(Rc<[u8]>);
@@ -32,8 +32,16 @@ impl Key {
     }
 
     // reads the first 8 bytes
-    pub fn get_tid(&self) -> u64 {
-        u64::from_le_bytes(self.0[..TID_LEN].try_into().expect("this cant fail"))
+    pub fn get_tid(&self) -> u32 {
+        u32::from_le_bytes(self.0[..TID_LEN].try_into().expect("this cant fail"))
+    }
+
+    pub fn get_prefix(&self) -> u16 {
+        u16::from_le_bytes(
+            self.0[TID_LEN..TID_LEN + PREFIX_LEN]
+                .try_into()
+                .expect("this cant fail"),
+        )
     }
 
     /// its up to the caller to ensure the data is properly encoded
@@ -48,9 +56,9 @@ impl Key {
     /// utility function for unit tests
     /// adds TID 1
     pub fn from_unencoded_str<S: ToString>(str: S) -> Self {
-        let mut buf: Vec<u8> = vec![0; 8];
+        let mut buf: Vec<u8> = vec![0; TID_LEN];
         // artificial tid for testing purposes
-        buf.write_u64(1);
+        buf.write_u32(1);
         buf.extend_from_slice(&str.to_string().encode());
         Key(Rc::from(buf))
     }
@@ -78,9 +86,9 @@ impl From<String> for Key {
 }
 impl From<i64> for Key {
     fn from(value: i64) -> Self {
-        let mut buf: Vec<u8> = vec![0; 8];
+        let mut buf: Vec<u8> = vec![0; TID_LEN];
         // artificial tid for testing purposes
-        buf.write_u64(1);
+        buf.write_u32(1);
         buf.extend_from_slice(&value.encode());
         Key(Rc::from(buf))
     }
@@ -116,7 +124,7 @@ impl PartialOrd<Key> for Key {
 impl Ord for Key {
     fn cmp(&self, other: &Self) -> Ordering {
         match self.get_tid().cmp(&other.get_tid()) {
-            Ordering::Equal => {}
+            Ordering::Equal => (),
             o => return o,
         }
         let mut key_a = &self.0[TID_LEN..];
@@ -592,6 +600,66 @@ impl Record {
     fn test(id: u64, key: &str, val: &str) -> Self {
         todo!()
     }
+}
+
+pub fn encode_to_kv(
+    data: &[DataCell],
+    delim: Option<usize>, // None encodes everything into Key with an empty Value
+    prefix: u16,
+    tid: u64,
+) -> Result<(Key, Value), TableError> {
+    let mut buf = Vec::<u8>::new();
+    let mut idx: usize = 0;
+    let mut key_idx: usize = 0;
+
+    // table id
+    buf.extend_from_slice(&tid.to_le_bytes());
+    idx += std::mem::size_of::<u64>();
+
+    // idx prefix
+    buf.extend_from_slice(&prefix.to_le_bytes());
+    idx += std::mem::size_of::<u16>();
+
+    // composing byte array by iterating through all columns designated as primary key
+    for (i, cell) in data.iter().enumerate() {
+        // remembering the cutoff point between keys and values
+        if let Some(n) = delim {
+            if n == i {
+                key_idx = idx;
+            }
+        }
+        match cell {
+            DataCell::Str(str) => {
+                let str = str.encode();
+                idx += str.len();
+                buf.extend_from_slice(&str);
+            }
+            DataCell::Int(num) => {
+                let num = num.encode();
+                idx += num.len();
+                buf.extend_from_slice(&num);
+            }
+        }
+    }
+
+    let key_slice = &buf[..key_idx];
+    let val_slice = &buf[key_idx..];
+
+    if key_slice.len() > BTREE_MAX_KEY_SIZE {
+        return Err(TableError::RecordError(
+            "maximum key size exceeded".to_string(),
+        ));
+    }
+    if val_slice.len() > BTREE_MAX_VAL_SIZE {
+        return Err(TableError::RecordError(
+            "maximum value size exceeded".to_string(),
+        ));
+    }
+
+    Ok((
+        Key::from_encoded_slice(key_slice),
+        Value::from_encoded_slice(val_slice),
+    ))
 }
 
 impl std::fmt::Display for Record {
