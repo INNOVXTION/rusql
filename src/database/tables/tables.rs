@@ -71,7 +71,7 @@ impl MetaTable {
                 },
             ],
             pkeys: META_TABLE_PKEYS,
-            indices: None,
+            indices: vec![],
             _priv: PhantomData,
         })
     }
@@ -101,7 +101,7 @@ impl TDefTable {
                 },
             ],
             pkeys: DEF_TABLE_PKEYS,
-            indices: None,
+            indices: vec![],
             _priv: PhantomData,
         })
     }
@@ -218,7 +218,7 @@ impl TableBuilder {
             id,
             cols,
             pkeys,
-            indices: None,
+            indices: vec![],
             _priv: PhantomData,
         })
     }
@@ -230,7 +230,7 @@ pub(crate) struct Table {
     pub(crate) id: u32,
     pub(crate) cols: Vec<Column>,
     pub(crate) pkeys: u16,
-    pub(crate) indices: Option<Vec<Index>>,
+    pub(crate) indices: Vec<Index>, // secondary indices
 
     // ensures tables are built through constructor
     _priv: PhantomData<bool>,
@@ -262,8 +262,16 @@ impl Table {
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub(crate) struct Index {
-    name: Column,
-    prefix: u16,
+    pub name: String,
+    pub columns: Vec<u16>, // column IDs
+    pub prefix: u16,
+    pub kind: IdxKind,
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+pub(crate) enum IdxKind {
+    Primary,
+    Secondary,
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
