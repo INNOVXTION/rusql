@@ -506,6 +506,10 @@ impl Record {
         self
     }
 
+    fn with_secondary(col: &str) -> Self {
+        todo!()
+    }
+
     /// encodes a Record according to a schema into a key value pair starting with schema table id
     ///
     /// validates that record matches with column in schema
@@ -602,30 +606,30 @@ impl Record {
     }
 }
 
-pub fn encode_to_kv(
+fn encode_to_kv(
     data: &[DataCell],
     delim: Option<usize>, // None encodes everything into Key with an empty Value
     prefix: u16,
-    tid: u64,
+    tid: u32,
 ) -> Result<(Key, Value), TableError> {
     let mut buf = Vec::<u8>::new();
     let mut idx: usize = 0;
-    let mut key_idx: usize = 0;
+    let mut key_delim: usize = 0;
 
     // table id
     buf.extend_from_slice(&tid.to_le_bytes());
-    idx += std::mem::size_of::<u64>();
+    idx += TID_LEN;
 
     // idx prefix
     buf.extend_from_slice(&prefix.to_le_bytes());
-    idx += std::mem::size_of::<u16>();
+    idx += PREFIX_LEN;
 
     // composing byte array by iterating through all columns designated as primary key
     for (i, cell) in data.iter().enumerate() {
-        // remembering the cutoff point between keys and values
+        // mark the cutoff point between keys and values
         if let Some(n) = delim {
             if n == i {
-                key_idx = idx;
+                key_delim = idx;
             }
         }
         match cell {
@@ -642,8 +646,8 @@ pub fn encode_to_kv(
         }
     }
 
-    let key_slice = &buf[..key_idx];
-    let val_slice = &buf[key_idx..];
+    let key_slice = &buf[..key_delim];
+    let val_slice = &buf[key_delim..];
 
     if key_slice.len() > BTREE_MAX_KEY_SIZE {
         return Err(TableError::RecordError(

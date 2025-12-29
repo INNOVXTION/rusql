@@ -174,7 +174,7 @@ impl<P: Pager> Tree for BTree<P> {
         if self.root_ptr.is_none() {
             return Err(Error::SearchError("tree is empty".to_string()));
         }
-        ScanIter::new(mode, self)
+        mode.into_iter(self)
             .ok_or(ScanError::IterCreateError("couldnt turn into iter".to_string()).into())
     }
 }

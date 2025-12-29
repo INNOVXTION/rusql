@@ -46,6 +46,35 @@ impl ScanMode {
         }
         Ok(ScanMode::Range { lo, hi })
     }
+
+    pub fn into_iter<'a, P: Pager>(self, tree: &'a BTree<P>) -> Option<ScanIter<'a, P>> {
+        match self {
+            ScanMode::Open(key, compare) => {
+                let dir = match compare {
+                    Compare::LT | Compare::LE => CursorDir::Prev,
+                    Compare::GT | Compare::GE => CursorDir::Next,
+                    Compare::EQ => unreachable!(), // we validate scanmode creation
+                };
+                Some(ScanIter {
+                    cursor: seek(tree, &key, compare)?,
+                    tid: key.get_tid(),
+                    dir,
+                    range: None,
+                    finished: false,
+                })
+            }
+            ScanMode::Range { lo, hi } => {
+                let tid = lo.0.get_tid();
+                Some(ScanIter {
+                    cursor: seek(tree, &lo.0, lo.1)?,
+                    tid,
+                    dir: CursorDir::Next,
+                    range: Some(hi),
+                    finished: false,
+                })
+            }
+        }
+    }
 }
 
 pub(super) fn scan_single<P: Pager>(tree: &BTree<P>, key: &Key) -> Option<Vec<(Key, Value)>> {
@@ -64,35 +93,6 @@ pub(crate) struct ScanIter<'a, P: Pager> {
 }
 
 impl<'a, P: Pager> ScanIter<'a, P> {
-    pub fn new(mode: ScanMode, tree: &'a BTree<P>) -> Option<Self> {
-        match mode {
-            ScanMode::Open(key, compare) => {
-                let dir = match compare {
-                    Compare::LT | Compare::LE => CursorDir::Prev,
-                    Compare::GT | Compare::GE => CursorDir::Next,
-                    Compare::EQ => unreachable!(), // we validate scanmode creation
-                };
-                Some(Self {
-                    cursor: seek(tree, &key, compare)?,
-                    tid: key.get_tid(),
-                    dir,
-                    range: None,
-                    finished: false,
-                })
-            }
-            ScanMode::Range { lo, hi } => {
-                let tid = lo.0.get_tid();
-                Some(Self {
-                    cursor: seek(tree, &lo.0, lo.1)?,
-                    tid,
-                    dir: CursorDir::Next,
-                    range: Some(hi),
-                    finished: false,
-                })
-            }
-        }
-    }
-
     pub fn collect_records(self) -> Vec<Record> {
         let v: Vec<Record> = self.into_iter().map(|kv| Record::from_kv(kv)).collect();
         v
