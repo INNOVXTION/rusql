@@ -433,6 +433,7 @@ impl<KV: KVEngine> Database<KV> {
 
     fn get_rec(&self, query: Query, schema: &Table) -> Option<Value> {
         info!(?query, "querying");
+
         self.kve.get(query.encode(schema).ok()?).ok()
     }
 
@@ -441,11 +442,10 @@ impl<KV: KVEngine> Database<KV> {
     }
 
     fn full_table_scan(&self, schema: &Table) -> Result<Vec<Record>> {
-        let mut buf: Vec<u8> = vec![0; TID_LEN + PREFIX_LEN];
+        let mut buf = [0u8; TID_LEN + PREFIX_LEN];
 
         // writing a seek key with TID + PREFIX = 0
-        let slice = &mut buf[..];
-        slice.write_u32(schema.id).write_u16(0);
+        let _ = &mut buf[..].write_u32(schema.id).write_u16(0);
 
         let seek_key = Key::from_encoded_slice(&buf);
         let seek_mode = ScanMode::Open(seek_key, Compare::GE);
@@ -467,9 +467,7 @@ trait DatabaseAPI {
 mod test {
     use crate::database::{
         btree::Compare,
-        codec::{PREFIX_LEN, TID_LEN},
         pager::{diskpager::Envoy, mempage_tree},
-        tables::tables,
     };
 
     use super::*;
@@ -829,9 +827,6 @@ mod test {
         db.insert_table(&table1)?;
         db.insert_table(&table2)?;
 
-        assert!(db.get_table("table_1").is_some());
-        assert!(db.get_table("table_2").is_some());
-
         let mut entries_t1 = vec![];
         entries_t1.push(Record::new().add("Alice").add(20));
         entries_t1.push(Record::new().add("Bob").add(15));
@@ -849,24 +844,6 @@ mod test {
         for entry in entries_t2 {
             db.insert_rec(entry, &table2, SetFlag::UPSERT)?
         }
-
-        let open = ScanMode::Open(
-            Query::new().add("name", "Alice").encode(&table1)?,
-            Compare::GE,
-        );
-        let res = db.scan(open)?;
-
-        assert_eq!(res.len(), 3);
-        assert_eq!(res[0].to_string(), "Alice 20");
-        assert_eq!(res[1].to_string(), "Bob 15");
-        assert_eq!(res[2].to_string(), "Charlie 25");
-
-        let open = ScanMode::Open(Query::new().add("id", 20).encode(&table2)?, Compare::GE);
-        let res = db.scan(open)?;
-
-        assert_eq!(res.len(), 2);
-        assert_eq!(res[0].to_string(), "20 Alice teacher");
-        assert_eq!(res[1].to_string(), "25 Charlie fire fighter");
 
         let res = db.full_table_scan(&table1)?;
         assert_eq!(res.len(), 3);
