@@ -133,9 +133,11 @@ pub(crate) enum TableError {
     #[error("Delete table error {0}")]
     DeleteTableError(String),
     #[error("Encode table error {0}")]
-    EncodeTableError(serde_json::Error),
+    SerializeTableError(serde_json::Error),
+    #[error("Encode table error {0}")]
+    EncodeTableError(String),
     #[error("Delete table error {0}")]
-    DecodeTableError(serde_json::Error),
+    DeserializeTableError(serde_json::Error),
     #[error("Table id error {0}")]
     TableIdError(String),
 

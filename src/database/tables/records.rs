@@ -697,13 +697,17 @@ impl Query {
 
     /// add the column and primary key which you want to query
     ///
-    /// keys dont have to be inserted in order
-    pub fn add<T: InputData>(mut self, col: &str, value: T) -> Self {
+    /// not sensitive to order
+    pub fn with_pkey<T: InputData>(mut self, col: &str, value: T) -> Self {
         self.data.insert(col.to_string(), value.into_cell());
         self
     }
 
-    /// encodes a Query according into a key
+    fn with_col<T: InputData>(mut self, col: &str) -> Self {
+        todo!()
+    }
+
+    /// encodes a Query into a key
     ///
     /// will error if primary keys are missing or the data type doesnt match
     pub fn encode(self, schema: &Table) -> Result<Key, TableError> {

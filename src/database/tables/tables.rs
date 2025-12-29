@@ -9,6 +9,7 @@ use crate::database::{
         Key,
         records::{DataCell, Query, Record, Value},
     },
+    types::BTREE_MAX_VAL_SIZE,
 };
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info, instrument};
@@ -70,6 +71,7 @@ impl MetaTable {
                 },
             ],
             pkeys: META_TABLE_PKEYS,
+            indices: None,
             _priv: PhantomData,
         })
     }
@@ -99,6 +101,7 @@ impl TDefTable {
                 },
             ],
             pkeys: DEF_TABLE_PKEYS,
+            indices: None,
             _priv: PhantomData,
         })
     }
@@ -215,6 +218,7 @@ impl TableBuilder {
             id,
             cols,
             pkeys,
+            indices: None,
             _priv: PhantomData,
         })
     }
@@ -226,7 +230,7 @@ pub(crate) struct Table {
     pub(crate) id: u32,
     pub(crate) cols: Vec<Column>,
     pub(crate) pkeys: u16,
-    // pub(crate) indices: Vec<Index>,
+    pub(crate) indices: Option<Vec<Index>>,
 
     // ensures tables are built through constructor
     _priv: PhantomData<bool>,
@@ -235,27 +239,32 @@ pub(crate) struct Table {
 impl Table {
     /// encodes table to JSON string
     pub fn encode(&self) -> Result<String> {
-        serde_json::to_string(&self).map_err(|e| {
+        let data = serde_json::to_string(&self).map_err(|e| {
             error!(%e, "error when encoding table");
-            TableError::EncodeTableError(e).into()
-        })
+            TableError::SerializeTableError(e)
+        })?;
+        if data.len() > BTREE_MAX_VAL_SIZE {
+            return Err(TableError::EncodeTableError(
+                "Table schema exceeds value size limit".to_string(),
+            ))?;
+        }
+        Ok(data)
     }
 
     /// decodes JSON string into table
     pub fn decode(value: Value) -> Result<Self> {
         serde_json::from_str(&value.to_string()).map_err(|e| {
             error!(%e, "error when decoding table");
-            TableError::EncodeTableError(e).into()
+            TableError::SerializeTableError(e).into()
         })
     }
 }
 
-// #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
-// pub(crate) struct Index {
-//     col: Column,
-//     prefix: u16,
-//     is_primary: bool,
-// }
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+pub(crate) struct Index {
+    name: Column,
+    prefix: u16,
+}
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub(crate) struct Column {
@@ -297,7 +306,7 @@ impl<KV: KVEngine> Database<KV> {
     #[instrument(name = "new table id", skip_all)]
     pub fn new_tid(&mut self) -> Result<u32> {
         let key = Query::new()
-            .add(META_TABLE_COL1, META_TABLE_ID_ROW) // we query name column, where pkey = tid
+            .with_pkey(META_TABLE_COL1, META_TABLE_ID_ROW) // we query name column, where pkey = tid
             .encode(&self.get_meta())
             .expect("this cant fail");
 
@@ -391,7 +400,10 @@ impl<KV: KVEngine> Database<KV> {
             debug!("returning table from buffer");
             return self.buffer.get(name);
         }
-        let key = Query::new().add("name", name).encode(&self.tdef).ok()?;
+        let key = Query::new()
+            .with_pkey("name", name)
+            .encode(&self.tdef)
+            .ok()?;
 
         if let Ok(t) = self.kve.get(key) {
             debug!("returning table from tree");
@@ -413,7 +425,9 @@ impl<KV: KVEngine> Database<KV> {
                 "table doesnt exist".to_string(),
             ))?;
         }
-        let qu = Query::new().add(DEF_TABLE_COL1, name).encode(&self.tdef)?;
+        let qu = Query::new()
+            .with_pkey(DEF_TABLE_COL1, name)
+            .encode(&self.tdef)?;
 
         self.buffer.remove(name);
         self.kve.delete(qu).map_err(|e| {
@@ -446,9 +460,9 @@ impl<KV: KVEngine> Database<KV> {
 
         // writing a seek key with TID + PREFIX = 0
         let _ = &mut buf[..].write_u32(schema.id).write_u16(0);
-
         let seek_key = Key::from_encoded_slice(&buf);
         let seek_mode = ScanMode::Open(seek_key, Compare::GE);
+
         self.scan(seek_mode)
     }
 }
@@ -497,7 +511,7 @@ mod test {
             .build(&mut db)
             .unwrap();
 
-        db.insert_table(&table);
+        let _ = db.insert_table(&table);
 
         let dec_table = db.get_table("mytable").unwrap();
         assert_eq!(*dec_table, table);
@@ -521,7 +535,7 @@ mod test {
             .build(&mut db)
             .unwrap();
 
-        db.insert_table(&table);
+        let _ = db.insert_table(&table);
         let tables = db.get_table("mytable");
 
         let mut entries = vec![];
@@ -533,9 +547,9 @@ mod test {
             db.insert_rec(entry, &table, SetFlag::UPSERT).unwrap()
         }
 
-        let q1 = Query::new().add("name", "Alice");
-        let q2 = Query::new().add("name", "Bob");
-        let q3 = Query::new().add("name", "Charlie");
+        let q1 = Query::new().with_pkey("name", "Alice");
+        let q2 = Query::new().with_pkey("name", "Bob");
+        let q3 = Query::new().with_pkey("name", "Charlie");
 
         let q1_res = db.get_rec(q1, &table).unwrap().decode();
         assert_eq!(q1_res[0], DataCell::Int(20));
@@ -568,21 +582,21 @@ mod test {
         db.insert_table(&table).unwrap();
         let tables = db.get_table("mytable");
 
-        let good_query = Query::new().add("name", "Alice").add("age", 10);
+        let good_query = Query::new().with_pkey("name", "Alice").with_pkey("age", 10);
 
         assert!(good_query.encode(&table).is_ok());
 
-        let good_query = Query::new().add("name", "Alice").add("age", 10);
-        let unordered = Query::new().add("age", 10).add("name", "Alice");
+        let good_query = Query::new().with_pkey("name", "Alice").with_pkey("age", 10);
+        let unordered = Query::new().with_pkey("age", 10).with_pkey("name", "Alice");
         assert_eq!(
             good_query.encode(&table).unwrap(),
             unordered.encode(&table).unwrap()
         );
 
-        let bad_query = Query::new().add("name", "Alice");
+        let bad_query = Query::new().with_pkey("name", "Alice");
         assert!(bad_query.encode(&table).is_err());
 
-        let bad_query = Query::new().add("dfasdf", "fasdf");
+        let bad_query = Query::new().with_pkey("dfasdf", "fasdf");
         assert!(bad_query.encode(&table).is_err());
 
         let bad_query = Query::new();
@@ -723,7 +737,7 @@ mod test {
         assert!(Query::new().encode(&table).is_err());
 
         // wrong column name
-        assert!(Query::new().add("nope", "x").encode(&table).is_err());
+        assert!(Query::new().with_pkey("nope", "x").encode(&table).is_err());
     }
 
     #[test]
@@ -777,7 +791,7 @@ mod test {
         }
 
         let open = ScanMode::Open(
-            Query::new().add("name", "Alice").encode(&table1)?,
+            Query::new().with_pkey("name", "Alice").encode(&table1)?,
             Compare::GE,
         );
         let res = db.scan(open)?;
@@ -787,7 +801,10 @@ mod test {
         assert_eq!(res[1].to_string(), "Bob 15");
         assert_eq!(res[2].to_string(), "Charlie 25");
 
-        let open = ScanMode::Open(Query::new().add("id", 20).encode(&table2)?, Compare::GE);
+        let open = ScanMode::Open(
+            Query::new().with_pkey("id", 20).encode(&table2)?,
+            Compare::GE,
+        );
         let res = db.scan(open)?;
 
         assert_eq!(res.len(), 2);
@@ -893,8 +910,8 @@ mod scan {
         }
 
         // Scan from id 5 to 15
-        let lo_key = Query::new().add("id", 5i64).encode(&table)?;
-        let hi_key = Query::new().add("id", 15i64).encode(&table)?;
+        let lo_key = Query::new().with_pkey("id", 5i64).encode(&table)?;
+        let hi_key = Query::new().with_pkey("id", 15i64).encode(&table)?;
 
         let range = ScanMode::new_range((lo_key, Compare::GE), (hi_key, Compare::LE))?;
 
@@ -960,7 +977,7 @@ mod scan {
 
         // Scan table1
         let open = ScanMode::new_open(
-            Query::new().add("key", "key_a_1").encode(&table1)?,
+            Query::new().with_pkey("key", "key_a_1").encode(&table1)?,
             Compare::GE,
         )?;
         let res1 = db.scan(open)?;
@@ -971,7 +988,7 @@ mod scan {
 
         // Scan table2
         let open = ScanMode::new_open(
-            Query::new().add("key", "key_b_1").encode(&table2)?,
+            Query::new().with_pkey("key", "key_b_1").encode(&table2)?,
             Compare::GE,
         )?;
         let res2 = db.scan(open)?;
@@ -1014,7 +1031,7 @@ mod scan {
 
         // Scan backwards from score 50
         let open = ScanMode::new_open(
-            Query::new().add("score", 50i64).encode(&table)?,
+            Query::new().with_pkey("score", 50i64).encode(&table)?,
             Compare::LT,
         )?;
 
@@ -1056,7 +1073,10 @@ mod scan {
         }
 
         // Scan for values greater than max
-        let open = ScanMode::new_open(Query::new().add("id", 100i64).encode(&table)?, Compare::GT)?;
+        let open = ScanMode::new_open(
+            Query::new().with_pkey("id", 100i64).encode(&table)?,
+            Compare::GT,
+        )?;
 
         let result = db.scan(open);
         assert!(result.is_err()); // Should error on empty result
@@ -1090,7 +1110,7 @@ mod scan {
         )?;
 
         let open = ScanMode::new_open(
-            Query::new().add("code", "CODE_001").encode(&table)?,
+            Query::new().with_pkey("code", "CODE_001").encode(&table)?,
             Compare::EQ,
         );
         // EQ is not allowed in open scans, should error
@@ -1128,7 +1148,7 @@ mod scan {
 
         // Scan from 35 backwards (LE)
         let open = ScanMode::new_open(
-            Query::new().add("value", 35i64).encode(&table)?,
+            Query::new().with_pkey("value", 35i64).encode(&table)?,
             Compare::LE,
         )?;
 
@@ -1170,7 +1190,10 @@ mod scan {
         }
 
         // Scan from id 100 onwards
-        let open = ScanMode::new_open(Query::new().add("id", 100i64).encode(&table)?, Compare::GT)?;
+        let open = ScanMode::new_open(
+            Query::new().with_pkey("id", 100i64).encode(&table)?,
+            Compare::GT,
+        )?;
 
         let res = db.scan(open)?;
 
@@ -1210,8 +1233,10 @@ mod scan {
         }
 
         // Scan from "bob" onwards
-        let open =
-            ScanMode::new_open(Query::new().add("name", "bob").encode(&table)?, Compare::GE)?;
+        let open = ScanMode::new_open(
+            Query::new().with_pkey("name", "bob").encode(&table)?,
+            Compare::GE,
+        )?;
 
         let res = db.scan(open)?;
 
@@ -1251,12 +1276,15 @@ mod scan {
 
         // Delete some records
         for i in [3, 5, 7].iter() {
-            let key = Query::new().add("id", *i as i64).encode(&table)?;
+            let key = Query::new().with_pkey("id", *i as i64).encode(&table)?;
             db.kve.delete(key)?;
         }
 
         // Scan from beginning
-        let open = ScanMode::new_open(Query::new().add("id", 1i64).encode(&table)?, Compare::GE)?;
+        let open = ScanMode::new_open(
+            Query::new().with_pkey("id", 1i64).encode(&table)?,
+            Compare::GE,
+        )?;
 
         let res = db.scan(open)?;
 
