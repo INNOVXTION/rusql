@@ -1,8 +1,8 @@
 use std::{collections::HashMap, marker::PhantomData, ops::Deref};
 
 use crate::database::{
-    btree::{ScanMode, SetFlag},
-    codec::Codec,
+    btree::{Compare, ScanMode, SetFlag},
+    codec::{Codec, NumEncode, PREFIX_LEN, TID_LEN},
     errors::{Error, Result, TableError},
     pager::diskpager::KVEngine,
     tables::{
@@ -439,6 +439,18 @@ impl<KV: KVEngine> Database<KV> {
     fn scan(&self, mode: ScanMode) -> Result<Vec<Record>> {
         self.kve.scan(mode)
     }
+
+    fn full_table_scan(&self, schema: &Table) -> Result<Vec<Record>> {
+        let mut buf: Vec<u8> = vec![0; TID_LEN + PREFIX_LEN];
+
+        // writing a seek key with TID + PREFIX = 0
+        let slice = &mut buf[..];
+        slice.write_u32(schema.id).write_u16(0);
+
+        let seek_key = Key::from_encoded_slice(&buf);
+        let seek_mode = ScanMode::Open(seek_key, Compare::GE);
+        self.scan(seek_mode)
+    }
 }
 
 // outward API
@@ -455,6 +467,7 @@ trait DatabaseAPI {
 mod test {
     use crate::database::{
         btree::Compare,
+        codec::{PREFIX_LEN, TID_LEN},
         pager::{diskpager::Envoy, mempage_tree},
         tables::tables,
     };
@@ -782,6 +795,84 @@ mod test {
         assert_eq!(res.len(), 2);
         assert_eq!(res[0].to_string(), "20 Alice teacher");
         assert_eq!(res[1].to_string(), "25 Charlie fire fighter");
+
+        cleanup_file(path);
+        Ok(())
+    }
+
+    #[test]
+    fn full_table_scan_seek() -> Result<()> {
+        let path = "test-files/scan.rdb";
+        cleanup_file(path);
+        let pager = Envoy::new("test-files/scan.rdb");
+        let mut db = Database::new(pager);
+
+        let table1 = TableBuilder::new()
+            .id(5)
+            .name("table_1")
+            .add_col("name", TypeCol::BYTES)
+            .add_col("age", TypeCol::INTEGER)
+            .pkey(1)
+            .build(&mut db)
+            .unwrap();
+
+        let table2 = TableBuilder::new()
+            .id(7)
+            .name("table_2")
+            .add_col("id", TypeCol::INTEGER)
+            .add_col("name", TypeCol::BYTES)
+            .add_col("job", TypeCol::BYTES)
+            .pkey(1)
+            .build(&mut db)
+            .unwrap();
+
+        db.insert_table(&table1)?;
+        db.insert_table(&table2)?;
+
+        assert!(db.get_table("table_1").is_some());
+        assert!(db.get_table("table_2").is_some());
+
+        let mut entries_t1 = vec![];
+        entries_t1.push(Record::new().add("Alice").add(20));
+        entries_t1.push(Record::new().add("Bob").add(15));
+        entries_t1.push(Record::new().add("Charlie").add(25));
+
+        for entry in entries_t1 {
+            db.insert_rec(entry, &table1, SetFlag::UPSERT)?
+        }
+
+        let mut entries_t2 = vec![];
+        entries_t2.push(Record::new().add(20).add("Alice").add("teacher"));
+        entries_t2.push(Record::new().add(15).add("Bob").add("clerk"));
+        entries_t2.push(Record::new().add(25).add("Charlie").add("fire fighter"));
+
+        for entry in entries_t2 {
+            db.insert_rec(entry, &table2, SetFlag::UPSERT)?
+        }
+
+        let open = ScanMode::Open(
+            Query::new().add("name", "Alice").encode(&table1)?,
+            Compare::GE,
+        );
+        let res = db.scan(open)?;
+
+        assert_eq!(res.len(), 3);
+        assert_eq!(res[0].to_string(), "Alice 20");
+        assert_eq!(res[1].to_string(), "Bob 15");
+        assert_eq!(res[2].to_string(), "Charlie 25");
+
+        let open = ScanMode::Open(Query::new().add("id", 20).encode(&table2)?, Compare::GE);
+        let res = db.scan(open)?;
+
+        assert_eq!(res.len(), 2);
+        assert_eq!(res[0].to_string(), "20 Alice teacher");
+        assert_eq!(res[1].to_string(), "25 Charlie fire fighter");
+
+        let res = db.full_table_scan(&table1)?;
+        assert_eq!(res.len(), 3);
+
+        let res = db.full_table_scan(&table2)?;
+        assert_eq!(res.len(), 3);
 
         cleanup_file(path);
         Ok(())
