@@ -506,10 +506,6 @@ impl Record {
         self
     }
 
-    fn with_secondary(col: &str) -> Self {
-        todo!()
-    }
-
     /// encodes a Record according to a schema into a key value pair starting with schema table id
     ///
     /// validates that record matches with column in schema
@@ -606,66 +602,6 @@ impl Record {
     }
 }
 
-fn encode_to_kv(
-    data: &[DataCell],
-    delim: Option<usize>, // None encodes everything into Key with an empty Value
-    prefix: u16,
-    tid: u32,
-) -> Result<(Key, Value), TableError> {
-    let mut buf = Vec::<u8>::new();
-    let mut idx: usize = 0;
-    let mut key_delim: usize = 0;
-
-    // table id
-    buf.extend_from_slice(&tid.to_le_bytes());
-    idx += TID_LEN;
-
-    // idx prefix
-    buf.extend_from_slice(&prefix.to_le_bytes());
-    idx += PREFIX_LEN;
-
-    // composing byte array by iterating through all columns designated as primary key
-    for (i, cell) in data.iter().enumerate() {
-        // mark the cutoff point between keys and values
-        if let Some(n) = delim {
-            if n == i {
-                key_delim = idx;
-            }
-        }
-        match cell {
-            DataCell::Str(str) => {
-                let str = str.encode();
-                idx += str.len();
-                buf.extend_from_slice(&str);
-            }
-            DataCell::Int(num) => {
-                let num = num.encode();
-                idx += num.len();
-                buf.extend_from_slice(&num);
-            }
-        }
-    }
-
-    let key_slice = &buf[..key_delim];
-    let val_slice = &buf[key_delim..];
-
-    if key_slice.len() > BTREE_MAX_KEY_SIZE {
-        return Err(TableError::RecordError(
-            "maximum key size exceeded".to_string(),
-        ));
-    }
-    if val_slice.len() > BTREE_MAX_VAL_SIZE {
-        return Err(TableError::RecordError(
-            "maximum value size exceeded".to_string(),
-        ));
-    }
-
-    Ok((
-        Key::from_encoded_slice(key_slice),
-        Value::from_encoded_slice(val_slice),
-    ))
-}
-
 impl std::fmt::Display for Record {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut s = String::new();
@@ -749,6 +685,85 @@ impl Query {
         }
         Ok(Key::from_encoded_slice(&buf))
     }
+}
+
+/// encodes datacells into Key Value pairs
+///
+/// delimeter marks the idx where keys and values get seperated, none puts everything into Key leaving Value empty
+fn encode_to_kv(
+    tid: u32,
+    prefix: u16,
+    data: &[DataCell],
+    delim: Option<usize>,
+) -> Result<(Key, Value), TableError> {
+    if let Some(n) = delim {
+        if n > data.len() {
+            return Err(TableError::KeyEncodeError(
+                "delimeter cant exceed data cells len".to_string(),
+            ));
+        }
+    };
+    if data.is_empty() {
+        return Err(TableError::KeyEncodeError("no data provided".to_string()));
+    }
+
+    let mut buf = Vec::<u8>::new();
+    let mut idx: usize = 0;
+    let mut key_delim: usize = 0;
+
+    // table id
+    buf.extend_from_slice(&tid.to_le_bytes());
+    idx += TID_LEN;
+
+    // prefix
+    buf.extend_from_slice(&prefix.to_le_bytes());
+    idx += PREFIX_LEN;
+
+    // composing byte array by iterating through all columns designated as primary key
+    for (i, cell) in data.iter().enumerate() {
+        // mark the cutoff point between keys and values
+        if let Some(n) = delim {
+            if n == i {
+                key_delim = idx;
+            }
+        }
+        match cell {
+            DataCell::Str(str) => {
+                let str = str.encode();
+                idx += str.len();
+                buf.extend_from_slice(&str);
+            }
+            DataCell::Int(num) => {
+                let num = num.encode();
+                idx += num.len();
+                buf.extend_from_slice(&num);
+            }
+        }
+    }
+
+    if delim.is_none() {
+        // empty value
+        key_delim = idx;
+    }
+
+    let key_slice = &buf[..key_delim];
+    let val_slice = &buf[key_delim..];
+
+    if key_slice.len() > BTREE_MAX_KEY_SIZE {
+        return Err(TableError::RecordError(
+            "maximum key size exceeded".to_string(),
+        ));
+    }
+    if val_slice.len() > BTREE_MAX_VAL_SIZE {
+        return Err(TableError::RecordError(
+            "maximum value size exceeded".to_string(),
+        ));
+    }
+
+    Ok((
+        Key::from_encoded_slice(key_slice),
+        Value::from_encoded_slice(val_slice),
+    ))
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]

@@ -13,6 +13,7 @@ use crate::database::{
 };
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info, instrument};
+use tracing_subscriber::registry::Data;
 
 /*
  * Encoding Layout:
@@ -50,6 +51,8 @@ const META_TABLE_ID_ROW: &'static str = "tid";
 
 const META_TABLE_ID: u32 = 2;
 const META_TABLE_PKEYS: u16 = 1;
+
+const PKEY_PREFIX: u16 = 0;
 
 /// wrapper for sentinal value
 #[derive(Serialize, Deserialize)]
@@ -143,6 +146,7 @@ impl TableBuilder {
         self
     }
 
+    /// adds a column to the table, order sensitive
     pub fn add_col(mut self, title: &str, data_type: TypeCol) -> Self {
         self.cols.push(Column {
             title: title.to_string(),
@@ -151,6 +155,7 @@ impl TableBuilder {
         self
     }
 
+    /// declares amount of columns as primary keys, starting in order in which columns were added
     pub fn pkey(mut self, nkeys: u16) -> Self {
         self.pkeys = Some(nkeys);
         self
@@ -213,12 +218,18 @@ impl TableBuilder {
             }
         };
 
+        let primary_idx = Index {
+            columns: (0..pkeys).collect(),
+            prefix: PKEY_PREFIX,
+            kind: IdxKind::Primary,
+        };
+
         Ok(Table {
             name,
             id,
             cols,
             pkeys,
-            indices: vec![],
+            indices: vec![primary_idx],
             _priv: PhantomData,
         })
     }
@@ -230,7 +241,7 @@ pub(crate) struct Table {
     pub(crate) id: u32,
     pub(crate) cols: Vec<Column>,
     pub(crate) pkeys: u16,
-    pub(crate) indices: Vec<Index>, // secondary indices
+    pub(crate) indices: Vec<Index>,
 
     // ensures tables are built through constructor
     _priv: PhantomData<bool>,
@@ -258,12 +269,28 @@ impl Table {
             TableError::SerializeTableError(e).into()
         })
     }
+
+    /// checks if col by name exists and matches data type
+    pub fn valid_col(&self, title: &str, data: &DataCell) -> bool {
+        let data_type = match data {
+            DataCell::Str(_) => TypeCol::BYTES,
+            DataCell::Int(_) => TypeCol::INTEGER,
+        };
+
+        for col in self.cols.iter() {
+            if col.title == title && col.data_type == data_type {
+                return true;
+            }
+        }
+        false
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub(crate) struct Index {
-    pub name: String,
-    pub columns: Vec<u16>, // column IDs
+    /// indices into the table.cols
+    pub columns: Vec<u16>,
+    /// prefix for encoding
     pub prefix: u16,
     pub kind: IdxKind,
 }
@@ -315,8 +342,7 @@ impl<KV: KVEngine> Database<KV> {
     pub fn new_tid(&mut self) -> Result<u32> {
         let key = Query::new()
             .with_pkey(META_TABLE_COL1, META_TABLE_ID_ROW) // we query name column, where pkey = tid
-            .encode(&self.get_meta())
-            .expect("this cant fail");
+            .encode(&self.get_meta())?;
 
         match self.kve.get(key).ok() {
             Some(value) => {
@@ -328,8 +354,7 @@ impl<KV: KVEngine> Database<KV> {
                     let (k, v) = Record::new()
                         .add(META_TABLE_ID_ROW)
                         .add(i + 1)
-                        .encode(&meta)
-                        .expect("this cant fail");
+                        .encode(&meta)?;
 
                     self.kve.set(k, v, SetFlag::UPSERT).map_err(|e| {
                         error!(?e);
@@ -347,11 +372,7 @@ impl<KV: KVEngine> Database<KV> {
             None => {
                 let meta = self.get_meta();
 
-                let (k, v) = Record::new()
-                    .add(META_TABLE_ID_ROW)
-                    .add(3)
-                    .encode(&meta)
-                    .expect("this cant fail");
+                let (k, v) = Record::new().add(META_TABLE_ID_ROW).add(3).encode(&meta)?;
 
                 self.kve.set(k, v, SetFlag::UPSERT).map_err(|e| {
                     error!(?e);
@@ -377,6 +398,7 @@ impl<KV: KVEngine> Database<KV> {
     #[instrument(name = "insert table", skip_all)]
     pub fn insert_table(&mut self, table: &Table) -> Result<()> {
         info!(?table, "inserting table");
+
         if self.get_table(&table.name).is_some() {
             error!(name = table.name, "table with provided name exists already");
             return Err(TableError::InsertTableError(
@@ -473,6 +495,10 @@ impl<KV: KVEngine> Database<KV> {
 
         self.scan(seek_mode)
     }
+
+    fn creat_index() {}
+
+    fn delete_index() {}
 }
 
 // outward API
