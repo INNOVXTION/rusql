@@ -15,12 +15,22 @@ use crate::database::types::DataCell;
 //
 // -----------------------------KEY--------------------------------|
 // [ TID ][IDX PREFIX][      INT      ][            STR           ]|
-// [ 4B  ][    2B    ][1B TYPE][8B INT][1B TYPE][2B STRLEN][nB STR]|
+// [ 4B  ][    2B    ][1B TYPE][8B INT][1B TYPE][4B STRLEN][nB STR]|
 
 #[derive(Debug)]
 pub(crate) struct Key(Rc<[u8]>);
 
 impl Key {
+    /// sentinal empty key with value "0 0" 6 Bytes
+    pub fn new_empty() -> Self {
+        Key(Rc::from([0u8; 6]))
+    }
+
+    pub fn is_empty(&self) -> bool {
+        let e = [0u8; 6];
+        e == *self.0
+    }
+
     pub fn iter(&self) -> KeyIterRef<'_> {
         KeyIterRef {
             data: self,
@@ -373,6 +383,11 @@ fn cell_cmp(a: &[u8], b: &[u8]) -> Ordering {
     let mut val_a = a;
     let mut val_b = b;
 
+    debug!(len_a = val_a.len());
+    debug!(?val_a);
+    debug!(len_b = val_b.len());
+    debug!(?val_b);
+
     loop {
         if val_a.is_empty() && val_b.is_empty() {
             debug!("both keys empty");
@@ -418,10 +433,15 @@ fn cell_cmp(a: &[u8], b: &[u8]) -> Ordering {
                 }
             }
             Some(TypeCol::INTEGER) => {
-                // flipping the sign bit for comparison
-                let int_a = val_a.read_i64() as u64 ^ 0x8000_0000_0000_0000;
-                let int_b = val_b.read_i64() as u64 ^ 0x8000_0000_0000_0000;
+                let int_a = val_a.read_i64();
+                let int_b = val_b.read_i64();
+
                 debug!(int_a, int_b, "comparing integer");
+
+                // flipping the sign bit for comparison
+                let in_a = int_a as u64 ^ 0x8000_0000_0000_0000;
+                let in_b = int_b as u64 ^ 0x8000_0000_0000_0000;
+
                 match int_a.cmp(&int_b) {
                     Ordering::Equal => {
                         debug!("integer are equal");
@@ -517,5 +537,18 @@ mod test {
         assert!(k1 < k3);
         assert!(k1 == k4);
         Ok(())
+    }
+
+    #[test]
+    fn empty_key() {
+        let k: Key = "".into();
+
+        // 4 tid, 2 prefix, 1 type bit, 4 str len
+        assert_eq!(k.as_slice().len(), 11);
+        assert_eq!(k.to_string(), "1 0 ");
+
+        let e = Key::new_empty();
+        assert_eq!(e.len(), 6);
+        assert!(e.is_empty());
     }
 }

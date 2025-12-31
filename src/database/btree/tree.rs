@@ -72,7 +72,7 @@ impl<P: Pager> Tree for BTree<P> {
                 debug!("no root found, creating new root");
                 let mut new_root = TreeNode::new();
                 new_root.set_header(NodeType::Leaf, 2);
-                new_root.kvptr_append(0, Pointer::from(0), "".into(), "".into())?; // empty key to remove edge case
+                new_root.kvptr_append(0, Pointer::from(0), Key::new_empty(), "".into())?; // empty key to remove edge case
                 new_root.kvptr_append(1, Pointer::from(0), key, val)?;
                 self.root_ptr = Some(self.encode(new_root));
                 return Ok(());
@@ -577,7 +577,7 @@ mod test {
         for i in (1..=400u16).rev() {
             tree.delete(format!("{i}").into()).unwrap()
         }
-        tree.delete("".into()).unwrap();
+        tree.delete(Key::new_empty()).unwrap();
         let t_ref = tree.pager.btree.borrow();
         assert_eq!(t_ref.get_root(), None);
     }

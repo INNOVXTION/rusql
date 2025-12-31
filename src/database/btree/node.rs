@@ -323,30 +323,11 @@ impl TreeNode {
         if nkeys == 0 || nkeys == 1 {
             return 0;
         }
-        // search with str
-        let n = key;
-        let mut lo: u16 = 0;
-        let mut hi: u16 = nkeys;
-        while hi > lo {
-            let m = (hi + lo) / 2;
-            let v = self.get_key(m).unwrap();
-            // debug!(key, lo, hi, v = key_num(m), m);
-            if v == *n {
-                return m as u16;
-            };
-            if v > *n {
-                hi = m;
-            } else {
-                lo = m + 1;
-            }
+        if let Some(n) = super::cursor::cmp_le(self, key) {
+            n
+        } else {
+            0
         }
-        // if lo < nkeys && self.get_key(lo).unwrap() == *n {
-        //     return lo;
-        // }
-        if lo == 0 {
-            return 0;
-        }
-        lo - 1
     }
 
     /// abstracted API over leaf_kvinsert and leaf_kvupdate

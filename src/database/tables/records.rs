@@ -129,8 +129,8 @@ pub(crate) struct Query {
 }
 
 enum QueryMode {
-    Lookup,
-    Range,
+    Key,
+    Prefix,
 }
 
 impl Query {

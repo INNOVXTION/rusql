@@ -15,7 +15,7 @@ Key-Value LayoutV1 (current):
 
 example:
 [INT ][STR ]
-[1B TYPE][8B INT][1B TYPE][2B STRLEN][nB STR]
+[1B TYPE][8B INT][1B TYPE][4B STRLEN][nB STR]
  */
 
 pub(crate) const TYPE_LEN: usize = std::mem::size_of::<u8>();
@@ -273,7 +273,7 @@ mod test {
         let key: Key = "hello".into();
         let val: Value = "world".into();
 
-        assert_eq!(key.to_string(), "1 hello");
+        assert_eq!(key.to_string(), "1 0 hello");
 
         let w_slice = &mut buf[..];
         w_slice
@@ -290,7 +290,7 @@ mod test {
 
         assert_eq!(
             Key::from_encoded_slice(r_slice.read_bytes(key.len())).to_string(),
-            "1 hello"
+            "1 0 hello"
         );
         assert_eq!(
             Value::from_encoded_slice(r_slice.read_bytes(val.len())).to_string(),
@@ -309,7 +309,7 @@ mod test {
 
         assert_eq!(
             Key::from_encoded_slice((&buf[..]).read_bytes(key.len())).to_string(),
-            "1 5"
+            "1 0 5"
         );
         Ok(())
     }

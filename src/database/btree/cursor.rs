@@ -1,4 +1,4 @@
-use tracing::debug;
+use tracing::{debug, instrument};
 
 use crate::database::{
     BTree,
@@ -227,7 +227,7 @@ impl<'a, P: Pager> Cursor<'a, P> {
             return None;
         }
         let res = self.deref();
-        if res.0.to_string() == "1 " {
+        if res.0.is_empty() {
             // empty key edge case!
             self.empty = true;
             return None;
@@ -260,6 +260,7 @@ impl<'a, P: Pager> Cursor<'a, P> {
 }
 
 // creates a new cursor
+#[instrument(skip_all)]
 fn seek<'a, P: Pager>(tree: &'a BTree<P>, key: &Key, flag: Compare) -> Option<Cursor<'a, P>> {
     let mut cursor = Cursor::new(tree);
     let mut ptr = tree.get_root();
@@ -279,7 +280,7 @@ fn seek<'a, P: Pager>(tree: &'a BTree<P>, key: &Key, flag: Compare) -> Option<Cu
             }
             NodeType::Leaf => {
                 let idx = node_lookup(&node, &key, &flag)?;
-
+                debug!(idx, "seek idx after lookup");
                 cursor.path.push(node);
                 cursor.pos.push(idx);
 
@@ -291,7 +292,8 @@ fn seek<'a, P: Pager>(tree: &'a BTree<P>, key: &Key, flag: Compare) -> Option<Cu
     if cursor.pos.is_empty() || cursor.path.is_empty() {
         return None;
     }
-    if cursor.deref().0.to_string() == "1 " {
+    // accounting for empty key edge case
+    if cursor.deref().0.is_empty() {
         return None;
     }
     assert_eq!(cursor.pos.len(), cursor.path.len());
@@ -336,11 +338,16 @@ fn cmp_lt(node: &TreeNode, key: &Key) -> Option<u16> {
     let mut lo: u16 = 0;
     let mut hi: u16 = nkeys;
 
-    debug!("cmp_lt in {:?} nkeys {}", node.get_type(), nkeys);
+    debug!(
+        "cmp_lt, key: {} in {:?} nkeys {}",
+        key,
+        node.get_type(),
+        nkeys
+    );
     while hi > lo {
         let m = (hi + lo) / 2;
         let v = node.get_key(m).ok()?;
-
+        debug!(%v, %key, "comparing v against key");
         // if v == *key {
         //     return None; // key already exists
         // };
@@ -354,7 +361,7 @@ fn cmp_lt(node: &TreeNode, key: &Key) -> Option<u16> {
     if lo == 0 { None } else { Some(lo - 1) }
 }
 
-fn cmp_le(node: &TreeNode, key: &Key) -> Option<u16> {
+pub(super) fn cmp_le(node: &TreeNode, key: &Key) -> Option<u16> {
     let nkeys = node.get_nkeys();
     let mut lo: u16 = 0;
     let mut hi: u16 = nkeys;
@@ -517,7 +524,7 @@ mod test {
         // Navigate through all elements using next()
         for i in 1i64..=10i64 {
             let (k, v) = cursor.next().unwrap();
-            assert_eq!(k.to_string(), format!("1 {}", i));
+            assert_eq!(k.to_string(), format!("1 0 {}", i));
             assert_eq!(v.to_string(), format!("val{}", i));
         }
 
@@ -543,7 +550,7 @@ mod test {
         // Navigate backwards using prev()
         for i in (1i64..=10i64).rev() {
             let (k, v) = cursor.prev().unwrap();
-            assert_eq!(k.to_string(), format!("1 {}", i));
+            assert_eq!(k.to_string(), format!("1 0 {}", i));
             assert_eq!(v.to_string(), format!("val{}", i));
         }
 
@@ -692,7 +699,7 @@ mod test {
 
         Ok(())
     }
-    // Test edge cases
+
     #[test]
     fn scan_open_from_first_element() -> Result<()> {
         let tree = mempage_tree();
@@ -799,27 +806,27 @@ mod test {
         let key = 5i64.into();
         let cursor = seek(&btree, &key, Compare::EQ).unwrap();
         let (k, _) = cursor.deref();
-        assert_eq!(k.to_string(), "1 5");
+        assert_eq!(k.to_string(), "1 0 5");
 
         // Test GE - deref should return the exact match or next greater
         let cursor = seek(&btree, &key, Compare::GE).unwrap();
         let (k, _) = cursor.deref();
-        assert_eq!(k.to_string(), "1 5");
+        assert_eq!(k.to_string(), "1 0 5");
 
         // Test GT - deref should return the next value after key
         let cursor = seek(&btree, &key, Compare::GT).unwrap();
         let (k, _) = cursor.deref();
-        assert_eq!(k.to_string(), "1 6");
+        assert_eq!(k.to_string(), "1 0 6");
 
         // Test LE - deref should return the exact match or next smaller
         let cursor = seek(&btree, &key, Compare::LE).unwrap();
         let (k, _) = cursor.deref();
-        assert_eq!(k.to_string(), "1 5");
+        assert_eq!(k.to_string(), "1 0 5");
 
         // Test LT - deref should return the value before key
         let cursor = seek(&btree, &key, Compare::LT).unwrap();
         let (k, _) = cursor.deref();
-        assert_eq!(k.to_string(), "1 4");
+        assert_eq!(k.to_string(), "1 0 4");
 
         Ok(())
     }
