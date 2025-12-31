@@ -73,7 +73,11 @@ impl MetaTable {
                 },
             ],
             pkeys: META_TABLE_PKEYS,
-            indices: vec![],
+            indices: vec![Index {
+                columns: (0..META_TABLE_PKEYS).collect(),
+                prefix: PKEY_PREFIX,
+                kind: IdxKind::Primary,
+            }],
             _priv: PhantomData,
         })
     }
@@ -103,7 +107,11 @@ impl TDefTable {
                 },
             ],
             pkeys: DEF_TABLE_PKEYS,
-            indices: vec![],
+            indices: vec![Index {
+                columns: (0..DEF_TABLE_PKEYS).collect(),
+                prefix: PKEY_PREFIX,
+                kind: IdxKind::Primary,
+            }],
             _priv: PhantomData,
         })
     }

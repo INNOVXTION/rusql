@@ -55,7 +55,7 @@ impl Record {
 
         let mut pkey_slice = &self.data[..]; // primary key cells
         let mut skey_slice = &self.data[..]; // secondary key cells
-        let mut cursor: usize = 0;
+        let mut cursor: usize = 0; // encoded columns in dataset
         let mut res = vec![];
 
         for (i, idx) in schema.indices.iter().enumerate() {
@@ -70,12 +70,12 @@ impl Record {
                         ))
                         .into());
                     }
-                    pkey_slice = &self.data[..n_cols];
                     debug!(?pkey_slice, ?skey_slice);
 
-                    let kv = encode_to_kv(schema.id, idx.prefix, &self.data[..], Some(n_cols))?;
+                    let kv = encode_to_kv(schema.id, idx.prefix, pkey_slice, Some(n_cols))?;
                     assert!(!kv.0.as_slice().len() > TID_LEN + PREFIX_LEN);
                     res.push(kv);
+                    pkey_slice = &self.data[..n_cols];
                 }
                 IdxKind::Secondary => {
                     // secondary indices have empty values to make sure primary keys stay unique
@@ -165,8 +165,9 @@ impl Query {
 
         let mut buf = Vec::<u8>::new();
 
-        // encoding table id
+        // encoding table id + prefix
         buf.extend_from_slice(&schema.id.to_le_bytes());
+        buf.extend_from_slice(&schema.indices[0].prefix.to_le_bytes());
 
         // encoding primary keys
         for i in 0..schema.pkeys {
@@ -221,33 +222,34 @@ where
     let mut idx: usize = 0;
     let mut key_delim: usize = 0;
 
-    // table id
+    // table id and prefix
     buf.extend_from_slice(&tid.to_le_bytes());
-    idx += TID_LEN;
-
-    // prefix
     buf.extend_from_slice(&prefix.to_le_bytes());
-    idx += PREFIX_LEN;
+    idx += TID_LEN + PREFIX_LEN;
 
     // composing byte array by iterating through all columns designated as primary key
     for (i, cell) in iter.enumerate() {
-        // mark the cutoff point between keys and values
-        if let Some(n) = delim
-            && n == i
-        {
-            key_delim = idx;
+        if let Some(n) = delim {
+            if n == 0 {
+                return Err(
+                    TableError::RecordError("delimiter cant be Some(0)".to_string()).into(),
+                );
+            } else if n == i {
+                // mark the cutoff point between keys and values
+                key_delim = idx;
+            }
         }
 
         match cell {
             DataCell::Str(str) => {
                 let str = str.encode();
-                idx += str.len();
                 buf.extend_from_slice(&str);
+                idx += str.len();
             }
             DataCell::Int(num) => {
                 let num = num.encode();
-                idx += num.len();
                 buf.extend_from_slice(&num);
+                idx += num.len();
             }
         }
     }

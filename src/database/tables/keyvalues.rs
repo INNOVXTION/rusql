@@ -54,12 +54,13 @@ impl Key {
     ///
     /// adds TID = 1, PREFIX = 0
     pub fn from_unencoded_type<S: Codec>(data: S) -> Self {
-        let mut buf: Vec<u8> = vec![0; TID_LEN + PREFIX_LEN];
+        let mut buf: Vec<u8> = vec![];
 
         // TID 1 and PREFIX 0
-        buf.write_u32(1).write_u16(0);
-
+        buf.extend_from_slice(&1u32.to_le_bytes());
+        buf.extend_from_slice(&0u16.to_le_bytes());
         buf.extend_from_slice(&data.encode());
+
         Key(Rc::from(buf))
     }
 
