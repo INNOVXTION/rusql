@@ -34,17 +34,22 @@ pub enum SetFlag {
     UPSERT,
 }
 
+pub(crate) struct SetResponse {
+    old: Option<(Key, Value)>,
+    added: bool,
+    updated: bool,
+}
+
 pub(crate) trait Tree {
     type Codec: Pager;
 
-    fn set(&mut self, key: Key, value: Value, flag: SetFlag) -> Result<()>;
-    fn delete(&mut self, key: Key) -> Result<()>;
     fn search(&self, key: Key) -> Option<Value>;
+    fn set(&mut self, key: Key, value: Value, flag: SetFlag) -> Result<()>;
+    fn scan(&self, mode: ScanMode) -> Result<ScanIter<'_, Self::Codec>>;
+    fn delete(&mut self, key: Key) -> Result<()>;
 
     fn set_root(&mut self, ptr: Option<Pointer>);
     fn get_root(&self) -> Option<Pointer>;
-
-    fn scan(&self, mode: ScanMode) -> Result<ScanIter<'_, Self::Codec>>;
 }
 
 impl<P: Pager> Tree for BTree<P> {

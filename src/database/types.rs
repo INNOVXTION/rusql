@@ -1,5 +1,5 @@
 /*
- * higher level types and constants used throughout the database
+ * higher level types, wrappers and constants used throughout the database
  */
 
 use std::{
@@ -140,5 +140,57 @@ impl From<usize> for Pointer {
 impl Display for Pointer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "page: {}", self.0)
+    }
+}
+
+/// simple wrapper for a cell
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
+pub(crate) enum DataCell {
+    Str(String),
+    Int(i64),
+}
+
+pub(crate) trait InputData {
+    fn into_cell(self) -> DataCell;
+}
+
+impl InputData for DataCell {
+    fn into_cell(self) -> DataCell {
+        self
+    }
+}
+impl InputData for String {
+    fn into_cell(self) -> DataCell {
+        DataCell::Str(self)
+    }
+}
+
+impl InputData for &str {
+    fn into_cell(self) -> DataCell {
+        DataCell::Str(self.to_string())
+    }
+}
+
+impl InputData for i64 {
+    fn into_cell(self) -> DataCell {
+        DataCell::Int(self)
+    }
+}
+
+impl InputData for i32 {
+    fn into_cell(self) -> DataCell {
+        DataCell::Int(self as i64)
+    }
+}
+
+impl InputData for i16 {
+    fn into_cell(self) -> DataCell {
+        DataCell::Int(self as i64)
+    }
+}
+
+impl InputData for i8 {
+    fn into_cell(self) -> DataCell {
+        DataCell::Int(self as i64)
     }
 }

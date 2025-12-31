@@ -6,14 +6,13 @@ use crate::database::{
     errors::{Error, Result, TableError},
     pager::diskpager::KVEngine,
     tables::{
-        Key,
-        records::{DataCell, Query, Record, Value},
+        Key, Value,
+        records::{Query, Record},
     },
-    types::BTREE_MAX_VAL_SIZE,
+    types::{BTREE_MAX_VAL_SIZE, DataCell},
 };
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info, instrument};
-use tracing_subscriber::registry::Data;
 
 /*
  * Encoding Layout:
@@ -257,7 +256,8 @@ impl Table {
         if data.len() > BTREE_MAX_VAL_SIZE {
             return Err(TableError::EncodeTableError(
                 "Table schema exceeds value size limit".to_string(),
-            ))?;
+            )
+            .into());
         }
         Ok(data)
     }
@@ -272,13 +272,13 @@ impl Table {
 
     /// checks if col by name exists and matches data type
     pub fn valid_col(&self, title: &str, data: &DataCell) -> bool {
-        let data_type = match data {
+        let cell_type = match data {
             DataCell::Str(_) => TypeCol::BYTES,
             DataCell::Int(_) => TypeCol::INTEGER,
         };
 
         for col in self.cols.iter() {
-            if col.title == title && col.data_type == data_type {
+            if col.title == title && col.data_type == cell_type {
                 return true;
             }
         }
@@ -329,6 +329,23 @@ pub(crate) struct Database<KV: KVEngine> {
     kve: KV,
 }
 
+pub(crate) struct SetRequest {
+    payload: Vec<(Key, Value)>,
+    flag: SetFlag,
+}
+
+pub(crate) enum SearchRequest {
+    Lookup(Key),
+    Range(ScanMode),
+    FullTable(Key),
+}
+
+pub(crate) enum DeleteRequest {
+    Table,
+    Column,
+    Record,
+}
+
 impl<KV: KVEngine> Database<KV> {
     pub fn new(pager: KV) -> Self {
         Database {
@@ -341,7 +358,7 @@ impl<KV: KVEngine> Database<KV> {
     #[instrument(name = "new table id", skip_all)]
     pub fn new_tid(&mut self) -> Result<u32> {
         let key = Query::new()
-            .with_pkey(META_TABLE_COL1, META_TABLE_ID_ROW) // we query name column, where pkey = tid
+            .with_key(META_TABLE_COL1, META_TABLE_ID_ROW) // we query name column, where pkey = tid
             .encode(&self.get_meta())?;
 
         match self.kve.get(key).ok() {
@@ -431,7 +448,7 @@ impl<KV: KVEngine> Database<KV> {
             return self.buffer.get(name);
         }
         let key = Query::new()
-            .with_pkey("name", name)
+            .with_key("name", name)
             .encode(&self.tdef)
             .ok()?;
 
@@ -456,7 +473,7 @@ impl<KV: KVEngine> Database<KV> {
             ))?;
         }
         let qu = Query::new()
-            .with_pkey(DEF_TABLE_COL1, name)
+            .with_key(DEF_TABLE_COL1, name)
             .encode(&self.tdef)?;
 
         self.buffer.remove(name);
@@ -501,21 +518,12 @@ impl<KV: KVEngine> Database<KV> {
     fn delete_index() {}
 }
 
-// outward API
-trait DatabaseAPI {
-    fn create_table(&self);
-    fn drop_table(&self);
-
-    fn get(&self);
-    fn insert(&self);
-    fn delete(&self);
-}
-
 #[cfg(test)]
 mod test {
     use crate::database::{
         btree::Compare,
         pager::{diskpager::Envoy, mempage_tree},
+        types::DataCell,
     };
 
     use super::*;
@@ -581,9 +589,9 @@ mod test {
             db.insert_rec(entry, &table, SetFlag::UPSERT).unwrap()
         }
 
-        let q1 = Query::new().with_pkey("name", "Alice");
-        let q2 = Query::new().with_pkey("name", "Bob");
-        let q3 = Query::new().with_pkey("name", "Charlie");
+        let q1 = Query::new().with_key("name", "Alice");
+        let q2 = Query::new().with_key("name", "Bob");
+        let q3 = Query::new().with_key("name", "Charlie");
 
         let q1_res = db.get_rec(q1, &table).unwrap().decode();
         assert_eq!(q1_res[0], DataCell::Int(20));
@@ -616,21 +624,21 @@ mod test {
         db.insert_table(&table).unwrap();
         let tables = db.get_table("mytable");
 
-        let good_query = Query::new().with_pkey("name", "Alice").with_pkey("age", 10);
+        let good_query = Query::new().with_key("name", "Alice").with_key("age", 10);
 
         assert!(good_query.encode(&table).is_ok());
 
-        let good_query = Query::new().with_pkey("name", "Alice").with_pkey("age", 10);
-        let unordered = Query::new().with_pkey("age", 10).with_pkey("name", "Alice");
+        let good_query = Query::new().with_key("name", "Alice").with_key("age", 10);
+        let unordered = Query::new().with_key("age", 10).with_key("name", "Alice");
         assert_eq!(
             good_query.encode(&table).unwrap(),
             unordered.encode(&table).unwrap()
         );
 
-        let bad_query = Query::new().with_pkey("name", "Alice");
+        let bad_query = Query::new().with_key("name", "Alice");
         assert!(bad_query.encode(&table).is_err());
 
-        let bad_query = Query::new().with_pkey("dfasdf", "fasdf");
+        let bad_query = Query::new().with_key("dfasdf", "fasdf");
         assert!(bad_query.encode(&table).is_err());
 
         let bad_query = Query::new();
@@ -771,7 +779,7 @@ mod test {
         assert!(Query::new().encode(&table).is_err());
 
         // wrong column name
-        assert!(Query::new().with_pkey("nope", "x").encode(&table).is_err());
+        assert!(Query::new().with_key("nope", "x").encode(&table).is_err());
     }
 
     #[test]
@@ -825,7 +833,7 @@ mod test {
         }
 
         let open = ScanMode::Open(
-            Query::new().with_pkey("name", "Alice").encode(&table1)?,
+            Query::new().with_key("name", "Alice").encode(&table1)?,
             Compare::GE,
         );
         let res = db.scan(open)?;
@@ -836,7 +844,7 @@ mod test {
         assert_eq!(res[2].to_string(), "Charlie 25");
 
         let open = ScanMode::Open(
-            Query::new().with_pkey("id", 20).encode(&table2)?,
+            Query::new().with_key("id", 20).encode(&table2)?,
             Compare::GE,
         );
         let res = db.scan(open)?;
@@ -944,8 +952,8 @@ mod scan {
         }
 
         // Scan from id 5 to 15
-        let lo_key = Query::new().with_pkey("id", 5i64).encode(&table)?;
-        let hi_key = Query::new().with_pkey("id", 15i64).encode(&table)?;
+        let lo_key = Query::new().with_key("id", 5i64).encode(&table)?;
+        let hi_key = Query::new().with_key("id", 15i64).encode(&table)?;
 
         let range = ScanMode::new_range((lo_key, Compare::GE), (hi_key, Compare::LE))?;
 
@@ -1011,7 +1019,7 @@ mod scan {
 
         // Scan table1
         let open = ScanMode::new_open(
-            Query::new().with_pkey("key", "key_a_1").encode(&table1)?,
+            Query::new().with_key("key", "key_a_1").encode(&table1)?,
             Compare::GE,
         )?;
         let res1 = db.scan(open)?;
@@ -1022,7 +1030,7 @@ mod scan {
 
         // Scan table2
         let open = ScanMode::new_open(
-            Query::new().with_pkey("key", "key_b_1").encode(&table2)?,
+            Query::new().with_key("key", "key_b_1").encode(&table2)?,
             Compare::GE,
         )?;
         let res2 = db.scan(open)?;
@@ -1065,7 +1073,7 @@ mod scan {
 
         // Scan backwards from score 50
         let open = ScanMode::new_open(
-            Query::new().with_pkey("score", 50i64).encode(&table)?,
+            Query::new().with_key("score", 50i64).encode(&table)?,
             Compare::LT,
         )?;
 
@@ -1108,7 +1116,7 @@ mod scan {
 
         // Scan for values greater than max
         let open = ScanMode::new_open(
-            Query::new().with_pkey("id", 100i64).encode(&table)?,
+            Query::new().with_key("id", 100i64).encode(&table)?,
             Compare::GT,
         )?;
 
@@ -1144,7 +1152,7 @@ mod scan {
         )?;
 
         let open = ScanMode::new_open(
-            Query::new().with_pkey("code", "CODE_001").encode(&table)?,
+            Query::new().with_key("code", "CODE_001").encode(&table)?,
             Compare::EQ,
         );
         // EQ is not allowed in open scans, should error
@@ -1182,7 +1190,7 @@ mod scan {
 
         // Scan from 35 backwards (LE)
         let open = ScanMode::new_open(
-            Query::new().with_pkey("value", 35i64).encode(&table)?,
+            Query::new().with_key("value", 35i64).encode(&table)?,
             Compare::LE,
         )?;
 
@@ -1225,7 +1233,7 @@ mod scan {
 
         // Scan from id 100 onwards
         let open = ScanMode::new_open(
-            Query::new().with_pkey("id", 100i64).encode(&table)?,
+            Query::new().with_key("id", 100i64).encode(&table)?,
             Compare::GT,
         )?;
 
@@ -1268,7 +1276,7 @@ mod scan {
 
         // Scan from "bob" onwards
         let open = ScanMode::new_open(
-            Query::new().with_pkey("name", "bob").encode(&table)?,
+            Query::new().with_key("name", "bob").encode(&table)?,
             Compare::GE,
         )?;
 
@@ -1310,13 +1318,13 @@ mod scan {
 
         // Delete some records
         for i in [3, 5, 7].iter() {
-            let key = Query::new().with_pkey("id", *i as i64).encode(&table)?;
+            let key = Query::new().with_key("id", *i as i64).encode(&table)?;
             db.kve.delete(key)?;
         }
 
         // Scan from beginning
         let open = ScanMode::new_open(
-            Query::new().with_pkey("id", 1i64).encode(&table)?,
+            Query::new().with_key("id", 1i64).encode(&table)?,
             Compare::GE,
         )?;
 

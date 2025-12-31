@@ -9,13 +9,6 @@ use tracing::debug;
 use super::tables::TypeCol;
 
 /*
-Key-Value LayoutV2 (WIP):
---------KEY---------|-----VAL----|
-[HEADER][KEY1][KEY2]|[VAL1][VAL2]|
-
-HEADER:
-[2B Header Size][1B K1 type][1B K2 type][...]
-
 Key-Value LayoutV1 (current):
 -----KEY----|-----VAL----|
 [KEY1][KEY2]|[VAL1][VAL2]|
@@ -26,11 +19,9 @@ example:
  */
 
 pub(crate) const TYPE_LEN: usize = std::mem::size_of::<u8>();
-pub(crate) const HEADER_SIZE: usize = std::mem::size_of::<u16>();
 
 pub(crate) const STR_PRE_LEN: usize = std::mem::size_of::<u32>();
-pub(crate) const INT_LEN: usize = std::mem::size_of::<u64>();
-pub(crate) const IDX_LEN: usize = std::mem::size_of::<u64>();
+pub(crate) const INT_LEN: usize = std::mem::size_of::<i64>();
 pub(crate) const TID_LEN: usize = std::mem::size_of::<u32>();
 pub(crate) const PREFIX_LEN: usize = std::mem::size_of::<u16>();
 

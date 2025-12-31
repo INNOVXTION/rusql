@@ -1,10 +1,11 @@
+pub mod api;
 mod btree;
 mod codec;
 mod errors;
 mod helper;
 mod pager;
 mod tables;
-mod types;
+pub(crate) mod types;
 
 // example of reexport
 pub use helper::create_file_sync;
