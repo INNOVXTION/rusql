@@ -26,6 +26,7 @@ impl Key {
         Key(Rc::from([0u8; 6]))
     }
 
+    /// checks if key is the empty key, for len of the actual key use the len() method
     pub fn is_empty(&self) -> bool {
         let e = [0u8; 6];
         e == *self.0
@@ -78,7 +79,7 @@ impl Key {
         self.0.len()
     }
 
-    /// turns key back into Records, doesnt return TID
+    /// turns key back into Cells, the TID is lost in conversion
     fn decode(self) -> Vec<DataCell> {
         self.into_iter().collect()
     }

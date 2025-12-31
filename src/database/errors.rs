@@ -167,6 +167,12 @@ pub(crate) enum TableError {
     ValueDecodeError(String),
     #[error("Value string error {0}")]
     ValueStringError(std::io::Error),
+
+    // Indices
+    #[error("Index Error: {0}")]
+    IndexCreateError(String),
+    #[error("Index Error: {0}")]
+    IndexDeleteError(String),
 }
 
 #[derive(Error, Debug)]

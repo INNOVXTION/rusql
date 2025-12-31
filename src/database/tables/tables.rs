@@ -74,6 +74,7 @@ impl MetaTable {
             ],
             pkeys: META_TABLE_PKEYS,
             indices: vec![Index {
+                name: META_TABLE_COL1.to_string(),
                 columns: (0..META_TABLE_PKEYS).collect(),
                 prefix: PKEY_PREFIX,
                 kind: IdxKind::Primary,
@@ -108,6 +109,7 @@ impl TDefTable {
             ],
             pkeys: DEF_TABLE_PKEYS,
             indices: vec![Index {
+                name: DEF_TABLE_COL1.to_string(),
                 columns: (0..DEF_TABLE_PKEYS).collect(),
                 prefix: PKEY_PREFIX,
                 kind: IdxKind::Primary,
@@ -226,6 +228,7 @@ impl TableBuilder {
         };
 
         let primary_idx = Index {
+            name: cols[0].title.clone(),
             columns: (0..pkeys).collect(),
             prefix: PKEY_PREFIX,
             kind: IdxKind::Primary,
@@ -292,10 +295,56 @@ impl Table {
         }
         false
     }
+
+    fn col_exists(&self, title: &str) -> Option<u16> {
+        for (i, col) in self.cols.iter().enumerate() {
+            if col.title == title {
+                return Some(i as u16);
+            }
+        }
+        None
+    }
+
+    fn idx_exists(&self, title: &str) -> Option<usize> {
+        for (i, idx) in self.indices.iter().enumerate() {
+            if idx.name == title {
+                return Some(i);
+            }
+        }
+        None
+    }
+
+    pub fn add_index(&mut self, col: &str) -> Result<()> {
+        let col_idx = match self.col_exists(col) {
+            Some(i) => i,
+            None => {
+                return Err(TableError::IndexCreateError("column doesnt exist".to_string()).into());
+            }
+        };
+        self.indices.push(Index {
+            name: col.to_string(),
+            columns: vec![col_idx],
+            prefix: self.indices.len() as u16,
+            kind: IdxKind::Secondary,
+        });
+        Ok(())
+    }
+
+    pub fn remove_index(&mut self, name: &str) -> Result<()> {
+        let idx = match self.idx_exists(name) {
+            Some(i) => i,
+            None => {
+                return Err(TableError::IndexDeleteError("index doesnt exist!".to_string()).into());
+            }
+        };
+        self.indices.remove(idx);
+        Ok(())
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub(crate) struct Index {
+    pub name: String,
     /// indices into the table.cols
     pub columns: Vec<u16>,
     /// prefix for encoding

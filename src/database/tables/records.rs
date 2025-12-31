@@ -129,8 +129,8 @@ pub(crate) struct Query {
 }
 
 enum QueryMode {
-    Key,
-    Prefix,
+    Key(HashMap<String, DataCell>),
+    Prefix(usize),
 }
 
 impl Query {
@@ -337,6 +337,41 @@ mod test {
         assert!(k1 < k2);
         assert!(k1 < k3);
         assert!(k1 == k4);
+        Ok(())
+    }
+
+    #[test]
+    fn records_secondary_indicies1() -> Result<()> {
+        let pager = mempage_tree();
+        let mut db = Database::new(pager);
+
+        let mut table = TableBuilder::new()
+            .name("mytable")
+            .id(2)
+            .pkey(1)
+            .add_col("greeter", TypeCol::BYTES)
+            .add_col("number", TypeCol::INTEGER)
+            .add_col("gretee", TypeCol::BYTES)
+            .build(&mut db)
+            .unwrap();
+
+        table.add_index("number")?;
+        assert_eq!(table.indices.len(), 2);
+
+        let s1 = "hello";
+        let i1 = 10;
+        let s2 = "world";
+
+        let mut rec = Record::new().add(s1).add(i1).add(s2).encode(&table)?;
+        let mut kv = rec.next().unwrap();
+
+        assert_eq!(kv.0.to_string(), "2 0 hello");
+        assert_eq!(kv.1.to_string(), "10 world");
+
+        kv = rec.next().unwrap();
+        assert_eq!(kv.0.to_string(), "2 1 10 hello");
+        assert_eq!(kv.1.to_string(), "");
+
         Ok(())
     }
 }
