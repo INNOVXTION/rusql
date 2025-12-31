@@ -702,13 +702,13 @@ mod test {
         let pager = EnvoyV1::open(path).unwrap();
         pager
             .set(
-                Key::from_unencoded_str("1"),
+                "1".into(),
                 Value::from_unencoded_str("val"),
                 SetFlag::UPSERT,
             )
             .unwrap();
         assert_eq!(
-            pager.get(Key::from_unencoded_str("1")).unwrap(),
+            pager.get("1".into()).unwrap(),
             Value::from_unencoded_str("val")
         );
         cleanup_file(path);

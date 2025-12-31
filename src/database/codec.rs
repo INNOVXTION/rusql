@@ -25,7 +25,7 @@ pub(crate) const INT_LEN: usize = std::mem::size_of::<i64>();
 pub(crate) const TID_LEN: usize = std::mem::size_of::<u32>();
 pub(crate) const PREFIX_LEN: usize = std::mem::size_of::<u16>();
 
-pub(super) trait Codec {
+pub(crate) trait Codec {
     fn encode(&self) -> Rc<[u8]>;
     fn decode(data: &[u8]) -> Self;
 }
@@ -304,7 +304,7 @@ mod test {
         let i1: u16 = 5;
         let mut buf = [0u8; 100];
         let slice = &mut buf[..];
-        let key: Key = Key::from_unencoded_str(format!("{i1}"));
+        let key: Key = Key::from_unencoded_type(format!("{i1}"));
         slice.write_bytes(key.as_slice());
 
         assert_eq!(

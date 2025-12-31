@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fmt::Write;
 
-use tracing::error;
+use tracing::{debug, error};
 
 use crate::database::codec::*;
 use crate::database::tables::tables::IdxKind;
@@ -18,8 +18,6 @@ pub(crate) struct Record {
     data: Vec<DataCell>,
 }
 
-struct EncodedRecord(Vec<(Key, Value)>);
-
 impl Record {
     pub fn new() -> Self {
         Record { data: vec![] }
@@ -34,7 +32,7 @@ impl Record {
     }
 
     /// encodes a record into the necessary key value pairs to fulfil all indices of a given table schema
-    pub fn encode(self, schema: &Table) -> Result<Vec<(Key, Value)>> {
+    pub fn encode(self, schema: &Table) -> Result<impl Iterator<Item = (Key, Value)>> {
         if schema.cols.len() != self.data.len() {
             error!(?schema, "input doesnt match column count");
             return Err(
@@ -61,7 +59,6 @@ impl Record {
         let mut res = vec![];
 
         for (i, idx) in schema.indices.iter().enumerate() {
-            let delim;
             let n_cols = idx.columns.len(); // number of columns for an index
 
             match idx.kind {
@@ -73,26 +70,32 @@ impl Record {
                         ))
                         .into());
                     }
-                    delim = Some(n_cols);
                     pkey_slice = &self.data[..n_cols];
+                    debug!(?pkey_slice, ?skey_slice);
+
+                    let kv = encode_to_kv(schema.id, idx.prefix, &self.data[..], Some(n_cols))?;
+                    assert!(!kv.0.as_slice().len() > TID_LEN + PREFIX_LEN);
+                    res.push(kv);
                 }
                 IdxKind::Secondary => {
                     // secondary indices have empty values to make sure primary keys stay unique
-                    delim = None;
                     skey_slice = &self.data[cursor..cursor + n_cols];
+                    debug!(?pkey_slice, ?skey_slice);
+
+                    // we reorganize the slice to be encoded:
+                    // [TID][PREFIX][SECONDARY COLS][PRIMARY COLS]
+                    let data_iter = skey_slice.iter().chain(pkey_slice.iter());
+
+                    let kv = encode_to_kv(schema.id, idx.prefix, data_iter, None)?;
+                    assert!(!kv.0.as_slice().len() > TID_LEN + PREFIX_LEN);
+                    res.push(kv);
                 }
             };
-
-            // we reorganize the slice to be encoded:
-            // [TID][PREFIX][SECONDARY COLS][PRIMARY COLS]
-            let data_iter = skey_slice.iter().chain(pkey_slice.iter());
-
-            res.push(encode_to_kv(schema.id, idx.prefix, data_iter, delim)?);
 
             cursor += n_cols;
         }
         assert_eq!(res.len(), schema.indices.len());
-        Ok(res)
+        Ok(res.into_iter())
     }
 
     pub fn from_kv(kv: (Key, Value)) -> Record {
@@ -300,62 +303,22 @@ mod test {
 
         let rec = Record::new().add(s1).add(i1).add(s2);
 
-        let (key, value) = rec.encode(&table).unwrap();
-        assert_eq!(key.to_string(), "2 hello 10");
-        assert_eq!(value.to_string(), "world");
-        Ok(())
-    }
-
-    #[test]
-    fn key_cmp1() -> Result<()> {
-        let pager = mempage_tree();
-        let mut db = Database::new(pager);
-
-        let table = TableBuilder::new()
-            .name("mytable")
-            .id(2)
-            .pkey(2)
-            .add_col("greeter", TypeCol::BYTES)
-            .add_col("number", TypeCol::INTEGER)
-            .add_col("gretee", TypeCol::BYTES)
-            .build(&mut db)?;
-
-        let (key1, value1) = Record::new()
-            .add("hello")
-            .add(10)
-            .add("world")
-            .encode(&table)?;
-
-        let (key2, value2) = Record::new()
-            .add("hello")
-            .add(10)
-            .add("world")
-            .encode(&table)?;
-
-        assert_eq!(key1, key2);
-        assert_eq!(key1.to_string(), "2 hello 10");
-
-        let (key3, value3) = Record::new()
-            .add("smol")
-            .add(5)
-            .add("world")
-            .encode(&table)?;
-
-        assert!(key2 < key3);
-        assert_eq!(key3.to_string(), "2 smol 5");
+        let kv = rec.encode(&table)?.next().unwrap();
+        assert_eq!(kv.0.to_string(), "2 0 hello 10");
+        assert_eq!(kv.1.to_string(), "world");
         Ok(())
     }
 
     #[test]
     fn records_test_str() -> Result<()> {
-        let key = Key::from_unencoded_str("hello");
-        assert_eq!(key.to_string(), "1 hello");
+        let key = Key::from_unencoded_type("hello".to_string());
+        assert_eq!(key.to_string(), "1 0 hello");
 
         let key: Key = "hello".into();
-        assert_eq!(key.to_string(), "1 hello");
+        assert_eq!(key.to_string(), "1 0 hello");
 
-        let key = Key::from_unencoded_str("owned hello".to_string());
-        assert_eq!(key.to_string(), "1 owned hello");
+        let key = Key::from_unencoded_type("owned hello".to_string());
+        assert_eq!(key.to_string(), "1 0 owned hello");
 
         let val: Value = "world".into();
         assert_eq!(val.to_string(), "world");

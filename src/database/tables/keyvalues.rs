@@ -1,5 +1,6 @@
 use std::cell;
 use std::cmp::min;
+use std::path::Prefix;
 use std::rc::Rc;
 use std::{cmp::Ordering, fmt::Write};
 
@@ -23,7 +24,7 @@ impl Key {
     pub fn iter(&self) -> KeyIterRef<'_> {
         KeyIterRef {
             data: self,
-            count: TID_LEN,
+            count: TID_LEN + PREFIX_LEN,
         }
     }
 
@@ -52,16 +53,13 @@ impl Key {
     /// utility function for unit tests
     ///
     /// adds TID = 1, PREFIX = 0
-    pub fn from_unencoded_str<S: ToString>(str: S) -> Self {
+    pub fn from_unencoded_type<S: Codec>(data: S) -> Self {
         let mut buf: Vec<u8> = vec![0; TID_LEN + PREFIX_LEN];
 
-        // artificial tid for testing purposes
-        buf.write_u32(1);
+        // TID 1 and PREFIX 0
+        buf.write_u32(1).write_u16(0);
 
-        // artificial prefix for testing purposes
-        buf.write_u16(0);
-
-        buf.extend_from_slice(&str.to_string().encode());
+        buf.extend_from_slice(&data.encode());
         Key(Rc::from(buf))
     }
 
@@ -78,27 +76,24 @@ impl Key {
 // the following conversions should only be used for testing!
 impl From<&str> for Key {
     fn from(value: &str) -> Self {
-        Key::from_unencoded_str(value)
+        Key::from_unencoded_type(value.to_string())
     }
 }
 impl From<String> for Key {
     fn from(value: String) -> Self {
-        Key::from_unencoded_str(value)
+        Key::from_unencoded_type(value)
     }
 }
 impl From<i64> for Key {
     fn from(value: i64) -> Self {
-        let mut buf: Vec<u8> = vec![0; TID_LEN];
-        // artificial tid for testing purposes
-        buf.write_u32(1);
-        buf.extend_from_slice(&value.encode());
-        Key(Rc::from(buf))
+        Key::from_unencoded_type(value)
     }
 }
 
 impl std::fmt::Display for Key {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.get_tid())?;
+        write!(f, " {}", self.get_prefix())?;
         for cell in self.iter() {
             match cell {
                 DataCellRef::Str(s) => write!(f, " {}", s)?,
@@ -186,7 +181,7 @@ impl IntoIterator for Key {
     fn into_iter(self) -> Self::IntoIter {
         KeyIter {
             data: self,
-            count: TID_LEN, // skipping the table id
+            count: TID_LEN + PREFIX_LEN, // skipping the table id and prefix
         }
     }
 }
@@ -478,29 +473,35 @@ mod test {
             .add_col("gretee", TypeCol::BYTES)
             .build(&mut db)?;
 
-        let (key1, value1) = Record::new()
+        let kv1 = Record::new()
             .add("hello")
             .add(10)
             .add("world")
-            .encode(&table)?;
+            .encode(&table)?
+            .next()
+            .unwrap();
 
-        let (key2, value2) = Record::new()
+        let kv2 = Record::new()
             .add("hello")
             .add(10)
             .add("world")
-            .encode(&table)?;
+            .encode(&table)?
+            .next()
+            .unwrap();
 
-        assert_eq!(key1, key2);
-        assert_eq!(key1.to_string(), "2 hello 10");
+        assert_eq!(kv1, kv2);
+        assert_eq!(kv1.0.to_string(), "2 0 hello 10");
 
-        let (key3, value3) = Record::new()
+        let kv3 = Record::new()
             .add("smol")
             .add(5)
             .add("world")
-            .encode(&table)?;
+            .encode(&table)?
+            .next()
+            .unwrap();
 
-        assert!(key2 < key3);
-        assert_eq!(key3.to_string(), "2 smol 5");
+        assert!(kv2.0 < kv3.0);
+        assert_eq!(kv3.0.to_string(), "2 0 smol 5");
         Ok(())
     }
 

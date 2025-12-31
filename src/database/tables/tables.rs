@@ -368,10 +368,13 @@ impl<KV: KVEngine> Database<KV> {
 
                 if let DataCell::Int(i) = res[0] {
                     // incrementing the ID
+                    // WIP FOR TESTING
                     let (k, v) = Record::new()
                         .add(META_TABLE_ID_ROW)
                         .add(i + 1)
-                        .encode(&meta)?;
+                        .encode(&meta)?
+                        .next()
+                        .unwrap();
 
                     self.kve.set(k, v, SetFlag::UPSERT).map_err(|e| {
                         error!(?e);
@@ -389,7 +392,13 @@ impl<KV: KVEngine> Database<KV> {
             None => {
                 let meta = self.get_meta();
 
-                let (k, v) = Record::new().add(META_TABLE_ID_ROW).add(3).encode(&meta)?;
+                // WIP FOR TESTING
+                let (k, v) = Record::new()
+                    .add(META_TABLE_ID_ROW)
+                    .add(3)
+                    .encode(&meta)?
+                    .next()
+                    .unwrap();
 
                 self.kve.set(k, v, SetFlag::UPSERT).map_err(|e| {
                     error!(?e);
@@ -420,15 +429,21 @@ impl<KV: KVEngine> Database<KV> {
             error!(name = table.name, "table with provided name exists already");
             return Err(TableError::InsertTableError(
                 "table with provided name exists already".into(),
-            ))?;
+            )
+            .into());
         }
 
-        let (key, value) = Record::new()
+        // WIP FOR TESTS
+        let (k, v) = Record::new()
             .add(table.name.clone())
             .add(table.encode()?)
-            .encode(&self.tdef)?;
+            .encode(&self.tdef)?
+            .next()
+            .ok_or(TableError::InsertTableError(
+                "record iterator failure".to_string(),
+            ))?;
 
-        self.kve.set(key, value, SetFlag::UPSERT).map_err(|e| {
+        self.kve.set(k, v, SetFlag::UPSERT).map_err(|e| {
             error!("error when inserting");
             TableError::InsertTableError("error when inserting table".to_string())
         })?;
@@ -487,7 +502,9 @@ impl<KV: KVEngine> Database<KV> {
     fn insert_rec(&mut self, rec: Record, schema: &Table, flag: SetFlag) -> Result<()> {
         info!(?rec, "inserting record");
 
-        let (key, value) = rec.encode(schema)?;
+        // WIP FOR TESTING
+        let (key, value) = rec.encode(schema)?.next().unwrap();
+
         self.kve.set(key, value, flag)?;
         Ok(())
     }

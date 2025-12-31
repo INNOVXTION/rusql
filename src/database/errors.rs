@@ -5,9 +5,8 @@ use std::{
     str::Utf8Error,
 };
 
-use crate::database::tables::{DataCell, TypeCol};
+use crate::database::tables::TypeCol;
 
-use rustix::io::Errno;
 use thiserror::Error;
 
 pub type Result<T> = std::result::Result<T, Error>;
