@@ -473,7 +473,7 @@ impl std::fmt::Display for Value {
 mod test {
     use crate::database::{
         pager::mempage_tree,
-        tables::{Record, tables::Database},
+        tables::{Record, db::Database},
     };
 
     use super::super::tables::TableBuilder;

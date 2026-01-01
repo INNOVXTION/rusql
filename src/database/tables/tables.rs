@@ -7,6 +7,7 @@ use crate::database::{
     pager::diskpager::KVEngine,
     tables::{
         Key, Value,
+        db::Database,
         records::{Query, Record},
     },
     types::{BTREE_MAX_VAL_SIZE, DataCell},
@@ -36,29 +37,29 @@ use tracing::{debug, error, info, instrument};
  * User Input -> DataCell -> Record -> Key, Value -> Tree
  */
 
-const DEF_TABLE_NAME: &'static str = "tdef";
-const DEF_TABLE_COL1: &'static str = "name";
-const DEF_TABLE_COL2: &'static str = "def";
+pub const DEF_TABLE_NAME: &'static str = "tdef";
+pub const DEF_TABLE_COL1: &'static str = "name";
+pub const DEF_TABLE_COL2: &'static str = "def";
 
-const DEF_TABLE_ID: u32 = 1;
-const DEF_TABLE_PKEYS: u16 = 1;
+pub const DEF_TABLE_ID: u32 = 1;
+pub const DEF_TABLE_PKEYS: u16 = 1;
 
-const META_TABLE_NAME: &'static str = "tmeta";
-const META_TABLE_COL1: &'static str = "name";
-const META_TABLE_COL2: &'static str = "tid";
-const META_TABLE_ID_ROW: &'static str = "tid";
+pub const META_TABLE_NAME: &'static str = "tmeta";
+pub const META_TABLE_COL1: &'static str = "name";
+pub const META_TABLE_COL2: &'static str = "tid";
+pub const META_TABLE_ID_ROW: &'static str = "tid";
 
-const META_TABLE_ID: u32 = 2;
-const META_TABLE_PKEYS: u16 = 1;
+pub const META_TABLE_ID: u32 = 2;
+pub const META_TABLE_PKEYS: u16 = 1;
 
-const PKEY_PREFIX: u16 = 0;
+pub const PKEY_PREFIX: u16 = 0;
 
 /// wrapper for sentinal value
 #[derive(Serialize, Deserialize)]
-struct MetaTable(Table);
+pub(super) struct MetaTable(Table);
 
 impl MetaTable {
-    fn new() -> Self {
+    pub fn new() -> Self {
         MetaTable(Table {
             name: META_TABLE_NAME.to_string(),
             id: META_TABLE_ID,
@@ -83,17 +84,17 @@ impl MetaTable {
         })
     }
 
-    fn as_table(self) -> Table {
+    pub fn as_table(self) -> Table {
         self.0
     }
 }
 
 /// wrapper for sentinal value
 #[derive(Serialize, Deserialize)]
-struct TDefTable(Table);
+pub(super) struct TDefTable(Table);
 
 impl TDefTable {
-    fn new() -> Self {
+    pub fn new() -> Self {
         TDefTable(Table {
             name: DEF_TABLE_NAME.to_string(),
             id: DEF_TABLE_ID,
@@ -149,7 +150,9 @@ impl TableBuilder {
         self
     }
 
-    /// DEPRECTATED, for testing purposes only
+    /// deprecated, for testing purposes only
+    ///
+    /// build() requests a free TID when omitted
     pub fn id(mut self, id: u32) -> Self {
         self.id = Some(id);
         self
@@ -247,11 +250,11 @@ impl TableBuilder {
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub(crate) struct Table {
-    pub(crate) name: String,
-    pub(crate) id: u32,
-    pub(crate) cols: Vec<Column>,
-    pub(crate) pkeys: u16,
-    pub(crate) indices: Vec<Index>,
+    pub name: String,
+    pub id: u32,
+    pub cols: Vec<Column>,
+    pub pkeys: u16,
+    pub indices: Vec<Index>,
 
     // ensures tables are built through constructor
     _priv: PhantomData<bool>,
@@ -314,22 +317,32 @@ impl Table {
         None
     }
 
+    /// adds a secondary index
     pub fn add_index(&mut self, col: &str) -> Result<()> {
+        // check if column exists
         let col_idx = match self.col_exists(col) {
             Some(i) => i,
             None => {
                 return Err(TableError::IndexCreateError("column doesnt exist".to_string()).into());
             }
         };
+
+        // check for duplicate indices
+        if self.idx_exists(col).is_some() {
+            return Err(TableError::IndexCreateError("index already exists".to_string()).into());
+        }
+
         self.indices.push(Index {
             name: col.to_string(),
             columns: vec![col_idx],
             prefix: self.indices.len() as u16,
             kind: IdxKind::Secondary,
         });
+
         Ok(())
     }
 
+    /// removes a secondary index
     pub fn remove_index(&mut self, name: &str) -> Result<()> {
         let idx = match self.idx_exists(name) {
             Some(i) => i,
@@ -337,6 +350,11 @@ impl Table {
                 return Err(TableError::IndexDeleteError("index doesnt exist!".to_string()).into());
             }
         };
+        if self.indices[idx].kind == IdxKind::Primary {
+            return Err(
+                TableError::IndexDeleteError("cant delete primary index".to_string()).into(),
+            );
+        }
         self.indices.remove(idx);
         Ok(())
     }
@@ -344,6 +362,7 @@ impl Table {
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub(crate) struct Index {
+    /// unique identifier
     pub name: String,
     /// indices into the table.cols
     pub columns: Vec<u16>,
@@ -380,218 +399,6 @@ impl TypeCol {
     }
 }
 
-pub(crate) struct Database<KV: KVEngine> {
-    tdef: TDefTable,
-    buffer: HashMap<String, Table>, // table name as key
-    kve: KV,
-}
-
-pub(crate) struct SetRequest {
-    payload: Vec<(Key, Value)>,
-    flag: SetFlag,
-}
-
-pub(crate) enum SearchRequest {
-    Lookup(Key),
-    Range(ScanMode),
-    FullTable(Key),
-}
-
-pub(crate) enum DeleteRequest {
-    Table,
-    Column,
-    Record,
-}
-
-impl<KV: KVEngine> Database<KV> {
-    pub fn new(pager: KV) -> Self {
-        Database {
-            tdef: TDefTable::new(),
-            buffer: HashMap::new(),
-            kve: pager,
-        }
-    }
-
-    #[instrument(name = "new table id", skip_all)]
-    pub fn new_tid(&mut self) -> Result<u32> {
-        let key = Query::new()
-            .with_key(META_TABLE_COL1, META_TABLE_ID_ROW) // we query name column, where pkey = tid
-            .encode(&self.get_meta())?;
-
-        match self.kve.get(key).ok() {
-            Some(value) => {
-                let meta = self.get_meta();
-                let res = value.decode();
-
-                if let DataCell::Int(i) = res[0] {
-                    // incrementing the ID
-                    // WIP FOR TESTING
-                    let (k, v) = Record::new()
-                        .add(META_TABLE_ID_ROW)
-                        .add(i + 1)
-                        .encode(&meta)?
-                        .next()
-                        .unwrap();
-
-                    self.kve.set(k, v, SetFlag::UPSERT).map_err(|e| {
-                        error!(?e);
-                        TableError::TableIdError("error when retrieving id".to_string())
-                    })?;
-                    Ok(i as u32 + 1)
-                } else {
-                    // types dont match
-                    return Err(TableError::TableIdError(
-                        "id doesnt match expected int".to_string(),
-                    ))?;
-                }
-            }
-            // no id entry yet
-            None => {
-                let meta = self.get_meta();
-
-                // WIP FOR TESTING
-                let (k, v) = Record::new()
-                    .add(META_TABLE_ID_ROW)
-                    .add(3)
-                    .encode(&meta)?
-                    .next()
-                    .unwrap();
-
-                self.kve.set(k, v, SetFlag::UPSERT).map_err(|e| {
-                    error!(?e);
-                    TableError::TableIdError("error when retrieving id".to_string())
-                })?;
-                Ok(3) // tid 1 and 2 are taken
-            }
-        }
-    }
-
-    fn get_meta(&mut self) -> &Table {
-        // check buffer
-        if self.buffer.contains_key(META_TABLE_NAME) {
-            return self.buffer.get(META_TABLE_NAME).unwrap();
-        }
-
-        let meta = MetaTable::new().as_table();
-        self.buffer.insert(META_TABLE_NAME.to_string(), meta);
-        self.buffer.get(META_TABLE_NAME).unwrap()
-    }
-
-    /// overwrites table in buffer
-    #[instrument(name = "insert table", skip_all)]
-    pub fn insert_table(&mut self, table: &Table) -> Result<()> {
-        info!(?table, "inserting table");
-
-        if self.get_table(&table.name).is_some() {
-            error!(name = table.name, "table with provided name exists already");
-            return Err(TableError::InsertTableError(
-                "table with provided name exists already".into(),
-            )
-            .into());
-        }
-
-        // WIP FOR TESTS
-        let (k, v) = Record::new()
-            .add(table.name.clone())
-            .add(table.encode()?)
-            .encode(&self.tdef)?
-            .next()
-            .ok_or(TableError::InsertTableError(
-                "record iterator failure".to_string(),
-            ))?;
-
-        self.kve.set(k, v, SetFlag::UPSERT).map_err(|e| {
-            error!("error when inserting");
-            TableError::InsertTableError("error when inserting table".to_string())
-        })?;
-
-        // updating buffer
-        self.buffer.insert(table.name.clone(), table.clone());
-        Ok(())
-    }
-
-    /// gets the schema for a table name, schema is stored inside buffer
-    #[instrument(name = "get table", skip_all)]
-    pub fn get_table(&mut self, name: &str) -> Option<&Table> {
-        info!(name, "getting table");
-        // check buffer
-        if self.buffer.contains_key(name) {
-            debug!("returning table from buffer");
-            return self.buffer.get(name);
-        }
-        let key = Query::new()
-            .with_key("name", name)
-            .encode(&self.tdef)
-            .ok()?;
-
-        if let Ok(t) = self.kve.get(key) {
-            debug!("returning table from tree");
-            self.buffer.insert(name.to_string(), Table::decode(t).ok()?);
-            Some(self.buffer.get(&name.to_string())?)
-        } else {
-            debug!("table not found");
-            None
-        }
-    }
-
-    /// TODO: decrement/free up table id
-    #[instrument(name = "drop table", skip_all)]
-    pub fn drop_table(&mut self, name: &str) -> Result<()> {
-        info!(name, "dropping table");
-        if self.get_table(name).is_none() {
-            error!("table doesnt exist");
-            return Err(TableError::DeleteTableError(
-                "table doesnt exist".to_string(),
-            ))?;
-        }
-        let qu = Query::new()
-            .with_key(DEF_TABLE_COL1, name)
-            .encode(&self.tdef)?;
-
-        self.buffer.remove(name);
-        self.kve.delete(qu).map_err(|e| {
-            error!(%e, "error when dropping table");
-            TableError::DeleteTableError("dropping table error when deleting".to_string()).into()
-        })
-    }
-
-    #[instrument(name = "insert rec", skip_all)]
-    fn insert_rec(&mut self, rec: Record, schema: &Table, flag: SetFlag) -> Result<()> {
-        info!(?rec, "inserting record");
-
-        // WIP FOR TESTING
-        let (key, value) = rec.encode(schema)?.next().unwrap();
-
-        self.kve.set(key, value, flag)?;
-        Ok(())
-    }
-
-    fn get_rec(&self, query: Query, schema: &Table) -> Option<Value> {
-        info!(?query, "querying");
-
-        self.kve.get(query.encode(schema).ok()?).ok()
-    }
-
-    fn scan(&self, mode: ScanMode) -> Result<Vec<Record>> {
-        self.kve.scan(mode)
-    }
-
-    fn full_table_scan(&self, schema: &Table) -> Result<Vec<Record>> {
-        let mut buf = [0u8; TID_LEN + PREFIX_LEN];
-
-        // writing a seek key with TID + PREFIX = 0
-        let _ = &mut buf[..].write_u32(schema.id).write_u16(0);
-        let seek_key = Key::from_encoded_slice(&buf);
-        let seek_mode = ScanMode::Open(seek_key, Compare::GE);
-
-        self.scan(seek_mode)
-    }
-
-    fn creat_index() {}
-
-    fn delete_index() {}
-}
-
 #[cfg(test)]
 mod test {
     use crate::database::{
@@ -600,6 +407,7 @@ mod test {
         types::DataCell,
     };
 
+    use super::super::db::*;
     use super::*;
     use crate::database::helper::cleanup_file;
     use test_log::test;
@@ -994,6 +802,7 @@ mod test {
 mod scan {
     use crate::database::{btree::Compare, pager::diskpager::Envoy};
 
+    use super::super::db::*;
     use super::*;
     use crate::database::helper::cleanup_file;
     use test_log::test;

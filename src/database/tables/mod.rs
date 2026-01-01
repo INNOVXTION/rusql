@@ -1,3 +1,4 @@
+mod db;
 mod keyvalues;
 mod records;
 mod tables;

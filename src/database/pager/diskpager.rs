@@ -1,6 +1,6 @@
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
 use std::collections::hash_map::Keys;
+use std::collections::{HashMap, HashSet};
 use std::ops::{Deref, DerefMut};
 use std::os::fd::OwnedFd;
 use std::ptr;
@@ -495,35 +495,60 @@ impl EnvoyV1 {
     }
 }
 
-/// returns the number of pages that can be safely truncated, by evaluating a contiguous sequence at the end of the freelist. This function has O(n²) performance.
-fn count_trunc_pages(npages: u64, list: &[Pointer]) -> Option<u64> {
-    if list.is_empty() || npages <= 2 {
+/// returns the number of pages that can be safely truncated, by evaluating a contiguous sequence at the end of the freelist. This function has O(n logn ) worst case performance.
+///
+/// Credit to ranveer for this
+pub fn count_trunc_pages(npages: u64, freelist: &[Pointer]) -> Option<u64> {
+    if freelist.is_empty() || npages <= 2 {
         return None;
     }
 
-    let pages: Vec<u64> = list.iter().map(|p| p.get()).collect();
+    let max_possible = (npages - 2) as usize;
 
-    // Start checking from the maximum possible and work down
-    let max_possible = pages.len().min((npages - 2) as usize);
-    assert!(max_possible > 0);
+    let mut seen = HashSet::new();
+    let mut min_page = u64::MAX;
+    let mut max_page = 0u64;
 
-    for count in (1..=max_possible).rev() {
-        let mut prefix: Vec<u64> = pages[0..count].to_vec();
-        prefix.sort_unstable();
+    let mut best: Option<u64> = None;
+    let mut saw_last_page_anywhere = false;
 
-        // Check if these pages are exactly [npages-count, ..., npages-1]
-        let tail_start = npages - count as u64;
-        let is_valid_tail = prefix
-            .iter()
-            .enumerate()
-            .all(|(i, &page)| page == tail_start + i as u64);
+    let first_page = freelist[0].get();
 
-        if is_valid_tail {
-            return Some(count as u64);
+    for (i, ptr) in freelist.iter().enumerate() {
+        if i >= max_possible {
+            break;
+        }
+
+        let page = ptr.get();
+
+        if page == npages - 1 {
+            saw_last_page_anywhere = true;
+        }
+
+        if page < npages {
+            if seen.insert(page) {
+                min_page = min_page.min(page);
+                max_page = max_page.max(page);
+            }
+        }
+
+        let k = (i + 1) as u64;
+        if k > 1
+            && seen.len() as u64 == k
+            && max_page == npages - 1
+            && max_page - min_page + 1 == k
+            && min_page == npages - k
+        {
+            best = Some(k);
         }
     }
-
-    None
+    if best.is_none()
+        && saw_last_page_anywhere
+        && (first_page == npages - 1 || first_page >= npages)
+    {
+        return Some(1);
+    }
+    best
 }
 
 //--------Meta Page Layout-------
@@ -841,6 +866,62 @@ mod test {
 mod truncate {
     use super::*;
 
+    // // O(n) algo
+    // fn count_trunc_pages(npages: u64, list: &[Pointer]) -> Option<u64> {
+    //     // Validation 1: Empty list
+    //     if list.is_empty() {
+    //         return None;
+    //     }
+
+    //     // Validation 2: npages too small
+    //     if npages <= 2 {
+    //         return None;
+    //     }
+
+    //     // Build map: page -> position in freelist (1-indexed)
+    //     let mut mpp: HashMap<u64, u64> = HashMap::new();
+
+    //     for (idx, &page) in list.iter().enumerate() {
+    //         let page_num = page.0;
+
+    //         // Validation 3: Page must be within file bounds
+    //         if page_num >= npages {
+    //             return None;
+    //         }
+
+    //         // Use first occurrence (ignore duplicates)
+    //         mpp.entry(page_num).or_insert((idx as u64) + 1);
+    //     }
+
+    //     // Check from npages-1 downward for consecutive pages at end
+    //     let mut st: BTreeSet<u64> = BTreeSet::new();
+    //     let mut current_page = npages - 1;
+    //     let mut max_cnt = 0;
+
+    //     loop {
+    //         if mpp.contains_key(&current_page) {
+    //             let pos = *mpp.get(&current_page).unwrap();
+    //             st.insert(pos);
+
+    //             // Check if positions form sequencehey< : 1,2,3...k
+    //             if let Some(&max_pos) = st.iter().next_back() {
+    //                 if max_pos == st.len() as u64 {
+    //                     max_cnt = st.len() as u64;
+    //                 }
+    //             }
+    //         } else {
+    //             // Page not in freelist, sequence broken
+    //             break;
+    //         }
+
+    //         if current_page == 0 {
+    //             break;
+    //         }
+    //         current_page -= 1;
+    //     }
+    //     if max_cnt == 0 { None } else { Some(max_cnt) }
+    // }
+
     fn ptr(page: u64) -> Pointer {
         Pointer::from(page)
     }
@@ -991,5 +1072,103 @@ mod truncate {
         let result2 = count_trunc_pages(50, &list2); // npages-2 = 48
         // Can only check up to 48 pages
         assert_eq!(result2, None, "Not a valid tail for npages=50");
+    }
+    #[test]
+    fn test_prefix_invalidated_by_duplicate_early() {
+        let list = vec![ptr(999), ptr(999), ptr(998)];
+        let result = count_trunc_pages(1000, &list);
+        assert_eq!(result, Some(1));
+    }
+
+    #[test]
+    fn test_prefix_valid_then_invalid_page_stops_growth() {
+        let list = vec![ptr(999), ptr(998), ptr(400)];
+        let result = count_trunc_pages(1000, &list);
+        assert_eq!(result, Some(2));
+    }
+
+    #[test]
+    fn test_prefix_valid_then_gap_breaks() {
+        let list = vec![ptr(999), ptr(997), ptr(996)];
+        let result = count_trunc_pages(1000, &list);
+        assert_eq!(result, Some(1));
+    }
+
+    #[test]
+    fn test_prefix_unordered_but_consecutive() {
+        let list = vec![ptr(998), ptr(999), ptr(997)];
+        let result = count_trunc_pages(1000, &list);
+        assert_eq!(result, Some(3));
+    }
+
+    #[test]
+    fn test_prefix_exact_tail_then_duplicate() {
+        let list = vec![ptr(999), ptr(998), ptr(997), ptr(998)];
+        let result = count_trunc_pages(1000, &list);
+        assert_eq!(result, Some(3));
+    }
+
+    #[test]
+    fn test_prefix_exact_tail_then_out_of_range() {
+        let list = vec![ptr(999), ptr(998), ptr(997), ptr(2000)];
+        let result = count_trunc_pages(1000, &list);
+        assert_eq!(result, Some(3));
+    }
+
+    #[test]
+    fn test_prefix_contains_zero_page_breaks_tail() {
+        let list = vec![ptr(999), ptr(0), ptr(998)];
+        let result = count_trunc_pages(1000, &list);
+        assert_eq!(result, Some(1));
+    }
+
+    #[test]
+    fn test_prefix_long_valid_then_gap() {
+        let list = vec![ptr(999), ptr(998), ptr(997), ptr(995)];
+        let result = count_trunc_pages(1000, &list);
+        assert_eq!(result, Some(3));
+    }
+
+    #[test]
+    fn test_prefix_valid_exact_np_minus_two_at_tail() {
+        let list: Vec<Pointer> = (6..104).map(ptr).collect();
+        let result = count_trunc_pages(104, &list);
+        assert_eq!(result, Some(98));
+    }
+
+    #[test]
+    fn test_prefix_with_reversed_large_tail() {
+        let mut list: Vec<Pointer> = (900..1000).map(ptr).collect();
+        list.reverse();
+        let result = count_trunc_pages(1000, &list);
+        assert_eq!(result, Some(100));
+    }
+
+    #[test]
+    fn test_prefix_partial_tail_only() {
+        let list = vec![ptr(999), ptr(998), ptr(500), ptr(997)];
+        let result = count_trunc_pages(1000, &list);
+        assert_eq!(result, Some(2));
+    }
+
+    #[test]
+    fn test_prefix_duplicate_late_does_not_extend() {
+        let list = vec![ptr(999), ptr(998), ptr(997), ptr(997)];
+        let result = count_trunc_pages(1000, &list);
+        assert_eq!(result, Some(3));
+    }
+
+    #[test]
+    fn test_prefix_starts_at_tail_minus_one_fails() {
+        let list = vec![ptr(998), ptr(997), ptr(996)];
+        let result = count_trunc_pages(1000, &list);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_prefix_valid_with_minimal_tail() {
+        let list = vec![ptr(999), ptr(998)];
+        let result = count_trunc_pages(1000, &list);
+        assert_eq!(result, Some(2));
     }
 }

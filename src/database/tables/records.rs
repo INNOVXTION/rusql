@@ -277,7 +277,7 @@ where
 
 #[cfg(test)]
 mod test {
-    use crate::database::{pager::mempage_tree, tables::tables::Database};
+    use crate::database::{pager::mempage_tree, tables::db::Database};
 
     use super::super::tables::TableBuilder;
     use super::*;
