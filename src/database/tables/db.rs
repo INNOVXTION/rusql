@@ -5,15 +5,13 @@ use std::collections::HashMap;
 use tracing::instrument;
 use tracing::{debug, error, info};
 
-use crate::database::btree::Compare;
-use crate::database::codec::*;
-use crate::database::errors::TableError;
-use crate::database::errors::{Error, Result};
-
-use crate::database::btree::ScanMode;
-use crate::database::btree::SetFlag;
-use crate::database::pager::diskpager::KVEngine;
-use crate::database::types::DataCell;
+use crate::database::{
+    btree::{Compare, ScanMode, SetFlag},
+    codec::*,
+    errors::{Error, Result, TableError},
+    pager::diskpager::KVEngine,
+    types::DataCell,
+};
 
 pub(super) struct Database<KV: KVEngine> {
     pub tdef: TDefTable,
@@ -21,21 +19,29 @@ pub(super) struct Database<KV: KVEngine> {
     pub kve: KV,
 }
 
+pub(crate) enum SearchRequest {
+    Lookup(Key),
+    Range(ScanMode),
+    FullTable(ScanMode),
+}
+
 pub(crate) struct SetRequest {
     payload: Vec<(Key, Value)>,
     flag: SetFlag,
 }
 
-pub(crate) enum SearchRequest {
-    Lookup(Key),
-    Range(ScanMode),
-    FullTable(Key),
+pub(crate) enum DeleteRequest {
+    Table(ScanMode),
+    Idx(ScanMode),
+    Row(Key),
 }
 
-pub(crate) enum DeleteRequest {
-    Table,
-    Column,
-    Record,
+impl DeleteRequest {
+    fn new_table(schema: &Table) -> Self {
+        // let key;
+        // let scan = ScanMode::new_open(key, Compare::GE);
+        todo!()
+    }
 }
 
 impl<KV: KVEngine> Database<KV> {
@@ -49,9 +55,9 @@ impl<KV: KVEngine> Database<KV> {
 
     #[instrument(name = "new table id", skip_all)]
     pub fn new_tid(&mut self) -> Result<u32> {
-        let key = Query::new()
-            .with_key(META_TABLE_COL1, META_TABLE_ID_ROW) // we query name column, where pkey = tid
-            .encode(&self.get_meta())?;
+        let key = Query::with_key(&self.get_meta())
+            .add(META_TABLE_COL1, META_TABLE_ID_ROW) // we query name column, where pkey = tid
+            .encode()?;
 
         match self.kve.get(key).ok() {
             Some(value) => {
@@ -154,9 +160,9 @@ impl<KV: KVEngine> Database<KV> {
             debug!("returning table from buffer");
             return self.buffer.get(name);
         }
-        let key = Query::new()
-            .with_key("name", name)
-            .encode(&self.tdef)
+        let key = Query::with_key(&self.tdef)
+            .add("name", name)
+            .encode()
             .ok()?;
 
         if let Ok(t) = self.kve.get(key) {
@@ -179,9 +185,9 @@ impl<KV: KVEngine> Database<KV> {
                 "table doesnt exist".to_string(),
             ))?;
         }
-        let qu = Query::new()
-            .with_key(DEF_TABLE_COL1, name)
-            .encode(&self.tdef)?;
+        let qu = Query::with_key(&self.tdef)
+            .add(DEF_TABLE_COL1, name)
+            .encode()?;
 
         self.buffer.remove(name);
         self.kve.delete(qu).map_err(|e| {
@@ -201,10 +207,10 @@ impl<KV: KVEngine> Database<KV> {
         Ok(())
     }
 
-    pub fn get_rec(&self, query: Query, schema: &Table) -> Option<Value> {
-        info!(?query, "querying");
+    pub fn get_rec(&self, key: Key) -> Option<Value> {
+        info!(%key, "querying");
 
-        self.kve.get(query.encode(schema).ok()?).ok()
+        self.kve.get(key).ok()
     }
 
     pub fn scan(&self, mode: ScanMode) -> Result<Vec<Record>> {
@@ -212,12 +218,12 @@ impl<KV: KVEngine> Database<KV> {
     }
 
     pub fn full_table_scan(&self, schema: &Table) -> Result<Vec<Record>> {
-        let mut buf = [0u8; TID_LEN + PREFIX_LEN];
+        let mut buf = [0u8; TID_LEN];
 
-        // writing a seek key with TID + PREFIX = 0
-        let _ = &mut buf[..].write_u32(schema.id).write_u16(0);
+        // writing a seek key with TID
+        let _ = &mut buf[..].write_u32(schema.id);
         let seek_key = Key::from_encoded_slice(&buf);
-        let seek_mode = ScanMode::Open(seek_key, Compare::GE);
+        let seek_mode = ScanMode::Open(seek_key, Compare::GT);
 
         self.scan(seek_mode)
     }

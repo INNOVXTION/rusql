@@ -144,12 +144,20 @@ impl Ord for Key {
             o => return o,
         }
 
+        if let Some(o) = len_cmp(key_a, key_b) {
+            return o;
+        }
+
         let prefix_a = key_a.read_u16();
         let prefix_b = key_b.read_u16();
 
         match prefix_a.cmp(&prefix_b) {
             Ordering::Equal => (),
             o => return o,
+        }
+
+        if let Some(o) = len_cmp(key_a, key_b) {
+            return o;
         }
 
         cell_cmp(key_a, key_b)
@@ -390,17 +398,8 @@ fn cell_cmp(a: &[u8], b: &[u8]) -> Ordering {
     debug!(?val_b);
 
     loop {
-        if val_a.is_empty() && val_b.is_empty() {
-            debug!("both keys empty");
-            return Ordering::Equal;
-        }
-        if val_a.is_empty() {
-            debug!("key a empty");
-            return Ordering::Less;
-        }
-        if val_b.is_empty() {
-            debug!("key b empty");
-            return Ordering::Greater;
+        if let Some(o) = len_cmp(val_a, val_b) {
+            return o;
         }
 
         // advancing the type bit
@@ -453,6 +452,23 @@ fn cell_cmp(a: &[u8], b: &[u8]) -> Ordering {
             None => unreachable!(),
         }
     }
+}
+
+/// returns ordering based on empty slice
+fn len_cmp(a: &[u8], b: &[u8]) -> Option<Ordering> {
+    if a.is_empty() && b.is_empty() {
+        debug!("both keys empty");
+        return Some(Ordering::Equal);
+    }
+    if a.is_empty() {
+        debug!("key a empty");
+        return Some(Ordering::Less);
+    }
+    if b.is_empty() {
+        debug!("key b empty");
+        return Some(Ordering::Greater);
+    }
+    None
 }
 
 impl std::fmt::Display for Value {

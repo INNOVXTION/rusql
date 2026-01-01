@@ -445,7 +445,7 @@ mod test {
     }
 
     #[test]
-    fn records_insert_search() {
+    fn records_insert_search() -> Result<()> {
         let pager = mempage_tree();
         let mut db = Database::new(pager);
 
@@ -471,21 +471,22 @@ mod test {
             db.insert_rec(entry, &table, SetFlag::UPSERT).unwrap()
         }
 
-        let q1 = Query::new().with_key("name", "Alice");
-        let q2 = Query::new().with_key("name", "Bob");
-        let q3 = Query::new().with_key("name", "Charlie");
+        let q1 = Query::with_key(&table).add("name", "Alice").encode()?;
+        let q2 = Query::with_key(&table).add("name", "Bob").encode()?;
+        let q3 = Query::with_key(&table).add("name", "Charlie").encode()?;
 
-        let q1_res = db.get_rec(q1, &table).unwrap().decode();
+        let q1_res = db.get_rec(q1).unwrap().decode();
         assert_eq!(q1_res[0], DataCell::Int(20));
         assert_eq!(q1_res[1], DataCell::Int(1));
 
-        let q2_res = db.get_rec(q2, &table).unwrap().decode();
+        let q2_res = db.get_rec(q2).unwrap().decode();
         assert_eq!(q2_res[0], DataCell::Int(15));
         assert_eq!(q2_res[1], DataCell::Int(2));
 
-        let q3_res = db.get_rec(q3, &table).unwrap().decode();
+        let q3_res = db.get_rec(q3).unwrap().decode();
         assert_eq!(q3_res[0], DataCell::Int(25));
         assert_eq!(q3_res[1], DataCell::Int(3));
+        Ok(())
     }
 
     #[test]
@@ -506,25 +507,22 @@ mod test {
         db.insert_table(&table).unwrap();
         let tables = db.get_table("mytable");
 
-        let good_query = Query::new().with_key("name", "Alice").with_key("age", 10);
+        let good_query = Query::with_key(&table).add("name", "Alice").add("age", 10);
 
-        assert!(good_query.encode(&table).is_ok());
+        assert!(good_query.encode().is_ok());
 
-        let good_query = Query::new().with_key("name", "Alice").with_key("age", 10);
-        let unordered = Query::new().with_key("age", 10).with_key("name", "Alice");
-        assert_eq!(
-            good_query.encode(&table).unwrap(),
-            unordered.encode(&table).unwrap()
-        );
+        let good_query = Query::with_key(&table).add("name", "Alice").add("age", 10);
+        let unordered = Query::with_key(&table).add("age", 10).add("name", "Alice");
+        assert_eq!(good_query.encode().unwrap(), unordered.encode().unwrap());
 
-        let bad_query = Query::new().with_key("name", "Alice");
-        assert!(bad_query.encode(&table).is_err());
+        let bad_query = Query::with_key(&table).add("name", "Alice");
+        assert!(bad_query.encode().is_err());
 
-        let bad_query = Query::new().with_key("dfasdf", "fasdf");
-        assert!(bad_query.encode(&table).is_err());
+        let bad_query = Query::with_key(&table).add("dfasdf", "fasdf");
+        assert!(bad_query.encode().is_err());
 
-        let bad_query = Query::new();
-        assert!(bad_query.encode(&table).is_err())
+        let bad_query = Query::with_key(&table);
+        assert!(bad_query.encode().is_err())
     }
 
     #[test]
@@ -658,10 +656,10 @@ mod test {
         db.insert_table(&table).unwrap();
 
         // missing primary key
-        assert!(Query::new().encode(&table).is_err());
+        assert!(Query::with_key(&table).encode().is_err());
 
         // wrong column name
-        assert!(Query::new().with_key("nope", "x").encode(&table).is_err());
+        assert!(Query::with_key(&table).add("nope", "x").encode().is_err());
     }
 
     #[test]
@@ -715,7 +713,7 @@ mod test {
         }
 
         let open = ScanMode::Open(
-            Query::new().with_key("name", "Alice").encode(&table1)?,
+            Query::with_key(&table1).add("name", "Alice").encode()?,
             Compare::GE,
         );
         let res = db.scan(open)?;
@@ -726,7 +724,7 @@ mod test {
         assert_eq!(res[2].to_string(), "Charlie 25");
 
         let open = ScanMode::Open(
-            Query::new().with_key("id", 20).encode(&table2)?,
+            Query::with_key(&table2).add("id", 20).encode()?,
             Compare::GE,
         );
         let res = db.scan(open)?;
@@ -835,8 +833,8 @@ mod scan {
         }
 
         // Scan from id 5 to 15
-        let lo_key = Query::new().with_key("id", 5i64).encode(&table)?;
-        let hi_key = Query::new().with_key("id", 15i64).encode(&table)?;
+        let lo_key = Query::with_key(&table).add("id", 5i64).encode()?;
+        let hi_key = Query::with_key(&table).add("id", 15i64).encode()?;
 
         let range = ScanMode::new_range((lo_key, Compare::GE), (hi_key, Compare::LE))?;
 
@@ -902,7 +900,7 @@ mod scan {
 
         // Scan table1
         let open = ScanMode::new_open(
-            Query::new().with_key("key", "key_a_1").encode(&table1)?,
+            Query::with_key(&table1).add("key", "key_a_1").encode()?,
             Compare::GE,
         )?;
         let res1 = db.scan(open)?;
@@ -913,7 +911,7 @@ mod scan {
 
         // Scan table2
         let open = ScanMode::new_open(
-            Query::new().with_key("key", "key_b_1").encode(&table2)?,
+            Query::with_key(&table2).add("key", "key_b_1").encode()?,
             Compare::GE,
         )?;
         let res2 = db.scan(open)?;
@@ -956,7 +954,7 @@ mod scan {
 
         // Scan backwards from score 50
         let open = ScanMode::new_open(
-            Query::new().with_key("score", 50i64).encode(&table)?,
+            Query::with_key(&table).add("score", 50i64).encode()?,
             Compare::LT,
         )?;
 
@@ -999,7 +997,7 @@ mod scan {
 
         // Scan for values greater than max
         let open = ScanMode::new_open(
-            Query::new().with_key("id", 100i64).encode(&table)?,
+            Query::with_key(&table).add("id", 100i64).encode()?,
             Compare::GT,
         )?;
 
@@ -1035,7 +1033,7 @@ mod scan {
         )?;
 
         let open = ScanMode::new_open(
-            Query::new().with_key("code", "CODE_001").encode(&table)?,
+            Query::with_key(&table).add("code", "CODE_001").encode()?,
             Compare::EQ,
         );
         // EQ is not allowed in open scans, should error
@@ -1073,7 +1071,7 @@ mod scan {
 
         // Scan from 35 backwards (LE)
         let open = ScanMode::new_open(
-            Query::new().with_key("value", 35i64).encode(&table)?,
+            Query::with_key(&table).add("value", 35i64).encode()?,
             Compare::LE,
         )?;
 
@@ -1116,7 +1114,7 @@ mod scan {
 
         // Scan from id 100 onwards
         let open = ScanMode::new_open(
-            Query::new().with_key("id", 100i64).encode(&table)?,
+            Query::with_key(&table).add("id", 100i64).encode()?,
             Compare::GT,
         )?;
 
@@ -1159,7 +1157,7 @@ mod scan {
 
         // Scan from "bob" onwards
         let open = ScanMode::new_open(
-            Query::new().with_key("name", "bob").encode(&table)?,
+            Query::with_key(&table).add("name", "bob").encode()?,
             Compare::GE,
         )?;
 
@@ -1201,13 +1199,13 @@ mod scan {
 
         // Delete some records
         for i in [3, 5, 7].iter() {
-            let key = Query::new().with_key("id", *i as i64).encode(&table)?;
+            let key = Query::with_key(&table).add("id", *i as i64).encode()?;
             db.kve.delete(key)?;
         }
 
         // Scan from beginning
         let open = ScanMode::new_open(
-            Query::new().with_key("id", 1i64).encode(&table)?,
+            Query::with_key(&table).add("id", 1i64).encode()?,
             Compare::GE,
         )?;
 

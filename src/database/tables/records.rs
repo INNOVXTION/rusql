@@ -121,39 +121,51 @@ impl std::fmt::Display for Record {
 }
 
 /// Query object used to construct a key
-///
-/// validates that record matches with primary key columns in schema
 #[derive(Debug)]
-pub(crate) struct Query {
-    data: HashMap<String, DataCell>,
-}
-
-enum QueryMode {
-    Key(HashMap<String, DataCell>),
-    Prefix(usize),
-}
+pub(crate) struct Query;
 
 impl Query {
-    pub fn new() -> Self {
-        Query {
+    /// constructs a key for direct row lookup
+    pub fn with_key(schema: &Table) -> QueryKey {
+        QueryKey {
             data: HashMap::new(),
+            schema,
         }
     }
 
-    /// add the column and primary key which you want to query
+    /// constructs a key with only the TID
+    pub fn with_table(schema: &Table) -> QueryTable {
+        QueryTable { tid: schema.id }
+    }
+
+    /// constructs a key with TID + Prefix
+    pub fn with_prefix(schema: &Table, prefix: u16) -> QueryPrefix {
+        QueryPrefix {
+            tid: schema.id,
+            prefix,
+        }
+    }
+}
+
+pub(super) struct QueryKey<'a> {
+    data: HashMap<String, DataCell>,
+    schema: &'a Table,
+}
+
+impl<'a> QueryKey<'a> {
+    /// add the column and primary key which you want to query, can only be used on QueryKey
     ///
     /// not sensitive to order, but all keys for an index have to be provided
-    pub fn with_key<T: InputData>(mut self, col: &str, value: T) -> Self {
+    pub fn add<T: InputData>(mut self, col: &str, value: T) -> Self {
         self.data.insert(col.to_string(), value.into_cell());
         self
     }
-
-    fn with_index() {}
-
     /// encodes a Query into a key
     ///
     /// will error if primary keys are missing or the data type doesnt match
-    pub fn encode(self, schema: &Table) -> Result<Key> {
+    pub fn encode(self) -> Result<Key> {
+        let schema = self.schema;
+
         // validating that cells match column data types
         for (title, data) in self.data.iter() {
             if !schema.valid_col(title, data) {
@@ -202,6 +214,31 @@ impl Query {
                 None => return Err(TableError::QueryError("invalid column name".to_string()))?,
             }
         }
+        Ok(Key::from_encoded_slice(&buf))
+    }
+}
+
+struct QueryTable {
+    tid: u32,
+}
+
+impl QueryTable {
+    fn encode(self) -> Result<Key> {
+        let mut buf = [0u8; TID_LEN];
+        buf.write_u32(self.tid);
+        Ok(Key::from_encoded_slice(&buf))
+    }
+}
+
+struct QueryPrefix {
+    tid: u32,
+    prefix: u16,
+}
+
+impl QueryPrefix {
+    fn encode(self) -> Result<Key> {
+        let mut buf = [0u8; TID_LEN + PREFIX_LEN];
+        buf.write_u32(self.tid).write_u16(self.prefix);
         Ok(Key::from_encoded_slice(&buf))
     }
 }
