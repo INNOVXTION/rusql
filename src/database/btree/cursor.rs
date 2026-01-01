@@ -47,6 +47,7 @@ impl ScanMode {
         Ok(ScanMode::Range { lo, hi })
     }
 
+    /// turns scanmode into iterator by performing tree read operations
     pub fn into_iter<'a, P: Pager>(self, tree: &'a BTree<P>) -> Option<ScanIter<'a, P>> {
         match self {
             ScanMode::Open(key, compare) => {
@@ -163,9 +164,9 @@ idx 1 in root, index 1 in Node 2 and index 2 in Leaf 2
 
 #[derive(Debug)]
 pub(crate) struct Cursor<'a, P: Pager> {
-    pub tree: &'a BTree<P>,
-    pub path: Vec<TreeNode>, // from root to leaf
-    pub pos: Vec<u16>,       // indices
+    tree: &'a BTree<P>,
+    path: Vec<TreeNode>, // from root to leaf
+    pos: Vec<u16>,       // indices
     empty: bool,
 }
 
