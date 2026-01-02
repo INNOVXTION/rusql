@@ -1,13 +1,11 @@
 use super::errors::PagerError;
 use super::types::*;
 use rustix::fs::{self, Mode, OFlags};
-use std::collections::HashMap;
 use std::os::fd::{AsFd, OwnedFd};
 use std::path::Path;
 use tracing::{debug, error};
 
 use crate::database::btree::TreeNode;
-use crate::database::pager::diskpager::Buffer;
 
 /// casts usize to u16
 pub(crate) fn as_usize(n: usize) -> u16 {
@@ -71,19 +69,6 @@ pub fn create_file_sync(file: &str) -> Result<OwnedFd, PagerError> {
         fs::fsync(&dirfd)?;
     }
     Ok(fd)
-}
-
-/// helper function for debugging purposes
-pub fn debug_print_buffer(buf: &Buffer) {
-    #[cfg(test)]
-    {
-        if let Ok("debug") = std::env::var("RUSQL_LOG_PAGER").as_deref() {
-            debug!("current buffer:");
-            debug!("---------");
-            buf.debug_print();
-            debug!("---------")
-        }
-    }
 }
 
 /// helper function for debugging purposes

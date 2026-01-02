@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod disk_tests;
 
+mod buffer;
 pub mod diskpager;
 pub mod freelist;
 pub mod mempager;

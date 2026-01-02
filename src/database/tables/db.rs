@@ -18,7 +18,7 @@ use crate::database::{
  * |[TABLE ID][PREFIX][PK1 ][PK2 ]..|[ v1 ][ v2 ]..|
 */
 
-pub(super) struct Database<KV: KVEngine> {
+pub(crate) struct Database<KV: KVEngine> {
     pub tdef: TDefTable,
     pub buffer: HashMap<String, Table>, // table name as key
     pub kve: KV,

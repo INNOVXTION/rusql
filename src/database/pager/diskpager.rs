@@ -3,7 +3,6 @@ use std::collections::hash_map::Keys;
 use std::collections::{HashMap, HashSet};
 use std::ops::{Deref, DerefMut};
 use std::os::fd::OwnedFd;
-use std::ptr;
 use std::rc::Rc;
 use std::str::FromStr;
 
@@ -14,7 +13,8 @@ use crate::create_file_sync;
 use crate::database::BTree;
 use crate::database::btree::{ScanIter, ScanMode};
 use crate::database::errors::FLError;
-use crate::database::helper::{as_page, debug_print_buffer};
+use crate::database::helper::as_page;
+use crate::database::pager::buffer::Buffer;
 use crate::database::pager::freelist::{FLConfig, FLNode, FreeList, GC};
 use crate::database::pager::mmap::*;
 use crate::database::tables::{Key, Record, Value};
@@ -90,107 +90,6 @@ pub(crate) struct EnvoyV1 {
     // counter after deletion for cleanup
 }
 
-#[derive(Debug)]
-pub(crate) struct Buffer {
-    hmap: HashMap<Pointer, BufferEntry>, // in memory buffer
-    nappend: u64,                        // number of pages to be appended
-    npages: u64,                         // database size in number of pages
-}
-
-#[derive(Debug)]
-struct BufferEntry {
-    node: Rc<RefCell<Node>>,
-    dirty: bool,   // does it need to be written?
-    retired: bool, // has the page been deallocated?
-}
-
-impl Buffer {
-    fn get(&self, ptr: Pointer) -> Option<Rc<RefCell<Node>>> {
-        Some(self.hmap.get(&ptr)?.node.clone())
-    }
-
-    fn get_clean(&self, ptr: Pointer) -> Option<Rc<RefCell<Node>>> {
-        let n = self.hmap.get(&ptr)?;
-        if !n.dirty { None } else { Some(n.node.clone()) }
-    }
-
-    /// retrieves all dirty pages in the buffer
-    fn to_dirty_iter(&self) -> impl Iterator<Item = (Pointer, std::cell::Ref<'_, Node>)> {
-        let iter = self
-            .hmap
-            .iter()
-            .filter_map(|e| {
-                if e.1.dirty {
-                    Some((*e.0, e.1.node.borrow()))
-                } else {
-                    None
-                }
-            })
-            .into_iter();
-        iter
-    }
-
-    /// removes retired pages, marks dirty pages as clean
-    fn clear(&mut self) {
-        let mut v = vec![];
-
-        for (p, entry) in self.hmap.iter_mut() {
-            if entry.dirty {
-                entry.dirty = false;
-            }
-            if entry.retired {
-                v.push(*p);
-            }
-        }
-
-        // removing retired pages from buffer
-        for p in v.iter() {
-            let k = self.hmap.remove(p);
-            debug_assert!(k.is_some());
-        }
-    }
-
-    fn insert_clean(&mut self, ptr: Pointer, node: Node) {
-        self.hmap.insert(
-            ptr,
-            BufferEntry {
-                node: Rc::new(RefCell::new(node)),
-                dirty: false,
-                retired: false,
-            },
-        );
-    }
-
-    fn insert_dirty(&mut self, ptr: Pointer, node: Node) -> Option<()> {
-        self.hmap
-            .insert(
-                ptr,
-                BufferEntry {
-                    node: Rc::new(RefCell::new(node)),
-                    dirty: true,
-                    retired: false,
-                },
-            )
-            .map(|_| ())
-    }
-
-    fn delete(&mut self, ptr: Pointer) {
-        self.hmap.remove(&ptr);
-    }
-
-    pub fn debug_print(&self) {
-        for e in self.hmap.iter() {
-            let n = e.1.node.borrow();
-            debug!(
-                "{:<10}, {:<10}, dirty = {:<10}",
-                e.0,
-                n.get_type(),
-                e.1.dirty
-            )
-        }
-    }
-}
-
 /// internal callback API
 pub(crate) trait Pager {
     // tree callbacks
@@ -235,7 +134,7 @@ impl Pager for EnvoyV1 {
             // loading page into buffer
             self.buffer.borrow_mut().insert_dirty(ptr, node);
 
-            debug_print_buffer(&self.buffer.borrow());
+            &self.buffer.borrow().debug_print();
             ptr
         } else {
             // increment append?
@@ -280,7 +179,7 @@ impl Pager for EnvoyV1 {
 
         buf_ref.nappend += 1;
         buf_ref.insert_dirty(ptr, node);
-        debug_print_buffer(&buf_ref);
+        buf_ref.debug_print();
 
         assert_ne!(ptr.0, 0);
         ptr
@@ -308,7 +207,7 @@ impl Pager for EnvoyV1 {
 
         // we just inserted the node as FLNode so this cast should be safe
         // let p = entry as *mut Node as *mut FLNode;
-        debug_print_buffer(&buf);
+        buf.debug_print();
         entry
     }
 }
@@ -1281,349 +1180,6 @@ mod truncate {
         let list = vec![ptr(999), ptr(998)];
         let result = count_trunc_pages(1000, &list);
         assert_eq!(result, Some(2));
-    }
-}
-
-#[cfg(test)]
-mod buffer_tests {
-    use super::*;
-    use crate::database::btree::TreeNode;
-    use crate::database::types::Node;
-
-    fn create_test_node() -> Node {
-        Node::Tree(TreeNode::new())
-    }
-
-    #[test]
-    fn buffer_insert_and_get_clean() {
-        let mut buf = Buffer {
-            hmap: HashMap::new(),
-            nappend: 0,
-            npages: 0,
-        };
-
-        let node = create_test_node();
-        let ptr = Pointer::from(1u64);
-
-        buf.insert_clean(ptr, node);
-
-        assert!(buf.get(ptr).is_some());
-        assert_eq!(buf.hmap.len(), 1);
-    }
-
-    #[test]
-    fn buffer_insert_and_get_dirty() {
-        let mut buf = Buffer {
-            hmap: HashMap::new(),
-            nappend: 0,
-            npages: 0,
-        };
-
-        let node = create_test_node();
-        let ptr = Pointer::from(1u64);
-
-        let result = buf.insert_dirty(ptr, node);
-
-        assert!(result.is_none()); // dirty pointer didnt exists
-        assert!(buf.get(ptr).is_some());
-        assert_eq!(buf.hmap.len(), 1);
-        assert!(buf.hmap[&ptr].dirty);
-    }
-
-    #[test]
-    fn buffer_get_returns_none_for_missing_key() {
-        let buf = Buffer {
-            hmap: HashMap::new(),
-            nappend: 0,
-            npages: 0,
-        };
-
-        let ptr = Pointer::from(999u64);
-        assert!(buf.get(ptr).is_none());
-    }
-
-    #[test]
-    fn buffer_get_clean_only_returns_dirty_pages() {
-        let mut buf = Buffer {
-            hmap: HashMap::new(),
-            nappend: 0,
-            npages: 0,
-        };
-
-        let clean_node = create_test_node();
-        let dirty_node = create_test_node();
-        let clean_ptr = Pointer::from(1u64);
-        let dirty_ptr = Pointer::from(2u64);
-
-        buf.insert_clean(clean_ptr, clean_node);
-        buf.insert_dirty(dirty_ptr, dirty_node);
-
-        // get_clean should only return dirty pages
-        assert!(buf.get_clean(clean_ptr).is_none());
-        assert!(buf.get_clean(dirty_ptr).is_some());
-    }
-
-    #[test]
-    fn buffer_multiple_inserts() {
-        let mut buf = Buffer {
-            hmap: HashMap::new(),
-            nappend: 0,
-            npages: 0,
-        };
-
-        for i in 1..=10 {
-            let node = create_test_node();
-            let ptr = Pointer::from(i as u64);
-            buf.insert_dirty(ptr, node);
-        }
-
-        assert_eq!(buf.hmap.len(), 10);
-
-        for i in 1..=10 {
-            let ptr = Pointer::from(i as u64);
-            assert!(buf.get(ptr).is_some());
-        }
-    }
-
-    #[test]
-    fn buffer_dirty_flag_set_correctly() {
-        let mut buf = Buffer {
-            hmap: HashMap::new(),
-            nappend: 0,
-            npages: 0,
-        };
-
-        let clean_node = create_test_node();
-        let dirty_node = create_test_node();
-        let clean_ptr = Pointer::from(1u64);
-        let dirty_ptr = Pointer::from(2u64);
-
-        buf.insert_clean(clean_ptr, clean_node);
-        buf.insert_dirty(dirty_ptr, dirty_node);
-
-        assert!(!buf.hmap[&clean_ptr].dirty);
-        assert!(buf.hmap[&dirty_ptr].dirty);
-    }
-
-    #[test]
-    fn buffer_retired_flag_set_correctly() {
-        let mut buf = Buffer {
-            hmap: HashMap::new(),
-            nappend: 0,
-            npages: 0,
-        };
-
-        let node = create_test_node();
-        let ptr = Pointer::from(1u64);
-
-        buf.insert_clean(ptr, node);
-        assert!(!buf.hmap[&ptr].retired);
-
-        // Manually retire for testing
-        buf.hmap.get_mut(&ptr).unwrap().retired = true;
-        assert!(buf.hmap[&ptr].retired);
-    }
-
-    #[test]
-    fn buffer_clear_removes_retired_pages() {
-        let mut buf = Buffer {
-            hmap: HashMap::new(),
-            nappend: 0,
-            npages: 0,
-        };
-
-        let node1 = create_test_node();
-        let node2 = create_test_node();
-        let node3 = create_test_node();
-
-        buf.insert_dirty(Pointer::from(1u64), node1);
-        buf.insert_dirty(Pointer::from(2u64), node2);
-        buf.insert_dirty(Pointer::from(3u64), node3);
-
-        // Mark page 2 as retired
-        buf.hmap.get_mut(&Pointer::from(2u64)).unwrap().retired = true;
-
-        buf.clear();
-
-        assert_eq!(buf.hmap.len(), 2);
-        assert!(buf.get(Pointer::from(2u64)).is_none());
-        assert!(buf.get(Pointer::from(1u64)).is_some());
-        assert!(buf.get(Pointer::from(3u64)).is_some());
-    }
-
-    #[test]
-    fn buffer_clear_marks_dirty_as_clean() {
-        let mut buf = Buffer {
-            hmap: HashMap::new(),
-            nappend: 0,
-            npages: 0,
-        };
-
-        let node = create_test_node();
-        let ptr = Pointer::from(1u64);
-
-        buf.insert_dirty(ptr, node);
-        assert!(buf.hmap[&ptr].dirty);
-
-        buf.clear();
-
-        assert!(!buf.hmap[&ptr].dirty);
-    }
-
-    #[test]
-    fn buffer_to_dirty_iter_only_returns_dirty() {
-        let mut buf = Buffer {
-            hmap: HashMap::new(),
-            nappend: 0,
-            npages: 0,
-        };
-
-        buf.insert_clean(Pointer::from(1u64), create_test_node());
-        buf.insert_dirty(Pointer::from(2u64), create_test_node());
-        buf.insert_dirty(Pointer::from(3u64), create_test_node());
-
-        let dirty_count = buf.to_dirty_iter().count();
-        assert_eq!(dirty_count, 2);
-    }
-
-    #[test]
-    fn buffer_delete_removes_page() {
-        let mut buf = Buffer {
-            hmap: HashMap::new(),
-            nappend: 0,
-            npages: 0,
-        };
-
-        let node = create_test_node();
-        let ptr = Pointer::from(1u64);
-
-        buf.insert_clean(ptr, node);
-        assert!(buf.get(ptr).is_some());
-
-        buf.delete(ptr);
-        assert!(buf.get(ptr).is_none());
-    }
-
-    #[test]
-    fn buffer_multiple_retirements_and_clear() {
-        let mut buf = Buffer {
-            hmap: HashMap::new(),
-            nappend: 0,
-            npages: 0,
-        };
-
-        for i in 1..=5 {
-            buf.insert_dirty(Pointer::from(i as u64), create_test_node());
-        }
-
-        // Retire pages 2, 3, and 5
-        for ptr in &[
-            Pointer::from(2u64),
-            Pointer::from(3u64),
-            Pointer::from(5u64),
-        ] {
-            buf.hmap.get_mut(ptr).unwrap().retired = true;
-        }
-
-        assert_eq!(buf.hmap.len(), 5);
-        buf.clear();
-        assert_eq!(buf.hmap.len(), 2);
-
-        // Only pages 1 and 4 should remain
-        assert!(buf.get(Pointer::from(1u64)).is_some());
-        assert!(buf.get(Pointer::from(4u64)).is_some());
-        assert!(buf.get(Pointer::from(2u64)).is_none());
-    }
-
-    #[test]
-    fn buffer_insert_dirty_overwrites_existing() {
-        let mut buf = Buffer {
-            hmap: HashMap::new(),
-            nappend: 0,
-            npages: 0,
-        };
-
-        let ptr = Pointer::from(1u64);
-        let node1 = create_test_node();
-        let node2 = create_test_node();
-
-        buf.insert_dirty(ptr, node1);
-        let result = buf.insert_dirty(ptr, node2);
-
-        // insert_dirty should return Some(_) on overwrite
-        assert!(result.is_some());
-        assert_eq!(buf.hmap.len(), 1);
-    }
-
-    #[test]
-    fn buffer_nappend_and_npages_tracking() {
-        let mut buf = Buffer {
-            hmap: HashMap::new(),
-            nappend: 5,
-            npages: 10,
-        };
-
-        assert_eq!(buf.nappend, 5);
-        assert_eq!(buf.npages, 10);
-
-        buf.nappend = 0;
-        buf.npages = 15;
-
-        assert_eq!(buf.nappend, 0);
-        assert_eq!(buf.npages, 15);
-    }
-
-    #[test]
-    fn buffer_large_page_count() {
-        let mut buf = Buffer {
-            hmap: HashMap::new(),
-            nappend: 0,
-            npages: 0,
-        };
-
-        // Insert many pages
-        for i in 0..1000 {
-            let ptr = Pointer::from(i as u64);
-            buf.insert_dirty(ptr, create_test_node());
-        }
-
-        assert_eq!(buf.hmap.len(), 1000);
-
-        // Verify random access
-        assert!(buf.get(Pointer::from(500u64)).is_some());
-        assert!(buf.get(Pointer::from(999u64)).is_some());
-        assert!(buf.get(Pointer::from(1000u64)).is_none());
-    }
-
-    #[test]
-    fn buffer_mixed_clean_and_dirty_operations() {
-        let mut buf = Buffer {
-            hmap: HashMap::new(),
-            nappend: 0,
-            npages: 0,
-        };
-
-        for i in 1..=10 {
-            let node = create_test_node();
-            let ptr = Pointer::from(i as u64);
-            if i % 2 == 0 {
-                buf.insert_dirty(ptr, node);
-            } else {
-                buf.insert_clean(ptr, node);
-            }
-        }
-
-        let dirty_count = buf.to_dirty_iter().count();
-        assert_eq!(dirty_count, 5); // Even numbers
-
-        buf.clear();
-
-        for i in 1..=10 {
-            let ptr = Pointer::from(i as u64);
-            if i % 2 == 0 {
-                assert!(!buf.hmap[&ptr].dirty);
-            }
-        }
     }
 }
 

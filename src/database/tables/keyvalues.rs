@@ -17,7 +17,7 @@ use crate::database::types::DataCell;
 // [ TID ][IDX PREFIX][      INT      ][            STR           ]|
 // [ 4B  ][    2B    ][1B TYPE][8B INT][1B TYPE][4B STRLEN][nB STR]|
 
-/// encoded data used for tree operations
+/// owned object of encoded data used for tree operations
 #[derive(Debug)]
 pub(crate) struct Key(Rc<[u8]>);
 
@@ -133,35 +133,7 @@ impl PartialOrd<Key> for Key {
 
 impl Ord for Key {
     fn cmp(&self, other: &Self) -> Ordering {
-        // cursor like slices
-        let mut key_a = self.as_slice();
-        let mut key_b = other.as_slice();
-
-        let tid_a = key_a.read_u32();
-        let tid_b = key_b.read_u32();
-
-        match tid_a.cmp(&tid_b) {
-            Ordering::Equal => (),
-            o => return o,
-        }
-
-        if let Some(o) = len_cmp(key_a, key_b) {
-            return o;
-        }
-
-        let prefix_a = key_a.read_u16();
-        let prefix_b = key_b.read_u16();
-
-        match prefix_a.cmp(&prefix_b) {
-            Ordering::Equal => (),
-            o => return o,
-        }
-
-        if let Some(o) = len_cmp(key_a, key_b) {
-            return o;
-        }
-
-        cell_cmp(key_a, key_b)
+        key_cmp(self.as_slice(), other.as_slice())
     }
 }
 
@@ -204,6 +176,35 @@ impl IntoIterator for Key {
             data: self,
             count: TID_LEN + PREFIX_LEN, // skipping the table id and prefix
         }
+    }
+}
+
+pub(crate) struct KeyRef<'a>(&'a [u8]);
+
+impl<'a> KeyRef<'a> {
+    pub fn from_slice(slice: &'a [u8]) -> Self {
+        KeyRef(slice)
+    }
+
+    pub fn to_owned(self) -> Key {
+        Key::from_encoded_slice(self.0)
+    }
+
+    pub fn as_slice(self) -> &'a [u8] {
+        self.0
+    }
+
+    // reads the first 8 bytes
+    pub fn get_tid(&self) -> u32 {
+        u32::from_le_bytes(self.0[..TID_LEN].try_into().expect("this cant fail"))
+    }
+
+    pub fn get_prefix(&self) -> u16 {
+        u16::from_le_bytes(
+            self.0[TID_LEN..TID_LEN + PREFIX_LEN]
+                .try_into()
+                .expect("this cant fail"),
+        )
     }
 }
 
@@ -457,6 +458,35 @@ fn cell_cmp(a: &[u8], b: &[u8]) -> Ordering {
             None => unreachable!(),
         }
     }
+}
+
+// assumes the slice is an encoded key
+fn key_cmp(mut key_a: &[u8], mut key_b: &[u8]) -> Ordering {
+    let tid_a = key_a.read_u32();
+    let tid_b = key_b.read_u32();
+
+    match tid_a.cmp(&tid_b) {
+        Ordering::Equal => (),
+        o => return o,
+    }
+
+    if let Some(o) = len_cmp(key_a, key_b) {
+        return o;
+    }
+
+    let prefix_a = key_a.read_u16();
+    let prefix_b = key_b.read_u16();
+
+    match prefix_a.cmp(&prefix_b) {
+        Ordering::Equal => (),
+        o => return o,
+    }
+
+    if let Some(o) = len_cmp(key_a, key_b) {
+        return o;
+    }
+
+    cell_cmp(key_a, key_b)
 }
 
 /// returns ordering based on empty slice
