@@ -69,6 +69,12 @@ pub(crate) enum NodeFlag {
     Freelist,
 }
 
+impl std::fmt::Display for NodeFlag {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "node type: {:?}", self)
+    }
+}
+
 pub(crate) struct EnvoyV1 {
     path: &'static str,
     pub database: OwnedFd,
@@ -86,41 +92,134 @@ pub(crate) struct EnvoyV1 {
 
 #[derive(Debug)]
 pub(crate) struct Buffer {
-    pub hmap: HashMap<Pointer, Node>, // pages to be written
-    pub nappend: u64,                 // number of pages to be appended
-    pub npages: u64,                  // database size in number of pages
+    hmap: HashMap<Pointer, BufferEntry>, // in memory buffer
+    nappend: u64,                        // number of pages to be appended
+    npages: u64,                         // database size in number of pages
+}
+
+#[derive(Debug)]
+struct BufferEntry {
+    node: Rc<RefCell<Node>>,
+    dirty: bool,   // does it need to be written?
+    retired: bool, // has the page been deallocated?
+}
+
+impl Buffer {
+    fn get(&self, ptr: Pointer) -> Option<Rc<RefCell<Node>>> {
+        Some(self.hmap.get(&ptr)?.node.clone())
+    }
+
+    fn get_clean(&self, ptr: Pointer) -> Option<Rc<RefCell<Node>>> {
+        let n = self.hmap.get(&ptr)?;
+        if !n.dirty { None } else { Some(n.node.clone()) }
+    }
+
+    /// retrieves all dirty pages in the buffer
+    fn to_dirty_iter(&self) -> impl Iterator<Item = (Pointer, std::cell::Ref<'_, Node>)> {
+        let iter = self
+            .hmap
+            .iter()
+            .filter_map(|e| {
+                if e.1.dirty {
+                    Some((*e.0, e.1.node.borrow()))
+                } else {
+                    None
+                }
+            })
+            .into_iter();
+        iter
+    }
+
+    /// removes retired pages, marks dirty pages as clean
+    fn clear(&mut self) {
+        let mut v = vec![];
+
+        for (p, entry) in self.hmap.iter_mut() {
+            if entry.dirty {
+                entry.dirty = false;
+            }
+            if entry.retired {
+                v.push(*p);
+            }
+        }
+
+        // removing retired pages from buffer
+        for p in v.iter() {
+            let k = self.hmap.remove(p);
+            debug_assert!(k.is_some());
+        }
+    }
+
+    fn insert_clean(&mut self, ptr: Pointer, node: Node) {
+        self.hmap.insert(
+            ptr,
+            BufferEntry {
+                node: Rc::new(RefCell::new(node)),
+                dirty: false,
+                retired: false,
+            },
+        );
+    }
+
+    fn insert_dirty(&mut self, ptr: Pointer, node: Node) -> Option<()> {
+        self.hmap
+            .insert(
+                ptr,
+                BufferEntry {
+                    node: Rc::new(RefCell::new(node)),
+                    dirty: true,
+                    retired: false,
+                },
+            )
+            .map(|_| ())
+    }
+
+    fn delete(&mut self, ptr: Pointer) {
+        self.hmap.remove(&ptr);
+    }
+
+    pub fn debug_print(&self) {
+        for e in self.hmap.iter() {
+            let n = e.1.node.borrow();
+            debug!(
+                "{:<10}, {:<10}, dirty = {:<10}",
+                e.0,
+                n.get_type(),
+                e.1.dirty
+            )
+        }
+    }
 }
 
 /// internal callback API
 pub(crate) trait Pager {
     // tree callbacks
-    fn page_read(&self, ptr: Pointer, flag: NodeFlag) -> Node; //tree decode
+    fn page_read(&self, ptr: Pointer, flag: NodeFlag) -> Rc<RefCell<Node>>; //tree decode
     fn page_alloc(&self, node: Node) -> Pointer; //tree encode
     fn dealloc(&self, ptr: Pointer); // tree dealloc/del
 
     // FL callbacks
     fn encode(&self, node: Node) -> Pointer; // FL encode
-    fn update(&self, ptr: Pointer) -> *mut FLNode; // FL update
+    fn update(&self, ptr: Pointer) -> Rc<RefCell<Node>>; // FL update
 }
 
 impl Pager for EnvoyV1 {
     /// decodes a page, checks buffer before reading disk
     ///
     /// `BTree.get`, reads a page possibly from buffer or disk
-    fn page_read(&self, ptr: Pointer, flag: NodeFlag) -> Node {
+    fn page_read(&self, ptr: Pointer, flag: NodeFlag) -> Rc<RefCell<Node>> {
+        let mut buf_ref = self.buffer.borrow_mut();
         // check buffer first
         debug!(node=?flag, %ptr, "page read");
-        if let Some(n) = self.buffer.borrow_mut().hmap.remove(&ptr) {
+        if let Some(n) = buf_ref.get(ptr) {
             debug!("page found in buffer!");
-            // re-adding to freelist to prevent memory leak
-            self.freelist
-                .borrow_mut()
-                .append(ptr)
-                .expect("page_read adding to freelist error");
             n
         } else {
             debug!("reading from disk...");
-            self.decode(ptr, flag)
+            let n = self.decode(ptr, flag);
+
+            buf_ref.insert_clean(ptr, n.clone());
+            buf_ref.get(ptr).expect("we just inserted it")
         }
     }
 
@@ -131,10 +230,12 @@ impl Pager for EnvoyV1 {
         // check freelist first
         debug!("allocating ...");
         if let Some(ptr) = self.freelist.borrow_mut().get() {
-            // loading page into buffer
-            self.buffer.borrow_mut().hmap.insert(ptr, node);
-            debug_print_buffer(&self.buffer.borrow().hmap);
             assert_ne!(ptr.0, 0);
+
+            // loading page into buffer
+            self.buffer.borrow_mut().insert_dirty(ptr, node);
+
+            debug_print_buffer(&self.buffer.borrow());
             ptr
         } else {
             // increment append?
@@ -143,13 +244,18 @@ impl Pager for EnvoyV1 {
         }
     }
 
+    // WIP: maybe remove from buffer?
     /// PushTail
     fn dealloc(&self, ptr: Pointer) {
         self.freelist
             .borrow_mut()
             .append(ptr)
             .expect("dealloc error");
-        ()
+
+        // retiring page from buffer, to be cleared after committ
+        if let Some(entry) = self.buffer.borrow_mut().hmap.get_mut(&ptr) {
+            entry.retired = true;
+        };
     }
 
     /// adds pages to buffer to be encoded to disk later (append)
@@ -171,8 +277,8 @@ impl Pager for EnvoyV1 {
         );
 
         buf_ref.nappend += 1;
-        buf_ref.hmap.insert(ptr, node);
-        debug_print_buffer(&buf_ref.hmap);
+        buf_ref.insert_dirty(ptr, node);
+        debug_print_buffer(&buf_ref);
 
         assert_ne!(ptr.0, 0);
         ptr
@@ -181,11 +287,11 @@ impl Pager for EnvoyV1 {
     /// callback for free list
     ///
     /// checks buffer for allocated page and returns pointer
-    fn update(&self, ptr: Pointer) -> *mut FLNode {
+    fn update(&self, ptr: Pointer) -> Rc<RefCell<Node>> {
         let buf = &mut self.buffer.borrow_mut();
 
         // checking buffer,...
-        let entry = match buf.hmap.get_mut(&ptr) {
+        let entry = match buf.get(ptr) {
             Some(n) => {
                 debug!("updating {} in buffer", ptr);
                 n
@@ -193,20 +299,15 @@ impl Pager for EnvoyV1 {
             None => {
                 // decoding page from disk and loading it into buffer
                 debug!(%ptr, "reading free list from disk...");
-                buf.hmap.insert(ptr, self.decode(ptr, NodeFlag::Freelist));
-                buf.hmap.get_mut(&ptr).expect("we just inserted it")
+                buf.insert_dirty(ptr, self.decode(ptr, NodeFlag::Freelist));
+                buf.get(ptr).expect("we just inserted it")
             }
         };
 
-        match entry {
-            Node::Freelist(flnode) => {
-                let ptr = ptr::from_mut(flnode);
-                debug_print_buffer(&buf.hmap);
-                ptr
-            }
-            // only the freelist calls this function
-            _ => unreachable!(),
-        }
+        // we just inserted the node as FLNode so this cast should be safe
+        // let p = entry as *mut Node as *mut FLNode;
+        debug_print_buffer(&buf);
+        entry
     }
 }
 
@@ -220,7 +321,7 @@ impl EnvoyV1 {
             database: create_file_sync(path).expect("file open error"),
             failed: Cell::new(false),
             buffer: RefCell::new(Buffer {
-                hmap: HashMap::<Pointer, Node>::new(),
+                hmap: HashMap::new(),
                 nappend: 0,
                 npages: 0,
             }),
@@ -368,8 +469,10 @@ impl EnvoyV1 {
 
         // iterate over buffer and write nodes to designated pages
         let mut bytes_written: usize = 0;
-        for pair in buf.hmap.iter() {
-            debug!("writing {:?} at {}", pair.1.get_type(), pair.0);
+        let mut count = 0;
+
+        for pair in buf.to_dirty_iter() {
+            debug!("writing {:<10} at {:<5}", pair.1.get_type(), pair.0);
             assert!(pair.0.get() != 0); // never write to the meta page
 
             let offset = pair.0.get() * PAGE_SIZE as u64;
@@ -379,24 +482,27 @@ impl EnvoyV1 {
                     error!(?e, "page writing error!");
                     PagerError::WriteFileError(e)
                 })?;
+            count += 1;
         }
         debug!(bytes_written, "bytes written:");
-        if bytes_written != buf_len * PAGE_SIZE {
+        if bytes_written != count * PAGE_SIZE {
             return Err(PagerError::PageWriteError(
                 "wrong amount of bytes written".to_string(),
             ));
         };
 
-        //discard in-memory data
+        // adjust buffer
         drop(buf);
         let mut buf = self.buffer.borrow_mut();
+
         buf.npages += buf.nappend;
         buf.nappend = 0;
-        buf.hmap.clear();
+        buf.clear();
+
         Ok(())
     }
 
-    /// decodes a page from disk
+    /// decodes a page from the mmap
     ///
     /// kv.pageRead, db.pageRead -> pagereadfile
     fn decode(&self, ptr: Pointer, node_type: NodeFlag) -> Node {
@@ -417,12 +523,15 @@ impl EnvoyV1 {
             let end = start + chunk.len / PAGE_SIZE;
             if ptr.0 < end as u64 {
                 let offset: usize = PAGE_SIZE * (ptr.0 as usize - start);
+
                 let mut node = match node_type {
                     NodeFlag::Tree => Node::Tree(TreeNode::new()),
                     NodeFlag::Freelist => Node::Freelist(FLNode::new()),
                 };
+
                 node[..PAGE_SIZE].copy_from_slice(&chunk[offset..offset + PAGE_SIZE]);
                 debug!("returning node at offset {offset}, {}", as_page(offset));
+
                 return node;
             }
             start = end;
@@ -498,7 +607,7 @@ impl EnvoyV1 {
 /// returns the number of pages that can be safely truncated, by evaluating a contiguous sequence at the end of the freelist. This function has O(n logn ) worst case performance.
 ///
 /// Credit to ranveer for this
-pub fn count_trunc_pages(npages: u64, freelist: &[Pointer]) -> Option<u64> {
+fn count_trunc_pages(npages: u64, freelist: &[Pointer]) -> Option<u64> {
     if freelist.is_empty() || npages <= 2 {
         return None;
     }

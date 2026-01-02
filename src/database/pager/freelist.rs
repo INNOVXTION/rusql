@@ -1,6 +1,7 @@
+use std::cell::RefCell;
 use std::fmt::Debug;
 use std::ops::{Deref, DerefMut};
-use std::rc::Weak;
+use std::rc::{Rc, Weak};
 
 use crate::database::codec::{NumDecode, NumEncode};
 use crate::database::pager::diskpager::{NodeFlag, Pager};
@@ -149,11 +150,11 @@ impl<P: Pager> GC for FreeList<P> {
                 break;
             }
 
-            list.push(node.get_ptr(seq_to_idx(head)));
+            list.push(node.borrow().as_fl().get_ptr(seq_to_idx(head)));
             head += 1;
 
             if seq_to_idx(head) == 0 {
-                head_page = node.get_next();
+                head_page = node.borrow().as_fl().get_next();
                 node = self.decode(head_page);
                 head = 0;
             }
@@ -176,6 +177,8 @@ impl<P: Pager> GC for FreeList<P> {
         self.tail_page = flc.tail_page;
         self.tail_seq = flc.tail_seq;
     }
+
+    /// increments the max_seq for next transaction cycle
     fn set_max_seq(&mut self) {
         self.max_seq = self.tail_seq
     }
@@ -185,9 +188,9 @@ impl<P: Pager> FreeList<P> {
     // callbacks
 
     /// reads page, gets page, removes from buffer if available
-    fn decode(&self, ptr: Pointer) -> FLNode {
+    fn decode(&self, ptr: Pointer) -> Rc<RefCell<Node>> {
         let strong = self.pager.upgrade().unwrap();
-        strong.page_read(ptr, NodeFlag::Freelist).as_fl()
+        strong.page_read(ptr, NodeFlag::Freelist)
     }
 
     /// appends page to disk, doesnt make a buffer check
@@ -200,7 +203,7 @@ impl<P: Pager> FreeList<P> {
     /// # SAFETY:
     /// needs to be called in isolation, calls to encode can resize the buffer
     /// and therefore invalidate the returning pointer, use the dedicated helper functions!
-    unsafe fn update(&self, ptr: Pointer) -> *mut FLNode {
+    unsafe fn update(&self, ptr: Pointer) -> Rc<RefCell<Node>> {
         let strong = self.pager.upgrade().unwrap();
         strong.update(ptr)
     }
@@ -250,8 +253,10 @@ impl<P: Pager> FreeList<P> {
     fn update_get_ptr(&self, node: Pointer, idx: u16) -> Pointer {
         // SAFETY: see callback at the top
         unsafe {
-            let node_ptr = self.update(node);
-            (*node_ptr).get_ptr(idx)
+            let r = self.update(node);
+            let mut r_mut = r.borrow_mut();
+            let node_ptr = r_mut.as_fl_mut();
+            node_ptr.get_ptr(idx)
         }
     }
 
@@ -260,8 +265,10 @@ impl<P: Pager> FreeList<P> {
     fn update_set_ptr(&self, node: Pointer, ptr: Pointer, idx: u16) {
         // SAFETY: see callback at the top
         unsafe {
-            let node_ptr = self.update(node);
-            (*node_ptr).set_ptr(idx, ptr);
+            let r = self.update(node);
+            let mut r_mut = r.borrow_mut();
+            let node_ptr = r_mut.as_fl_mut();
+            node_ptr.set_ptr(idx, ptr);
         }
     }
 
@@ -270,8 +277,10 @@ impl<P: Pager> FreeList<P> {
     fn update_get_next(&self, node: Pointer) -> Pointer {
         // SAFETY: see callback at the top
         unsafe {
-            let node_ptr = self.update(node);
-            (*node_ptr).get_next()
+            let r = self.update(node);
+            let mut r_mut = r.borrow_mut();
+            let node_ptr = r_mut.as_fl_mut();
+            node_ptr.get_next()
         }
     }
 
@@ -280,8 +289,10 @@ impl<P: Pager> FreeList<P> {
     fn update_set_next(&self, node: Pointer, ptr: Pointer) {
         // SAFETY: see callback at the top
         unsafe {
-            let node_ptr = self.update(node);
-            (*node_ptr).set_next(ptr);
+            let r = self.update(node);
+            let mut r_mut = r.borrow_mut();
+            let node_ptr = r_mut.as_fl_mut();
+            node_ptr.set_next(ptr);
         }
     }
 

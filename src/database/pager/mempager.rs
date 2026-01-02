@@ -72,15 +72,17 @@ impl MemoryPager {
 }
 
 impl Pager for MemoryPager {
-    fn page_read(&self, ptr: Pointer, flag: super::diskpager::NodeFlag) -> Node {
-        self.pages
-            .borrow_mut()
-            .get(&ptr.0)
-            .unwrap_or_else(|| {
-                error!("couldnt retrieve page at ptr {}", ptr);
-                panic!("page decode error")
-            })
-            .clone()
+    fn page_read(&self, ptr: Pointer, flag: super::diskpager::NodeFlag) -> Rc<RefCell<Node>> {
+        Rc::new(RefCell::new(
+            self.pages
+                .borrow_mut()
+                .get(&ptr.0)
+                .unwrap_or_else(|| {
+                    error!("couldnt retrieve page at ptr {}", ptr);
+                    panic!("page decode error")
+                })
+                .clone(),
+        ))
     }
 
     fn page_alloc(&self, node: Node) -> Pointer {
@@ -112,7 +114,7 @@ impl Pager for MemoryPager {
     }
 
     // not needed for in memory pager
-    fn update(&self, ptr: Pointer) -> *mut super::freelist::FLNode {
+    fn update(&self, ptr: Pointer) -> Rc<RefCell<Node>> {
         unreachable!()
     }
 }

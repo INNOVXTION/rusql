@@ -1,4 +1,6 @@
+use std::cell::RefCell;
 use std::fmt::Debug;
+use std::rc::Rc;
 use std::rc::Weak;
 
 use tracing::debug;
@@ -81,7 +83,7 @@ impl<P: Pager> Tree for BTree<P> {
 
         // recursively insert kv
         let updated_root = self
-            .tree_insert(root, key, val, flag)
+            .tree_insert(root.borrow().as_tn(), key, val, flag)
             .ok_or(Error::InsertError(
                 "couldnt fulfill set request".to_string(),
             ))?;
@@ -131,7 +133,7 @@ impl<P: Pager> Tree for BTree<P> {
         };
 
         let updated = self
-            .tree_delete(self.decode(root_ptr), &key)
+            .tree_delete(self.decode(root_ptr).borrow().as_tn(), &key)
             .ok_or(Error::DeleteError("key not found!".to_string()))?;
         self.dealloc(root_ptr);
 
@@ -165,7 +167,7 @@ impl<P: Pager> Tree for BTree<P> {
     #[instrument(name = "tree search", skip_all)]
     fn search(&self, key: Key) -> Option<Value> {
         info!("searching: {key}",);
-        self.tree_search(self.decode(self.root_ptr?), key)
+        self.tree_search(self.decode(self.root_ptr?).borrow().as_tn(), key)
     }
 
     fn get_root(&self) -> Option<Pointer> {
@@ -192,9 +194,9 @@ impl<P: Pager> BTree<P> {
         }
     }
     // callbacks
-    pub fn decode(&self, ptr: Pointer) -> TreeNode {
+    pub fn decode(&self, ptr: Pointer) -> Rc<RefCell<Node>> {
         let strong = self.pager.upgrade().expect("tree callback decode failed");
-        strong.page_read(ptr, NodeFlag::Tree).as_tree()
+        strong.page_read(ptr, NodeFlag::Tree)
     }
     pub fn encode(&self, node: TreeNode) -> Pointer {
         let strong = self.pager.upgrade().expect("tree callback encode failed");
@@ -208,7 +210,7 @@ impl<P: Pager> BTree<P> {
     /// recursive insertion, node = current node, returns updated node
     fn tree_insert(
         &mut self,
-        node: TreeNode,
+        node: &TreeNode,
         key: Key,
         val: Value,
         flag: SetFlag,
@@ -228,7 +230,8 @@ impl<P: Pager> BTree<P> {
                 debug_print_tree(&node, idx);
 
                 let kptr = node.get_ptr(idx); // ptr of child below us
-                if let Some(knode) = BTree::tree_insert(self, self.decode(kptr), key, val, flag)
+                if let Some(knode) =
+                    BTree::tree_insert(self, self.decode(kptr).borrow().as_tn(), key, val, flag)
                 // node below us
                 {
                     assert_eq!(knode.get_key(0).unwrap(), node.get_key(idx).unwrap());
@@ -250,7 +253,7 @@ impl<P: Pager> BTree<P> {
     }
 
     /// recursive deletion, node = current node, returns updated node in case a deletion happened
-    fn tree_delete(&mut self, mut node: TreeNode, key: &Key) -> Option<TreeNode> {
+    fn tree_delete(&mut self, mut node: &TreeNode, key: &Key) -> Option<TreeNode> {
         let idx = node.lookupidx(key);
         match node.get_type() {
             NodeType::Leaf => {
@@ -271,7 +274,7 @@ impl<P: Pager> BTree<P> {
                 debug_print_tree(&node, idx);
 
                 let kptr = node.get_ptr(idx);
-                match BTree::tree_delete(self, self.decode(kptr), key) {
+                match BTree::tree_delete(self, self.decode(kptr).borrow().as_tn(), key) {
                     // no update below us
                     None => return None,
                     // node was updated below us, checking for merge...
@@ -297,7 +300,11 @@ impl<P: Pager> BTree<P> {
                                         right = kptr;
                                         left = node.get_ptr(idx - 1);
                                         merged_node
-                                            .merge(sibling, updated_child, merge_type)
+                                            .merge(
+                                                sibling.borrow().as_tn(),
+                                                &updated_child,
+                                                merge_type,
+                                            )
                                             .expect("merge error when merging with left node");
 
                                         debug!(
@@ -317,7 +324,11 @@ impl<P: Pager> BTree<P> {
                                         left = kptr;
                                         right = node.get_ptr(idx + 1);
                                         merged_node
-                                            .merge(updated_child, sibling, merge_type)
+                                            .merge(
+                                                &updated_child,
+                                                sibling.borrow().as_tn(),
+                                                merge_type,
+                                            )
                                             .expect("merge error when merging with right node");
 
                                         debug!(
@@ -360,9 +371,10 @@ impl<P: Pager> BTree<P> {
                                     new.set_ptr(idx, self.encode(updated_child));
                                     return Some(new);
                                 };
-                                node.set_ptr(idx, self.encode(updated_child));
+                                let mut new = node.clone();
+                                new.set_ptr(idx, self.encode(updated_child));
                                 debug!("key deleted without merge");
-                                Some(node)
+                                Some(new)
                             }
                         }
                     }
@@ -371,7 +383,7 @@ impl<P: Pager> BTree<P> {
         }
     }
 
-    fn tree_search(&self, node: TreeNode, key: Key) -> Option<Value> {
+    fn tree_search(&self, node: &TreeNode, key: Key) -> Option<Value> {
         let idx = node.lookupidx(&key);
         let key_s = key.to_string();
 
@@ -391,7 +403,7 @@ impl<P: Pager> BTree<P> {
                 debug_print_tree(&node, idx);
 
                 let kptr = node.get_ptr(idx);
-                BTree::tree_search(self, self.decode(kptr), key)
+                BTree::tree_search(self, self.decode(kptr).borrow().as_tn(), key)
             }
         }
     }
@@ -428,9 +440,20 @@ mod test {
 
         assert_eq!(tree.get("1".into()).unwrap(), "hello".into());
         assert_eq!(tree.get("2".into()).unwrap(), "world".into());
-        assert_eq!(t_ref.decode(t_ref.get_root().unwrap()).get_nkeys(), 3);
         assert_eq!(
-            t_ref.decode(t_ref.get_root().unwrap()).get_type(),
+            t_ref
+                .decode(t_ref.get_root().unwrap())
+                .borrow()
+                .as_tn()
+                .get_nkeys(),
+            3
+        );
+        assert_eq!(
+            t_ref
+                .decode(t_ref.get_root().unwrap())
+                .borrow()
+                .as_tn()
+                .get_type(),
             NodeType::Leaf
         );
     }
@@ -448,18 +471,36 @@ mod test {
         {
             let t_ref = tree.pager.btree.borrow();
             assert_eq!(
-                t_ref.decode(t_ref.get_root().unwrap()).get_type(),
+                t_ref
+                    .decode(t_ref.get_root().unwrap())
+                    .borrow()
+                    .as_tn()
+                    .get_type(),
                 NodeType::Leaf
             );
 
-            assert_eq!(t_ref.decode(t_ref.get_root().unwrap()).get_nkeys(), 4);
+            assert_eq!(
+                t_ref
+                    .decode(t_ref.get_root().unwrap())
+                    .borrow()
+                    .as_tn()
+                    .get_nkeys(),
+                4
+            );
         }
 
         tree.delete("2".into()).unwrap();
         let t_ref = tree.pager.btree.borrow();
         assert_eq!(tree.get("1".into()).unwrap(), "hello".into());
         assert_eq!(tree.get("3".into()).unwrap(), "bonjour".into());
-        assert_eq!(t_ref.decode(t_ref.get_root().unwrap()).get_nkeys(), 3);
+        assert_eq!(
+            t_ref
+                .decode(t_ref.get_root().unwrap())
+                .borrow()
+                .as_tn()
+                .get_nkeys(),
+            3
+        );
     }
 
     #[test]
@@ -472,7 +513,11 @@ mod test {
         }
         let t_ref = tree.pager.btree.borrow();
         assert_eq!(
-            t_ref.decode(t_ref.get_root().unwrap()).get_type(),
+            t_ref
+                .decode(t_ref.get_root().unwrap())
+                .borrow()
+                .as_tn()
+                .get_type(),
             NodeType::Node
         );
         assert_eq!(tree.get("40".into()).unwrap(), "value".into());
@@ -492,7 +537,11 @@ mod test {
         }
         let t_ref = tree.pager.btree.borrow();
         assert_eq!(
-            t_ref.decode(t_ref.get_root().unwrap()).get_type(),
+            t_ref
+                .decode(t_ref.get_root().unwrap())
+                .borrow()
+                .as_tn()
+                .get_type(),
             NodeType::Node
         );
         assert_eq!(tree.get("40".into()).unwrap(), "value".into());
@@ -520,10 +569,21 @@ mod test {
         }
         let t_ref = tree.pager.btree.borrow();
         assert_eq!(
-            t_ref.decode(t_ref.get_root().unwrap()).get_type(),
+            t_ref
+                .decode(t_ref.get_root().unwrap())
+                .borrow()
+                .as_tn()
+                .get_type(),
             NodeType::Leaf
         );
-        assert_eq!(t_ref.decode(t_ref.get_root().unwrap()).get_nkeys(), 1)
+        assert_eq!(
+            t_ref
+                .decode(t_ref.get_root().unwrap())
+                .borrow()
+                .as_tn()
+                .get_nkeys(),
+            1
+        )
     }
 
     #[test]
@@ -539,10 +599,21 @@ mod test {
         }
         let t_ref = tree.pager.btree.borrow();
         assert_eq!(
-            t_ref.decode(t_ref.get_root().unwrap()).get_type(),
+            t_ref
+                .decode(t_ref.get_root().unwrap())
+                .borrow()
+                .as_tn()
+                .get_type(),
             NodeType::Leaf
         );
-        assert_eq!(t_ref.decode(t_ref.get_root().unwrap()).get_nkeys(), 1)
+        assert_eq!(
+            t_ref
+                .decode(t_ref.get_root().unwrap())
+                .borrow()
+                .as_tn()
+                .get_nkeys(),
+            1
+        )
     }
 
     #[test]
@@ -558,10 +629,21 @@ mod test {
         }
         let t_ref = tree.pager.btree.borrow();
         assert_eq!(
-            t_ref.decode(t_ref.get_root().unwrap()).get_type(),
+            t_ref
+                .decode(t_ref.get_root().unwrap())
+                .borrow()
+                .as_tn()
+                .get_type(),
             NodeType::Leaf
         );
-        assert_eq!(t_ref.decode(t_ref.get_root().unwrap()).get_nkeys(), 1);
+        assert_eq!(
+            t_ref
+                .decode(t_ref.get_root().unwrap())
+                .borrow()
+                .as_tn()
+                .get_nkeys(),
+            1
+        );
     }
 
     #[test]
@@ -593,7 +675,11 @@ mod test {
         {
             let t_ref = tree.pager.btree.borrow();
             assert_eq!(
-                t_ref.decode(t_ref.get_root().unwrap()).get_type(),
+                t_ref
+                    .decode(t_ref.get_root().unwrap())
+                    .borrow()
+                    .as_tn()
+                    .get_type(),
                 NodeType::Node
             );
         }
@@ -685,10 +771,10 @@ mod test {
         let ptr = t_ref.encode(node);
         let decoded = t_ref.decode(ptr);
 
-        assert_eq!(decoded.get_type(), NodeType::Leaf);
-        assert_eq!(decoded.get_nkeys(), 1);
-        assert_eq!(decoded.get_key(0).unwrap(), "round".into());
-        assert_eq!(decoded.get_val(0).unwrap(), "trip".into());
+        assert_eq!(decoded.borrow().as_tn().get_type(), NodeType::Leaf);
+        assert_eq!(decoded.borrow().as_tn().get_nkeys(), 1);
+        assert_eq!(decoded.borrow().as_tn().get_key(0).unwrap(), "round".into());
+        assert_eq!(decoded.borrow().as_tn().get_val(0).unwrap(), "trip".into());
 
         // cleanup
         t_ref.dealloc(ptr);

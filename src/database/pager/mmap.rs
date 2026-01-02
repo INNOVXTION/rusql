@@ -88,11 +88,6 @@ pub fn mmap_extend(db: &EnvoyV1, size: usize) -> Result<(), PagerError> {
 
     // do we need to extend?
     if size <= mmap_ref.total {
-        debug!(
-            "no mmap extension needed: mmap_size {size} ({}), file_size {}",
-            as_mb(size),
-            as_mb(buf_ref.npages as usize * PAGE_SIZE)
-        );
         return Ok(()); // enough range
     };
 

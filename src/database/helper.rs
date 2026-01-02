@@ -7,6 +7,7 @@ use std::path::Path;
 use tracing::{debug, error};
 
 use crate::database::btree::TreeNode;
+use crate::database::pager::diskpager::Buffer;
 
 /// casts usize to u16
 pub(crate) fn as_usize(n: usize) -> u16 {
@@ -73,15 +74,13 @@ pub fn create_file_sync(file: &str) -> Result<OwnedFd, PagerError> {
 }
 
 /// helper function for debugging purposes
-pub fn debug_print_buffer(buf: &HashMap<Pointer, Node>) {
+pub fn debug_print_buffer(buf: &Buffer) {
     #[cfg(test)]
     {
         if let Ok("debug") = std::env::var("RUSQL_LOG_PAGER").as_deref() {
             debug!("current buffer:");
             debug!("---------");
-            for kv in buf {
-                debug!("{}, {:?}", kv.0, kv.1.get_type())
-            }
+            buf.debug_print();
             debug!("---------")
         }
     }

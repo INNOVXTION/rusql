@@ -1,10 +1,13 @@
+use std::cell::RefCell;
 use std::ops::{Deref, DerefMut};
+use std::rc::Rc;
 
 use super::super::codec::*;
 use super::tree::SetFlag;
 use crate::database::btree::BTree;
 use crate::database::pager::diskpager::Pager;
 use crate::database::tables::{Key, Value};
+use crate::database::types::Node;
 use crate::database::{
     helper::*,
     types::{MERGE_FACTOR, NODE_SIZE, PAGE_SIZE, Pointer},
@@ -41,8 +44,8 @@ pub(crate) enum NodeType {
 }
 /// which sibling we need to merge with
 pub(crate) enum MergeDirection {
-    Left(TreeNode),
-    Right(TreeNode),
+    Left(Rc<RefCell<Node>>),
+    Right(Rc<RefCell<Node>>),
 }
 #[derive(Debug)]
 pub(crate) struct TreeNode(pub Box<[u8; NODE_SIZE]>);
@@ -122,7 +125,7 @@ impl TreeNode {
     pub fn insert_nkids<P: Pager>(
         &mut self,
         tree: &mut BTree<P>,
-        old_node: TreeNode,
+        old_node: &TreeNode,
         idx: u16,
         new_kids: (u16, Vec<TreeNode>),
     ) -> Result<(), Error> {
@@ -333,7 +336,7 @@ impl TreeNode {
     /// abstracted API over leaf_kvinsert and leaf_kvupdate
     pub fn insert(
         &mut self,
-        node: TreeNode,
+        node: &TreeNode,
         key: Key,
         val: Value,
         idx: u16,
@@ -378,7 +381,7 @@ impl TreeNode {
     /// updates nkeys, sets node to leaf
     pub fn leaf_kvinsert(
         &mut self,
-        src: TreeNode,
+        src: &TreeNode,
         idx: u16,
         key: Key,
         val: Value,
@@ -412,7 +415,7 @@ impl TreeNode {
     /// updates nkeys, sets node to leaf
     pub fn leaf_kvupdate(
         &mut self,
-        src: TreeNode,
+        src: &TreeNode,
         idx: u16,
         key: Key,
         val: Value,
@@ -580,7 +583,12 @@ impl TreeNode {
     /// merges left right into self
     ///
     /// updates nkeys
-    pub fn merge(&mut self, left: TreeNode, right: TreeNode, ntype: NodeType) -> Result<(), Error> {
+    pub fn merge(
+        &mut self,
+        left: &TreeNode,
+        right: &TreeNode,
+        ntype: NodeType,
+    ) -> Result<(), Error> {
         let left_nkeys = left.get_nkeys();
         let right_nkeys = right.get_nkeys();
         self.set_header(ntype, left_nkeys + right_nkeys);
@@ -616,7 +624,7 @@ impl TreeNode {
         // check left
         if idx > 0 {
             let sibling = tree.decode(self.get_ptr(idx - 1));
-            let sibling_size = sibling.nbytes();
+            let sibling_size = sibling.borrow().as_tn().nbytes();
             if sibling_size + new_size < PAGE_SIZE as u16 {
                 return Some(MergeDirection::Left(sibling));
             }
@@ -624,7 +632,7 @@ impl TreeNode {
         // check right
         if idx + 1 < self.get_nkeys() {
             let sibling = tree.decode(self.get_ptr(idx + 1));
-            let sibling_size = sibling.nbytes();
+            let sibling_size = sibling.borrow().as_tn().nbytes();
             if sibling_size + new_size < PAGE_SIZE as u16 {
                 return Some(MergeDirection::Right(sibling));
             }
@@ -636,7 +644,7 @@ impl TreeNode {
     pub fn merge_setptr<P: Pager>(
         &mut self,
         tree: &mut BTree<P>,
-        src: TreeNode,
+        src: &TreeNode,
         merged_node: TreeNode,
         idx: u16, // idx of node that got merged away
     ) -> Result<(), Error> {

@@ -48,15 +48,25 @@ impl Debug for Node {
 
 impl Node {
     /// deconstructs node to tree node, will panic if used on a FL node!
-    pub fn as_tree(self) -> TreeNode {
+    pub fn as_tn(&self) -> &TreeNode {
         let Node::Tree(n) = self else {
             error!("Tree node deconstructor used on FL node!");
             panic!("Tree node deconstructor used on FL node!")
         };
         n
     }
+
     /// deconstructs node to FL node, will panic if used on a tree node!
-    pub fn as_fl(self) -> FLNode {
+    pub fn as_fl(&self) -> &FLNode {
+        let Node::Freelist(n) = self else {
+            error!("FL node deconstructor used on tree node!");
+            panic!("FL node deconstructor used on tree node!")
+        };
+        n
+    }
+
+    /// deconstructs node to FL node, will panic if used on a tree node!
+    pub fn as_fl_mut(&mut self) -> &mut FLNode {
         let Node::Freelist(n) = self else {
             error!("FL node deconstructor used on tree node!");
             panic!("FL node deconstructor used on tree node!")
