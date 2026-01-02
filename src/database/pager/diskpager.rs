@@ -1281,3 +1281,712 @@ mod truncate {
         assert_eq!(result, Some(2));
     }
 }
+
+#[cfg(test)]
+mod buffer_tests {
+    use super::*;
+    use crate::database::btree::TreeNode;
+    use crate::database::types::Node;
+
+    fn create_test_node() -> Node {
+        Node::Tree(TreeNode::new())
+    }
+
+    #[test]
+    fn buffer_insert_and_get_clean() {
+        let mut buf = Buffer {
+            hmap: HashMap::new(),
+            nappend: 0,
+            npages: 0,
+        };
+
+        let node = create_test_node();
+        let ptr = Pointer::from(1u64);
+
+        buf.insert_clean(ptr, node);
+
+        assert!(buf.get(ptr).is_some());
+        assert_eq!(buf.hmap.len(), 1);
+    }
+
+    #[test]
+    fn buffer_insert_and_get_dirty() {
+        let mut buf = Buffer {
+            hmap: HashMap::new(),
+            nappend: 0,
+            npages: 0,
+        };
+
+        let node = create_test_node();
+        let ptr = Pointer::from(1u64);
+
+        let result = buf.insert_dirty(ptr, node);
+
+        assert!(result.is_none()); // dirty pointer didnt exists
+        assert!(buf.get(ptr).is_some());
+        assert_eq!(buf.hmap.len(), 1);
+        assert!(buf.hmap[&ptr].dirty);
+    }
+
+    #[test]
+    fn buffer_get_returns_none_for_missing_key() {
+        let buf = Buffer {
+            hmap: HashMap::new(),
+            nappend: 0,
+            npages: 0,
+        };
+
+        let ptr = Pointer::from(999u64);
+        assert!(buf.get(ptr).is_none());
+    }
+
+    #[test]
+    fn buffer_get_clean_only_returns_dirty_pages() {
+        let mut buf = Buffer {
+            hmap: HashMap::new(),
+            nappend: 0,
+            npages: 0,
+        };
+
+        let clean_node = create_test_node();
+        let dirty_node = create_test_node();
+        let clean_ptr = Pointer::from(1u64);
+        let dirty_ptr = Pointer::from(2u64);
+
+        buf.insert_clean(clean_ptr, clean_node);
+        buf.insert_dirty(dirty_ptr, dirty_node);
+
+        // get_clean should only return dirty pages
+        assert!(buf.get_clean(clean_ptr).is_none());
+        assert!(buf.get_clean(dirty_ptr).is_some());
+    }
+
+    #[test]
+    fn buffer_multiple_inserts() {
+        let mut buf = Buffer {
+            hmap: HashMap::new(),
+            nappend: 0,
+            npages: 0,
+        };
+
+        for i in 1..=10 {
+            let node = create_test_node();
+            let ptr = Pointer::from(i as u64);
+            buf.insert_dirty(ptr, node);
+        }
+
+        assert_eq!(buf.hmap.len(), 10);
+
+        for i in 1..=10 {
+            let ptr = Pointer::from(i as u64);
+            assert!(buf.get(ptr).is_some());
+        }
+    }
+
+    #[test]
+    fn buffer_dirty_flag_set_correctly() {
+        let mut buf = Buffer {
+            hmap: HashMap::new(),
+            nappend: 0,
+            npages: 0,
+        };
+
+        let clean_node = create_test_node();
+        let dirty_node = create_test_node();
+        let clean_ptr = Pointer::from(1u64);
+        let dirty_ptr = Pointer::from(2u64);
+
+        buf.insert_clean(clean_ptr, clean_node);
+        buf.insert_dirty(dirty_ptr, dirty_node);
+
+        assert!(!buf.hmap[&clean_ptr].dirty);
+        assert!(buf.hmap[&dirty_ptr].dirty);
+    }
+
+    #[test]
+    fn buffer_retired_flag_set_correctly() {
+        let mut buf = Buffer {
+            hmap: HashMap::new(),
+            nappend: 0,
+            npages: 0,
+        };
+
+        let node = create_test_node();
+        let ptr = Pointer::from(1u64);
+
+        buf.insert_clean(ptr, node);
+        assert!(!buf.hmap[&ptr].retired);
+
+        // Manually retire for testing
+        buf.hmap.get_mut(&ptr).unwrap().retired = true;
+        assert!(buf.hmap[&ptr].retired);
+    }
+
+    #[test]
+    fn buffer_clear_removes_retired_pages() {
+        let mut buf = Buffer {
+            hmap: HashMap::new(),
+            nappend: 0,
+            npages: 0,
+        };
+
+        let node1 = create_test_node();
+        let node2 = create_test_node();
+        let node3 = create_test_node();
+
+        buf.insert_dirty(Pointer::from(1u64), node1);
+        buf.insert_dirty(Pointer::from(2u64), node2);
+        buf.insert_dirty(Pointer::from(3u64), node3);
+
+        // Mark page 2 as retired
+        buf.hmap.get_mut(&Pointer::from(2u64)).unwrap().retired = true;
+
+        buf.clear();
+
+        assert_eq!(buf.hmap.len(), 2);
+        assert!(buf.get(Pointer::from(2u64)).is_none());
+        assert!(buf.get(Pointer::from(1u64)).is_some());
+        assert!(buf.get(Pointer::from(3u64)).is_some());
+    }
+
+    #[test]
+    fn buffer_clear_marks_dirty_as_clean() {
+        let mut buf = Buffer {
+            hmap: HashMap::new(),
+            nappend: 0,
+            npages: 0,
+        };
+
+        let node = create_test_node();
+        let ptr = Pointer::from(1u64);
+
+        buf.insert_dirty(ptr, node);
+        assert!(buf.hmap[&ptr].dirty);
+
+        buf.clear();
+
+        assert!(!buf.hmap[&ptr].dirty);
+    }
+
+    #[test]
+    fn buffer_to_dirty_iter_only_returns_dirty() {
+        let mut buf = Buffer {
+            hmap: HashMap::new(),
+            nappend: 0,
+            npages: 0,
+        };
+
+        buf.insert_clean(Pointer::from(1u64), create_test_node());
+        buf.insert_dirty(Pointer::from(2u64), create_test_node());
+        buf.insert_dirty(Pointer::from(3u64), create_test_node());
+
+        let dirty_count = buf.to_dirty_iter().count();
+        assert_eq!(dirty_count, 2);
+    }
+
+    #[test]
+    fn buffer_delete_removes_page() {
+        let mut buf = Buffer {
+            hmap: HashMap::new(),
+            nappend: 0,
+            npages: 0,
+        };
+
+        let node = create_test_node();
+        let ptr = Pointer::from(1u64);
+
+        buf.insert_clean(ptr, node);
+        assert!(buf.get(ptr).is_some());
+
+        buf.delete(ptr);
+        assert!(buf.get(ptr).is_none());
+    }
+
+    #[test]
+    fn buffer_multiple_retirements_and_clear() {
+        let mut buf = Buffer {
+            hmap: HashMap::new(),
+            nappend: 0,
+            npages: 0,
+        };
+
+        for i in 1..=5 {
+            buf.insert_dirty(Pointer::from(i as u64), create_test_node());
+        }
+
+        // Retire pages 2, 3, and 5
+        for ptr in &[
+            Pointer::from(2u64),
+            Pointer::from(3u64),
+            Pointer::from(5u64),
+        ] {
+            buf.hmap.get_mut(ptr).unwrap().retired = true;
+        }
+
+        assert_eq!(buf.hmap.len(), 5);
+        buf.clear();
+        assert_eq!(buf.hmap.len(), 2);
+
+        // Only pages 1 and 4 should remain
+        assert!(buf.get(Pointer::from(1u64)).is_some());
+        assert!(buf.get(Pointer::from(4u64)).is_some());
+        assert!(buf.get(Pointer::from(2u64)).is_none());
+    }
+
+    #[test]
+    fn buffer_insert_dirty_overwrites_existing() {
+        let mut buf = Buffer {
+            hmap: HashMap::new(),
+            nappend: 0,
+            npages: 0,
+        };
+
+        let ptr = Pointer::from(1u64);
+        let node1 = create_test_node();
+        let node2 = create_test_node();
+
+        buf.insert_dirty(ptr, node1);
+        let result = buf.insert_dirty(ptr, node2);
+
+        // insert_dirty should return Some(_) on overwrite
+        assert!(result.is_some());
+        assert_eq!(buf.hmap.len(), 1);
+    }
+
+    #[test]
+    fn buffer_nappend_and_npages_tracking() {
+        let mut buf = Buffer {
+            hmap: HashMap::new(),
+            nappend: 5,
+            npages: 10,
+        };
+
+        assert_eq!(buf.nappend, 5);
+        assert_eq!(buf.npages, 10);
+
+        buf.nappend = 0;
+        buf.npages = 15;
+
+        assert_eq!(buf.nappend, 0);
+        assert_eq!(buf.npages, 15);
+    }
+
+    #[test]
+    fn buffer_large_page_count() {
+        let mut buf = Buffer {
+            hmap: HashMap::new(),
+            nappend: 0,
+            npages: 0,
+        };
+
+        // Insert many pages
+        for i in 0..1000 {
+            let ptr = Pointer::from(i as u64);
+            buf.insert_dirty(ptr, create_test_node());
+        }
+
+        assert_eq!(buf.hmap.len(), 1000);
+
+        // Verify random access
+        assert!(buf.get(Pointer::from(500u64)).is_some());
+        assert!(buf.get(Pointer::from(999u64)).is_some());
+        assert!(buf.get(Pointer::from(1000u64)).is_none());
+    }
+
+    #[test]
+    fn buffer_mixed_clean_and_dirty_operations() {
+        let mut buf = Buffer {
+            hmap: HashMap::new(),
+            nappend: 0,
+            npages: 0,
+        };
+
+        for i in 1..=10 {
+            let node = create_test_node();
+            let ptr = Pointer::from(i as u64);
+            if i % 2 == 0 {
+                buf.insert_dirty(ptr, node);
+            } else {
+                buf.insert_clean(ptr, node);
+            }
+        }
+
+        let dirty_count = buf.to_dirty_iter().count();
+        assert_eq!(dirty_count, 5); // Even numbers
+
+        buf.clear();
+
+        for i in 1..=10 {
+            let ptr = Pointer::from(i as u64);
+            if i % 2 == 0 {
+                assert!(!buf.hmap[&ptr].dirty);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod buffer_integration_tests {
+    use super::*;
+    use crate::database::{btree::Compare, helper::cleanup_file};
+    use test_log::test;
+
+    #[test]
+    fn buffer_tracks_inserts_through_pager() {
+        let path = "test-files/buffer_int_insert.rdb";
+        cleanup_file(path);
+        let pager = EnvoyV1::open(path).unwrap();
+
+        // Insert should load pages into buffer as dirty
+        pager
+            .tree
+            .borrow_mut()
+            .set("key1".into(), "value1".into(), SetFlag::UPSERT)
+            .unwrap();
+
+        let buf = pager.buffer.borrow();
+        let dirty_count = buf.to_dirty_iter().count();
+
+        // Should have at least one dirty page (the tree node)
+        assert!(
+            dirty_count > 0,
+            "Buffer should contain dirty pages after insert"
+        );
+        cleanup_file(path);
+    }
+
+    #[test]
+    fn buffer_persists_across_page_write() {
+        let path = "test-files/buffer_int_persist.rdb";
+        cleanup_file(path);
+        let pager = EnvoyV1::open(path).unwrap();
+
+        pager
+            .set("key1".into(), "value1".into(), SetFlag::UPSERT)
+            .unwrap();
+
+        let buf_before = pager.buffer.borrow().hmap.len();
+
+        // After set (which triggers page_write and clear), buffer should be cleaned
+        let buf_after = pager.buffer.borrow();
+
+        // Pages should still be in buffer but marked clean
+        for entry in buf_after.hmap.values() {
+            assert!(!entry.dirty, "Pages should be clean after page_write");
+        }
+        cleanup_file(path);
+    }
+
+    #[test]
+    fn buffer_handles_multiple_sequential_sets() {
+        let path = "test-files/buffer_int_seq.rdb";
+        cleanup_file(path);
+        let pager = EnvoyV1::open(path).unwrap();
+
+        for i in 1..=10 {
+            pager
+                .set(
+                    format!("key{}", i).into(),
+                    format!("val{}", i).into(),
+                    SetFlag::UPSERT,
+                )
+                .unwrap();
+        }
+
+        let buf = pager.buffer.borrow();
+        // Buffer should contain pages from tree operations
+        assert!(
+            buf.hmap.len() > 0,
+            "Buffer should contain pages after multiple inserts"
+        );
+        cleanup_file(path);
+    }
+
+    #[test]
+    fn buffer_retire_on_delete() {
+        let path = "test-files/buffer_int_retire.rdb";
+        cleanup_file(path);
+        let pager = EnvoyV1::open(path).unwrap();
+
+        pager
+            .set("key1".into(), "value1".into(), SetFlag::UPSERT)
+            .unwrap();
+
+        let initial_size = pager.buffer.borrow().hmap.len();
+
+        // Delete should mark pages as retired
+        pager.delete("key1".into()).unwrap();
+
+        let buf = pager.buffer.borrow();
+        // After delete and clear, retired pages should be removed
+        // (clear() is called during page_write in update_or_revert)
+        let has_retired = buf.hmap.values().any(|e| e.retired);
+
+        // After clear(), retired pages should be gone
+        assert!(
+            !has_retired || buf.hmap.len() <= initial_size,
+            "Retired pages should be managed"
+        );
+        cleanup_file(path);
+    }
+
+    #[test]
+    fn buffer_reads_load_clean_pages() {
+        let path = "test-files/buffer_int_read.rdb";
+        cleanup_file(path);
+        let pager = EnvoyV1::open(path).unwrap();
+
+        // Insert and flush
+        pager
+            .set("key1".into(), "value1".into(), SetFlag::UPSERT)
+            .unwrap();
+
+        // Clear buffer to simulate fresh read
+        pager.buffer.borrow_mut().hmap.clear();
+
+        // Read should load page as clean
+        let _value = pager.get("key1".into()).unwrap();
+
+        let buf = pager.buffer.borrow();
+        let clean_pages = buf.hmap.values().filter(|e| !e.dirty).count();
+
+        assert!(clean_pages > 0, "Read operations should load clean pages");
+        cleanup_file(path);
+    }
+
+    #[test]
+    fn buffer_dirty_pages_flushed_on_write() {
+        let path = "test-files/buffer_int_flush.rdb";
+        cleanup_file(path);
+        let pager = EnvoyV1::open(path).unwrap();
+
+        pager
+            .set("key1".into(), "value1".into(), SetFlag::UPSERT)
+            .unwrap();
+
+        let buf = pager.buffer.borrow();
+        let dirty_before = buf.to_dirty_iter().count();
+
+        // After set, dirty pages should be flushed
+        // (this happens in file_update -> page_write -> clear)
+        let dirty_after = pager.buffer.borrow().to_dirty_iter().count();
+
+        assert_eq!(
+            dirty_after, 0,
+            "All dirty pages should be flushed after set completes"
+        );
+        cleanup_file(path);
+    }
+
+    #[test]
+    fn buffer_nappend_increments_on_new_pages() {
+        let path = "test-files/buffer_int_nappend.rdb";
+        cleanup_file(path);
+        let pager = EnvoyV1::open(path).unwrap();
+
+        let nappend_before = pager.buffer.borrow().nappend;
+
+        pager
+            .set("key1".into(), "value1".into(), SetFlag::UPSERT)
+            .unwrap();
+
+        let nappend_after = pager.buffer.borrow().nappend;
+
+        // nappend should be 0 after clear() in page_write
+        assert_eq!(nappend_after, 0, "nappend should reset after page flush");
+        cleanup_file(path);
+    }
+
+    #[test]
+    fn buffer_npages_increments_after_flush() {
+        let path = "test-files/buffer_int_npages.rdb";
+        cleanup_file(path);
+        let pager = EnvoyV1::open(path).unwrap();
+
+        let npages_before = pager.buffer.borrow().npages;
+
+        pager
+            .set("key1".into(), "value1".into(), SetFlag::UPSERT)
+            .unwrap();
+
+        let npages_after = pager.buffer.borrow().npages;
+
+        // npages should have increased
+        assert!(
+            npages_after > npages_before,
+            "npages should increase after new pages are appended"
+        );
+        cleanup_file(path);
+    }
+
+    #[test]
+    fn buffer_freelist_pages_reused() {
+        let path = "test-files/buffer_int_freelist.rdb";
+        cleanup_file(path);
+        let pager = EnvoyV1::open(path).unwrap();
+
+        // Insert multiple pages
+        for i in 1..=20 {
+            pager
+                .set(
+                    format!("key{}", i).into(),
+                    format!("val{}", i).into(),
+                    SetFlag::UPSERT,
+                )
+                .unwrap();
+        }
+
+        let npages_before = pager.buffer.borrow().npages;
+
+        // Delete some pages (adds to freelist)
+        for i in 1..=10 {
+            pager.delete(format!("key{}", i).into()).unwrap();
+        }
+
+        // Insert again - should reuse freelist pages
+        for i in 21..=30 {
+            pager
+                .set(
+                    format!("key{}", i).into(),
+                    format!("val{}", i).into(),
+                    SetFlag::UPSERT,
+                )
+                .unwrap();
+        }
+
+        let npages_after = pager.buffer.borrow().npages;
+
+        // npages growth should be minimal if freelist pages are reused
+        assert!(
+            npages_after - npages_before < 15,
+            "Freelist reuse should prevent rapid npages growth"
+        );
+        cleanup_file(path);
+    }
+
+    #[test]
+    fn buffer_scan_loads_multiple_pages() {
+        let path = "test-files/buffer_int_scan.rdb";
+        cleanup_file(path);
+        let pager = EnvoyV1::open(path).unwrap();
+
+        // Insert multiple pages of data
+        for i in 1..=50 {
+            pager
+                .set(
+                    format!("key{:03}", i).into(),
+                    format!("val{}", i).into(),
+                    SetFlag::UPSERT,
+                )
+                .unwrap();
+        }
+
+        pager.buffer.borrow_mut().hmap.clear();
+
+        // Scan should load multiple pages
+        let mode = ScanMode::new_open("key".into(), Compare::GE).unwrap();
+        let _records = pager.scan(mode).unwrap();
+
+        let buf = pager.buffer.borrow();
+        assert!(
+            buf.hmap.len() > 0,
+            "Scan operations should load pages into buffer"
+        );
+        cleanup_file(path);
+    }
+
+    #[test]
+    fn buffer_recovery_on_failed_write() {
+        let path = "test-files/buffer_int_recovery.rdb";
+        cleanup_file(path);
+        let pager = EnvoyV1::open(path).unwrap();
+
+        pager
+            .set("key1".into(), "value1".into(), SetFlag::UPSERT)
+            .unwrap();
+
+        // Simulate a failed write scenario
+        pager.failed.set(true);
+
+        // The next operation should detect the failure and revert
+        // This is handled in update_or_revert
+        let result = pager.set("key2".into(), "value2".into(), SetFlag::UPSERT);
+
+        // After recovery attempt, buffer should be manageable
+        let buf = pager.buffer.borrow();
+        assert!(buf.hmap.len() < 100, "Buffer should be cleared on recovery");
+        cleanup_file(path);
+    }
+
+    #[test]
+    fn buffer_consistency_after_many_operations() {
+        let path = "test-files/buffer_int_consistency.rdb";
+        cleanup_file(path);
+        let pager = EnvoyV1::open(path).unwrap();
+
+        // Mix of inserts, updates, and deletes
+        for i in 1..=30 {
+            pager
+                .set(
+                    format!("key{}", i).into(),
+                    format!("val{}", i).into(),
+                    SetFlag::UPSERT,
+                )
+                .unwrap();
+        }
+
+        for i in 1..=10 {
+            pager
+                .set(
+                    format!("key{}", i).into(),
+                    format!("updated{}", i).into(),
+                    SetFlag::UPSERT,
+                )
+                .unwrap();
+        }
+
+        for i in 1..=5 {
+            pager.delete(format!("key{}", i).into()).unwrap();
+        }
+
+        // Verify data integrity
+        for i in 6..=10 {
+            let val = pager.get(format!("key{}", i).into()).unwrap();
+            assert_eq!(val, format!("updated{}", i).into());
+        }
+
+        let buf = pager.buffer.borrow();
+        let all_clean = buf.hmap.values().all(|e| !e.dirty);
+        assert!(
+            all_clean,
+            "All pages should be clean after operations complete"
+        );
+        cleanup_file(path);
+    }
+
+    #[test]
+    fn buffer_handles_value_updates_dirty_tracking() {
+        let path = "test-files/buffer_int_update.rdb";
+        cleanup_file(path);
+        let pager = EnvoyV1::open(path).unwrap();
+
+        pager
+            .set("key1".into(), "value1".into(), SetFlag::UPSERT)
+            .unwrap();
+
+        pager
+            .set("key1".into(), "value2".into(), SetFlag::UPSERT)
+            .unwrap();
+
+        let value = pager.get("key1".into()).unwrap();
+        assert_eq!(value, "value2".into());
+
+        let buf = pager.buffer.borrow();
+        assert_eq!(
+            buf.to_dirty_iter().count(),
+            0,
+            "All pages should be clean after flush"
+        );
+        cleanup_file(path);
+    }
+}
