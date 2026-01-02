@@ -12,6 +12,11 @@ use crate::database::{
     pager::diskpager::KVEngine,
     types::DataCell,
 };
+/*
+ * |--------------KEY---------------|----Value-----|
+ * |                  [Col1][Col2]..|[Col3][Col4]..|
+ * |[TABLE ID][PREFIX][PK1 ][PK2 ]..|[ v1 ][ v2 ]..|
+*/
 
 pub(super) struct Database<KV: KVEngine> {
     pub tdef: TDefTable,
@@ -32,15 +37,31 @@ pub(crate) struct SetRequest {
 
 pub(crate) enum DeleteRequest {
     Table(ScanMode),
-    Idx(ScanMode),
+    Prefix(ScanMode),
     Row(Key),
 }
 
 impl DeleteRequest {
-    fn new_table(schema: &Table) -> Self {
-        // let key;
-        // let scan = ScanMode::new_open(key, Compare::GE);
-        todo!()
+    fn table(schema: &Table) -> Result<Self> {
+        let key = Query::with_tid(schema);
+        let scan = ScanMode::new_open(key, Compare::GT)?;
+
+        Ok(DeleteRequest::Table(scan))
+    }
+
+    fn prefix(schema: &Table, prefix: u16) -> Result<Self> {
+        let key = Query::with_prefix(schema, prefix);
+        let scan = ScanMode::new_open(key, Compare::GT)?;
+
+        Ok(DeleteRequest::Table(scan))
+    }
+
+    fn row(schema: &Table, cols: &[&str], mut data: Vec<DataCell>) -> Result<Self> {
+        let mut key = Query::with_key(schema);
+        for i in 0..data.len() {
+            key = key.add(&cols[i], data.remove(i));
+        }
+        Ok(DeleteRequest::Row(key.encode()?))
     }
 }
 
@@ -102,7 +123,8 @@ impl<KV: KVEngine> Database<KV> {
                     error!(?e);
                     TableError::TableIdError("error when retrieving id".to_string())
                 })?;
-                Ok(3) // tid 1 and 2 are taken
+
+                Ok(LOWEST_PREMISSIABLE_TID)
             }
         }
     }
@@ -155,11 +177,13 @@ impl<KV: KVEngine> Database<KV> {
     #[instrument(name = "get table", skip_all)]
     pub fn get_table(&mut self, name: &str) -> Option<&Table> {
         info!(name, "getting table");
+
         // check buffer
         if self.buffer.contains_key(name) {
             debug!("returning table from buffer");
             return self.buffer.get(name);
         }
+
         let key = Query::with_key(&self.tdef)
             .add("name", name)
             .encode()
@@ -179,12 +203,14 @@ impl<KV: KVEngine> Database<KV> {
     #[instrument(name = "drop table", skip_all)]
     pub fn drop_table(&mut self, name: &str) -> Result<()> {
         info!(name, "dropping table");
+
         if self.get_table(name).is_none() {
             error!("table doesnt exist");
             return Err(TableError::DeleteTableError(
                 "table doesnt exist".to_string(),
             ))?;
         }
+
         let qu = Query::with_key(&self.tdef)
             .add(DEF_TABLE_COL1, name)
             .encode()?;

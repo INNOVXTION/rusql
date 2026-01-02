@@ -17,6 +17,7 @@ use crate::database::types::DataCell;
 // [ TID ][IDX PREFIX][      INT      ][            STR           ]|
 // [ 4B  ][    2B    ][1B TYPE][8B INT][1B TYPE][4B STRLEN][nB STR]|
 
+/// encoded data used for tree operations
 #[derive(Debug)]
 pub(crate) struct Key(Rc<[u8]>);
 
@@ -257,6 +258,7 @@ impl Value {
     pub fn decode(self) -> Vec<DataCell> {
         self.into_iter().collect()
     }
+
     /// assumes proper encoding
     pub fn from_encoded_slice(data: &[u8]) -> Self {
         Value(Rc::from(data))
@@ -268,13 +270,16 @@ impl Value {
             count: 0,
         }
     }
+
     /// utility function for unit tests, assigns table id 1
     pub fn from_unencoded_str<S: ToString>(str: S) -> Self {
         Value(str.to_string().encode())
     }
+
     pub fn len(&self) -> usize {
         self.0.len()
     }
+
     pub fn as_slice(&self) -> &[u8] {
         &self.0[..]
     }

@@ -2,7 +2,6 @@ use std::{collections::HashMap, marker::PhantomData, ops::Deref};
 
 use crate::database::{
     btree::{Compare, ScanMode, SetFlag},
-    codec::{Codec, NumEncode, PREFIX_LEN, TID_LEN},
     errors::{Error, Result, TableError},
     pager::diskpager::KVEngine,
     tables::{
@@ -17,21 +16,21 @@ use tracing::{debug, error, info, instrument};
 
 /*
  * Encoding Layout:
- * |-----------KEY----------|----Value-----|
- * |          [Col1][Col2]..|[Col3][Col4]..|
- * |[TABLE ID][PK1 ][PK2 ]..|[ v1 ][ v2 ]..|
+ * |--------------KEY---------------|----Value-----|
+ * |                  [Col1][Col2]..|[Col3][Col4]..|
+ * |[TABLE ID][PREFIX][PK1 ][PK2 ]..|[ v1 ][ v2 ]..|
  *
  * Key: 0 Val: Tdef Schema
  *
  * Tdef, id = 1:
- * |-----KEY---|----Val---|
- * |   [ Col1 ]|[  Col2  ]|
- * |[1][ name ]|[  def   ]|
+ * |-----KEY------|----Val---|
+ * |      [ Col1 ]|[  Col2  ]|
+ * |[1][0][ name ]|[  def   ]|
  *
  * Meta, id = 2:
- * |-----KEY---|----Val---|
- * |   [ Col1 ]|[  Col2  ]|
- * |[2][ key  ]|[  val   ]|
+ * |-----KEY------|----Val---|
+ * |      [ Col1 ]|[  Col2  ]|
+ * |[2][0][ key  ]|[  val   ]|
  *
  * Data Path:
  * User Input -> DataCell -> Record -> Key, Value -> Tree
@@ -52,6 +51,7 @@ pub const META_TABLE_ID_ROW: &'static str = "tid";
 pub const META_TABLE_ID: u32 = 2;
 pub const META_TABLE_PKEYS: u16 = 1;
 
+pub const LOWEST_PREMISSIABLE_TID: u32 = DEF_TABLE_ID + META_TABLE_ID;
 pub const PKEY_PREFIX: u16 = 0;
 
 /// wrapper for sentinal value

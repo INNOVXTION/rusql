@@ -125,8 +125,8 @@ impl std::fmt::Display for Record {
 pub(crate) struct Query;
 
 impl Query {
-    /// constructs a key for direct row lookup
-    pub fn with_key(schema: &Table) -> QueryKey {
+    /// constructs a key for direct row lookup, add keys with `.add()` then call `.encode()`
+    pub fn with_key(schema: &Table) -> QueryKey<'_> {
         QueryKey {
             data: HashMap::new(),
             schema,
@@ -134,20 +134,33 @@ impl Query {
     }
 
     /// constructs a key with only the TID
-    pub fn with_table(schema: &Table) -> QueryTable {
-        QueryTable { tid: schema.id }
+    pub fn with_tid(schema: &Table) -> Key {
+        let mut buf = [0u8; TID_LEN];
+        buf.write_u32(schema.id);
+        Key::from_encoded_slice(&buf)
     }
 
     /// constructs a key with TID + Prefix
-    pub fn with_prefix(schema: &Table, prefix: u16) -> QueryPrefix {
-        QueryPrefix {
-            tid: schema.id,
-            prefix,
+    pub fn with_prefix(schema: &Table, prefix: u16) -> Key {
+        let mut buf = [0u8; TID_LEN + PREFIX_LEN];
+        buf.write_u32(schema.id).write_u16(prefix);
+        Key::from_encoded_slice(&buf)
+    }
+
+    /// contrust a key with TID + Prefix + COL VALUE
+    pub fn with_prefix_col(schema: &Table, prefix: u16, col_value: &[&str]) -> Key {
+        let mut buf = vec![0u8; TID_LEN + PREFIX_LEN];
+        buf.write_u32(schema.id).write_u16(prefix);
+
+        for col in col_value {
+            buf.extend_from_slice(&col.to_string().encode());
         }
+
+        Key::from_encoded_slice(&buf)
     }
 }
 
-pub(super) struct QueryKey<'a> {
+pub(crate) struct QueryKey<'a> {
     data: HashMap<String, DataCell>,
     schema: &'a Table,
 }
@@ -218,34 +231,9 @@ impl<'a> QueryKey<'a> {
     }
 }
 
-struct QueryTable {
-    tid: u32,
-}
-
-impl QueryTable {
-    fn encode(self) -> Result<Key> {
-        let mut buf = [0u8; TID_LEN];
-        buf.write_u32(self.tid);
-        Ok(Key::from_encoded_slice(&buf))
-    }
-}
-
-struct QueryPrefix {
-    tid: u32,
-    prefix: u16,
-}
-
-impl QueryPrefix {
-    fn encode(self) -> Result<Key> {
-        let mut buf = [0u8; TID_LEN + PREFIX_LEN];
-        buf.write_u32(self.tid).write_u16(self.prefix);
-        Ok(Key::from_encoded_slice(&buf))
-    }
-}
-
-/// encodes datacells into Key Value pairs
+/// encodes datacells into key value pairs
 ///
-/// delimeter marks the idx where keys and values get seperated, none puts everything into Key leaving Value empty
+/// `delim` marks the idx where keys and values get seperated, none puts everything into `Key` leaving `Value` empty
 fn encode_to_kv<'a, I>(tid: u32, prefix: u16, data: I, delim: Option<usize>) -> Result<(Key, Value)>
 where
     I: IntoIterator<Item = &'a DataCell>,
@@ -319,7 +307,6 @@ mod test {
     use super::super::tables::TableBuilder;
     use super::*;
     use test_log::test;
-    use tracing::{Level, info, span};
 
     #[test]
     fn record1() -> Result<()> {

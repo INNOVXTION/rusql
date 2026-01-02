@@ -60,6 +60,7 @@ impl<P: Pager> Tree for BTree<P> {
     #[instrument(name = "tree insert", skip_all)]
     fn set(&mut self, key: Key, val: Value, flag: SetFlag) -> Result<()> {
         info!("inserting key: {key}, val: {val} flag: {flag:?}",);
+
         // get root node
         let root = match self.root_ptr {
             Some(ptr) => {
@@ -72,11 +73,14 @@ impl<P: Pager> Tree for BTree<P> {
                     return Err(Error::InsertError("cant update in empty tree".to_string()));
                 }
                 debug!("no root found, creating new root");
+
                 let mut new_root = TreeNode::new();
+
                 new_root.set_header(NodeType::Leaf, 2);
                 new_root.kvptr_append(0, Pointer::from(0), Key::new_empty(), "".into())?; // empty key to remove edge case
                 new_root.kvptr_append(1, Pointer::from(0), key, val)?;
                 self.root_ptr = Some(self.encode(new_root));
+
                 return Ok(());
             }
         };
@@ -87,6 +91,7 @@ impl<P: Pager> Tree for BTree<P> {
             .ok_or(Error::InsertError(
                 "couldnt fulfill set request".to_string(),
             ))?;
+
         let mut split = updated_root.split()?;
 
         // deleting old root and creating a new one
@@ -198,10 +203,12 @@ impl<P: Pager> BTree<P> {
         let strong = self.pager.upgrade().expect("tree callback decode failed");
         strong.page_read(ptr, NodeFlag::Tree)
     }
+
     pub fn encode(&self, node: TreeNode) -> Pointer {
         let strong = self.pager.upgrade().expect("tree callback encode failed");
         strong.page_alloc(Node::Tree(node))
     }
+
     pub fn dealloc(&self, ptr: Pointer) {
         let strong = self.pager.upgrade().expect("tree callback dealloc failed");
         strong.dealloc(ptr);

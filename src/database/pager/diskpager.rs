@@ -244,15 +244,17 @@ impl Pager for EnvoyV1 {
         }
     }
 
-    // WIP: maybe remove from buffer?
+    /// marks a page for deallocation. That page still lingers inside the buffer and is removed before the
+    /// next transaction
     /// PushTail
     fn dealloc(&self, ptr: Pointer) {
+        // adding to freelist
         self.freelist
             .borrow_mut()
             .append(ptr)
             .expect("dealloc error");
 
-        // retiring page from buffer, to be cleared after committ
+        // retiring page from buffer, to be cleared later
         if let Some(entry) = self.buffer.borrow_mut().hmap.get_mut(&ptr) {
             entry.retired = true;
         };
