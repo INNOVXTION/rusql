@@ -15,6 +15,7 @@ use crate::database::errors::FLError;
 use crate::database::helper::as_page;
 use crate::database::pager::buffer::Buffer;
 use crate::database::pager::freelist::{FLConfig, FLNode, FreeList, GC};
+use crate::database::pager::metapage::*;
 use crate::database::pager::mmap::*;
 use crate::database::tables::{Key, Record, Value};
 use crate::database::{
@@ -36,16 +37,16 @@ impl std::fmt::Display for NodeFlag {
     }
 }
 
-pub(crate) struct EnvoyV1 {
+pub(crate) struct DiskPager {
     path: &'static str,
     pub database: OwnedFd,
     pub buffer: RefCell<Buffer>,
     pub mmap: RefCell<Mmap>,
 
-    failed: Cell<bool>,
+    pub failed: Cell<bool>,
 
-    tree: Rc<RefCell<dyn Tree<Codec = Self>>>,
-    freelist: Rc<RefCell<dyn GC<Codec = Self>>>,
+    pub tree: Rc<RefCell<dyn Tree<Codec = Self>>>,
+    pub freelist: Rc<RefCell<dyn GC<Codec = Self>>>,
     // WIP
     // clean factor
     // counter after deletion for cleanup
@@ -63,7 +64,7 @@ pub(crate) trait Pager {
     fn update(&self, ptr: Pointer) -> Rc<RefCell<Node>>; // FL update
 }
 
-impl Pager for EnvoyV1 {
+impl Pager for DiskPager {
     /// decodes a page, checks buffer before reading disk
     ///
     /// `BTree.get`, reads a page possibly from buffer or disk
@@ -173,12 +174,12 @@ impl Pager for EnvoyV1 {
     }
 }
 
-impl EnvoyV1 {
+impl DiskPager {
     /// initializes pager
     ///
     /// opens file, and sets up callbacks for the tree
     pub fn open(path: &'static str) -> Result<Rc<Self>, Error> {
-        let mut pager = Rc::new_cyclic(|w| EnvoyV1 {
+        let mut pager = Rc::new_cyclic(|w| DiskPager {
             path,
             database: create_file_sync(path).expect("file open error"),
             failed: Cell::new(false),
@@ -219,51 +220,8 @@ impl EnvoyV1 {
         Ok(pager)
     }
 
-    #[instrument(name = "pager get", skip_all)]
-    pub fn get(&self, key: Key) -> Result<Value, Error> {
-        info!("getting...");
-
-        self.tree
-            .borrow()
-            .search(key)
-            .ok_or(Error::SearchError("value not found".to_string()))
-    }
-
-    #[instrument(name = "pager scan", skip_all)]
-    pub fn scan(&self, mode: ScanMode) -> Result<Vec<Record>, Error> {
-        info!("scanning...");
-
-        Ok(self
-            .tree
-            .borrow()
-            .scan(mode)
-            .map_err(|e| Error::SearchError(format!("scan error {e}")))?
-            .collect_records())
-    }
-
-    #[instrument(name = "pager set", skip_all)]
-    pub fn set(&self, key: Key, val: Value, flag: SetFlag) -> Result<(), Error> {
-        info!("inserting...");
-
-        let recov_page = metapage_save(self); // saving current metapage for possible rollback
-        self.tree.borrow_mut().set(key, val, flag).map_err(|e| {
-            error!(%e, "tree error");
-            e
-        })?;
-        self.update_or_revert(&recov_page)
-    }
-
-    #[instrument(name = "pager delete", skip_all)]
-    pub fn delete(&self, key: Key) -> Result<(), Error> {
-        info!("deleting...");
-
-        let recov_page = metapage_save(self); // saving current metapage for possible rollback
-        self.tree.borrow_mut().delete(key)?;
-        self.update_or_revert(&recov_page)
-    }
-
     #[instrument(name = "pager update file", skip_all)]
-    fn update_or_revert(&self, recov_page: &MetaPage) -> Result<(), Error> {
+    pub fn update_or_revert(&self, recov_page: &MetaPage) -> Result<(), Error> {
         debug!("tree operation complete, updating file");
 
         // making sure the meta page is a known good state after a potential write error
@@ -292,7 +250,7 @@ impl EnvoyV1 {
     }
 
     /// write sequence
-    fn file_update(&self) -> Result<(), PagerError> {
+    pub fn file_update(&self) -> Result<(), PagerError> {
         // updating free list for next update
         self.freelist.borrow_mut().set_max_seq();
 
@@ -308,7 +266,7 @@ impl EnvoyV1 {
     }
 
     /// helper function: writePages, flushes the buffer
-    fn page_write(&self) -> Result<(), PagerError> {
+    pub fn page_write(&self) -> Result<(), PagerError> {
         debug!("writing page...");
 
         let buf = self.buffer.borrow();
@@ -401,7 +359,7 @@ impl EnvoyV1 {
     }
 
     /// triggers truncation logic once the freelist exceeds TRUNC_THRESHOLD entries
-    fn cleanup_check(&self) -> Result<(), Error> {
+    pub fn cleanup_check(&self) -> Result<(), Error> {
         let list: Vec<Pointer> =
             self.freelist
                 .borrow()
@@ -420,7 +378,7 @@ impl EnvoyV1 {
     /// attempts to truncate the file. Makes call to and modifies freelist. This function should therefore be called
     /// after tree operations. Truncation amount is based on count_trunc_pages() algorithm
     #[instrument(skip_all)]
-    fn truncate(&self, list: Vec<Pointer>) -> Result<(), Error> {
+    pub fn truncate(&self, list: Vec<Pointer>) -> Result<(), Error> {
         let npages = self.buffer.borrow().npages;
         if npages <= 2 {
             return Err(
@@ -520,317 +478,6 @@ fn count_trunc_pages(npages: u64, freelist: &[Pointer]) -> Option<u64> {
     best
 }
 
-//--------Meta Page Layout-------
-// | sig | root_ptr | page_used |
-// | 16B |    8B    |     8B    |
-//
-// new
-// | sig | root_ptr | page_used | head_page | head_seq | tail_page | tail_seq |
-// | 16B |    8B    |     8B    |     8B    |    8B    |     8B    |    8B    |
-
-// offsets
-enum MpField {
-    Sig = 0,
-    RootPtr = 16,
-    Npages = 16 + 8,
-    HeadPage = 16 + (8 * 2),
-    HeadSeq = 16 + (8 * 3),
-    TailPage = 16 + (8 * 4),
-    TailSeq = 16 + (8 * 5),
-}
-
-pub(crate) struct MetaPage(Box<[u8; METAPAGE_SIZE]>);
-
-impl MetaPage {
-    fn new() -> Self {
-        MetaPage(Box::new([0u8; METAPAGE_SIZE]))
-    }
-
-    fn set_sig(&mut self, sig: &str) {
-        self[..16].copy_from_slice(sig.as_bytes());
-    }
-
-    fn read_sig(&self) -> String {
-        String::from_str(str::from_utf8(&self[..16]).unwrap()).unwrap()
-    }
-
-    fn set_ptr(&mut self, field: MpField, ptr: Option<Pointer>) {
-        let offset = field as usize;
-        let ptr = match ptr {
-            Some(ptr) => ptr,
-            None => Pointer::from(0u64),
-        };
-        self[offset..offset + PTR_SIZE].copy_from_slice(&ptr.as_slice());
-    }
-
-    fn read_ptr(&self, field: MpField) -> Pointer {
-        let offset = field as usize;
-        Pointer::from(u64::from_le_bytes(
-            self[offset..offset + PTR_SIZE].try_into().unwrap(),
-        ))
-    }
-}
-
-impl Deref for MetaPage {
-    type Target = [u8];
-
-    fn deref(&self) -> &Self::Target {
-        &*self.0
-    }
-}
-impl DerefMut for MetaPage {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut *self.0
-    }
-}
-
-/// returns metapage object of current pager state
-fn metapage_save(pager: &EnvoyV1) -> MetaPage {
-    let flc = pager.freelist.borrow().get_config();
-    let tr_ref = pager.tree.borrow();
-    let mut data = MetaPage::new();
-
-    debug!(
-        sig = DB_SIG,
-        root_ptr = ?tr_ref.get_root(),
-        npages = pager.buffer.borrow().npages,
-        fl_head_ptr = ?flc.head_page,
-        fl_head_seq = flc.head_seq,
-        fl_tail_ptr = ?flc.tail_page,
-        fl_tail_seq = flc.tail_seq,
-        "saving meta page:"
-    );
-
-    use MpField as M;
-    data.set_sig(DB_SIG);
-    data.set_ptr(M::RootPtr, tr_ref.get_root());
-    data.set_ptr(M::Npages, Some(pager.buffer.borrow().npages.into()));
-
-    data.set_ptr(M::HeadPage, flc.head_page);
-    data.set_ptr(M::HeadSeq, Some(flc.head_seq.into()));
-    data.set_ptr(M::TailPage, flc.tail_page);
-    data.set_ptr(M::TailSeq, Some(flc.tail_seq.into()));
-
-    data
-}
-
-/// loads meta page object into pager
-///
-/// panics when called without initialized mmap
-fn metapage_load(pager: &EnvoyV1, meta: &MetaPage) {
-    debug!("loading metapage");
-
-    let mut tr_ref = pager.tree.borrow_mut();
-
-    match meta.read_ptr(MpField::RootPtr) {
-        Pointer(0) => tr_ref.set_root(None),
-        n => tr_ref.set_root(Some(n)),
-    };
-
-    pager.buffer.borrow_mut().npages = meta.read_ptr(MpField::Npages).get();
-
-    let flc = FLConfig {
-        head_page: Some(meta.read_ptr(MpField::HeadPage)),
-        head_seq: meta.read_ptr(MpField::HeadSeq).get() as usize,
-
-        tail_page: Some(meta.read_ptr(MpField::TailPage)),
-        tail_seq: meta.read_ptr(MpField::TailSeq).get() as usize,
-    };
-
-    pager.freelist.borrow_mut().set_config(&flc);
-}
-
-/// loads meta page from disk,
-/// formerly root_read
-fn metapage_read(pager: &EnvoyV1, file_size: u64) {
-    if file_size == 0 {
-        // empty file
-        debug!("root read: empty file...");
-        pager.buffer.borrow_mut().npages = 2; // reserved for meta page and one free list node
-        let flc = FLConfig {
-            head_page: Some(Pointer::from(1u64)),
-            head_seq: 0,
-            tail_page: Some(Pointer::from(1u64)),
-            tail_seq: 0,
-        };
-        pager.freelist.borrow_mut().set_config(&flc);
-        return;
-    }
-    debug!("root read: loading meta page");
-
-    let mut meta = MetaPage::new();
-    meta.copy_from_slice(&pager.mmap.borrow().chunks[0].to_slice()[..METAPAGE_SIZE]);
-    metapage_load(pager, &meta);
-
-    assert!(pager.buffer.borrow().npages != 0);
-}
-
-/// writes meta page to disk
-fn metapage_write(pager: &EnvoyV1, meta: &MetaPage) -> Result<(), PagerError> {
-    debug!("writing metapage to disk...");
-    let r = rustix::io::pwrite(&pager.database, meta, 0)?;
-    Ok(())
-}
-
-#[cfg(test)]
-mod test {
-
-    use super::*;
-    use crate::database::helper::cleanup_file;
-    use rand::Rng;
-    use test_log::test;
-
-    #[test]
-    fn open_pager() {
-        let path = "test-files/open_pager.rdb";
-        cleanup_file(path);
-        let pager = EnvoyV1::open(path).unwrap();
-        assert_eq!(pager.buffer.borrow().npages, 2);
-        cleanup_file(path);
-    }
-
-    #[test]
-    fn disk_insert1() {
-        let path = "test-files/disk_insert1.rdb";
-        cleanup_file(path);
-        let pager = EnvoyV1::open(path).unwrap();
-        pager
-            .set(
-                "1".into(),
-                Value::from_unencoded_str("val"),
-                SetFlag::UPSERT,
-            )
-            .unwrap();
-        assert_eq!(
-            pager.get("1".into()).unwrap(),
-            Value::from_unencoded_str("val")
-        );
-        cleanup_file(path);
-    }
-
-    #[test]
-    fn disk_insert2() {
-        let path = "test-files/disk_insert2.rdb";
-        cleanup_file(path);
-        let pager = EnvoyV1::open(path).unwrap();
-
-        for i in 1u16..=300u16 {
-            pager
-                .set(format!("{i}").into(), "value".into(), SetFlag::UPSERT)
-                .unwrap()
-        }
-        for i in 1u16..=300u16 {
-            assert_eq!(pager.get(format!("{i}").into()).unwrap(), "value".into())
-        }
-        cleanup_file(path);
-    }
-
-    #[test]
-    fn disk_delete1() {
-        let path = "test-files/disk_delete1.rdb";
-        cleanup_file(path);
-        let pager = EnvoyV1::open(path).unwrap();
-
-        for i in 1u16..=300u16 {
-            pager
-                .set(format!("{i}").into(), "value".into(), SetFlag::UPSERT)
-                .unwrap()
-        }
-        for i in 1u16..=300u16 {
-            pager.delete(format!("{i}").into()).unwrap();
-        }
-        cleanup_file(path);
-    }
-
-    #[test]
-    fn disk_random1() {
-        let path = "test-files/disk_random1.rdb";
-        cleanup_file(path);
-        let pager = EnvoyV1::open(path).unwrap();
-
-        for _ in 1u16..=1000 {
-            pager
-                .set(
-                    format!("{:?}", rand::rng().random_range(1..1000)).into(),
-                    Value::from_unencoded_str("val"),
-                    SetFlag::UPSERT,
-                )
-                .unwrap()
-        }
-        cleanup_file(path);
-    }
-
-    #[test]
-    fn disk_delete2() {
-        let path = "test-files/disk_delete2.rdb";
-        cleanup_file(path);
-        let pager = EnvoyV1::open(path).unwrap();
-
-        for k in 1u16..=1000 {
-            pager
-                .set(
-                    format!("{}", k).into(),
-                    Value::from_unencoded_str("val"),
-                    SetFlag::UPSERT,
-                )
-                .unwrap()
-        }
-        for k in 1u16..=1000 {
-            pager.delete(format!("{}", k).into()).unwrap()
-        }
-        cleanup_file(path);
-    }
-
-    #[test]
-    fn cleanup_helper1() {
-        let list: Vec<Pointer> = vec![Pointer(6), Pointer(9), Pointer(8), Pointer(7), Pointer(4)];
-        let res = count_trunc_pages(10, &list);
-        assert_eq!(res, Some(4));
-
-        let list: Vec<Pointer> = vec![Pointer(6), Pointer(9), Pointer(8), Pointer(4), Pointer(7)];
-        let res = count_trunc_pages(10, &list);
-        assert_eq!(res, None);
-
-        let list: Vec<Pointer> = vec![Pointer(9), Pointer(8), Pointer(7), Pointer(6), Pointer(5)];
-        let res = count_trunc_pages(10, &list);
-        assert_eq!(res, Some(5));
-
-        let list: Vec<Pointer> = vec![Pointer(9), Pointer(4), Pointer(7), Pointer(6), Pointer(5)];
-        let res = count_trunc_pages(10, &list);
-        assert_eq!(res, Some(1));
-
-        let list: Vec<Pointer> = vec![Pointer(1), Pointer(4), Pointer(7), Pointer(6), Pointer(5)];
-        let res = count_trunc_pages(10, &list);
-        assert_eq!(res, None);
-    }
-
-    // #[test]
-    // fn cleanup_test() {
-    //     let path = "test-files/disk_cleanup.rdb";
-    //     cleanup_file(path);
-    //     let pager = EnvoyV1::open(path).unwrap();
-    //     // assert_eq!(fd_size, PAGE_SIZE as u64 * 2);
-    //     for k in 1u16..=500 {
-    //         pager
-    //             .set(format!("{}", k).into(), Value::from_unencoded_str("val"))
-    //             .unwrap()
-    //     }
-    //     for k in 1u16..=500 {
-    //         pager.delete(format!("{}", k).into()).unwrap()
-    //     }
-    //     pager.truncate();
-    //     let fd_size = fs::fstat(&pager.database)
-    //         .map_err(|e| {
-    //             error!("Error when getting file size");
-    //             Error::PagerError(PagerError::FDError(e))
-    //         })
-    //         .unwrap()
-    //         .st_size as u64;
-    //     cleanup_file(path);
-    //     assert_eq!(fd_size, PAGE_SIZE as u64 * 2);
-    // }
-}
-
 #[cfg(test)]
 mod truncate {
     use super::*;
@@ -895,6 +542,28 @@ mod truncate {
         Pointer::from(page)
     }
 
+    #[test]
+    fn cleanup_helper1() {
+        let list: Vec<Pointer> = vec![Pointer(6), Pointer(9), Pointer(8), Pointer(7), Pointer(4)];
+        let res = count_trunc_pages(10, &list);
+        assert_eq!(res, Some(4));
+
+        let list: Vec<Pointer> = vec![Pointer(6), Pointer(9), Pointer(8), Pointer(4), Pointer(7)];
+        let res = count_trunc_pages(10, &list);
+        assert_eq!(res, None);
+
+        let list: Vec<Pointer> = vec![Pointer(9), Pointer(8), Pointer(7), Pointer(6), Pointer(5)];
+        let res = count_trunc_pages(10, &list);
+        assert_eq!(res, Some(5));
+
+        let list: Vec<Pointer> = vec![Pointer(9), Pointer(4), Pointer(7), Pointer(6), Pointer(5)];
+        let res = count_trunc_pages(10, &list);
+        assert_eq!(res, Some(1));
+
+        let list: Vec<Pointer> = vec![Pointer(1), Pointer(4), Pointer(7), Pointer(6), Pointer(5)];
+        let res = count_trunc_pages(10, &list);
+        assert_eq!(res, None);
+    }
     #[test]
     fn test_cleanup_check_empty_list() {
         let result = count_trunc_pages(100, &[]);
@@ -1139,371 +808,5 @@ mod truncate {
         let list = vec![ptr(999), ptr(998)];
         let result = count_trunc_pages(1000, &list);
         assert_eq!(result, Some(2));
-    }
-}
-
-#[cfg(test)]
-mod buffer_integration_tests {
-    use super::*;
-    use crate::database::{btree::Compare, helper::cleanup_file};
-    use test_log::test;
-
-    #[test]
-    fn buffer_tracks_inserts_through_pager() {
-        let path = "test-files/buffer_int_insert.rdb";
-        cleanup_file(path);
-        let pager = EnvoyV1::open(path).unwrap();
-
-        // Insert should load pages into buffer as dirty
-        pager
-            .tree
-            .borrow_mut()
-            .set("key1".into(), "value1".into(), SetFlag::UPSERT)
-            .unwrap();
-
-        let buf = pager.buffer.borrow();
-        let dirty_count = buf.to_dirty_iter().count();
-
-        // Should have at least one dirty page (the tree node)
-        assert!(
-            dirty_count > 0,
-            "Buffer should contain dirty pages after insert"
-        );
-        cleanup_file(path);
-    }
-
-    #[test]
-    fn buffer_persists_across_page_write() {
-        let path = "test-files/buffer_int_persist.rdb";
-        cleanup_file(path);
-        let pager = EnvoyV1::open(path).unwrap();
-
-        pager
-            .set("key1".into(), "value1".into(), SetFlag::UPSERT)
-            .unwrap();
-
-        let buf_before = pager.buffer.borrow().hmap.len();
-
-        // After set (which triggers page_write and clear), buffer should be cleaned
-        let buf_after = pager.buffer.borrow();
-
-        // Pages should still be in buffer but marked clean
-        for entry in buf_after.hmap.values() {
-            assert!(!entry.dirty, "Pages should be clean after page_write");
-        }
-        cleanup_file(path);
-    }
-
-    #[test]
-    fn buffer_handles_multiple_sequential_sets() {
-        let path = "test-files/buffer_int_seq.rdb";
-        cleanup_file(path);
-        let pager = EnvoyV1::open(path).unwrap();
-
-        for i in 1..=10 {
-            pager
-                .set(
-                    format!("key{}", i).into(),
-                    format!("val{}", i).into(),
-                    SetFlag::UPSERT,
-                )
-                .unwrap();
-        }
-
-        let buf = pager.buffer.borrow();
-        // Buffer should contain pages from tree operations
-        assert!(
-            buf.hmap.len() > 0,
-            "Buffer should contain pages after multiple inserts"
-        );
-        cleanup_file(path);
-    }
-
-    #[test]
-    fn buffer_retire_on_delete() {
-        let path = "test-files/buffer_int_retire.rdb";
-        cleanup_file(path);
-        let pager = EnvoyV1::open(path).unwrap();
-
-        pager
-            .set("key1".into(), "value1".into(), SetFlag::UPSERT)
-            .unwrap();
-
-        let initial_size = pager.buffer.borrow().hmap.len();
-
-        // Delete should mark pages as retired
-        pager.delete("key1".into()).unwrap();
-
-        let buf = pager.buffer.borrow();
-        // After delete and clear, retired pages should be removed
-        // (clear() is called during page_write in update_or_revert)
-        let has_retired = buf.hmap.values().any(|e| e.retired);
-
-        // After clear(), retired pages should be gone
-        assert!(
-            !has_retired || buf.hmap.len() <= initial_size,
-            "Retired pages should be managed"
-        );
-        cleanup_file(path);
-    }
-
-    #[test]
-    fn buffer_reads_load_clean_pages() {
-        let path = "test-files/buffer_int_read.rdb";
-        cleanup_file(path);
-        let pager = EnvoyV1::open(path).unwrap();
-
-        // Insert and flush
-        pager
-            .set("key1".into(), "value1".into(), SetFlag::UPSERT)
-            .unwrap();
-
-        // Clear buffer to simulate fresh read
-        pager.buffer.borrow_mut().hmap.clear();
-
-        // Read should load page as clean
-        let _value = pager.get("key1".into()).unwrap();
-
-        let buf = pager.buffer.borrow();
-        let clean_pages = buf.hmap.values().filter(|e| !e.dirty).count();
-
-        assert!(clean_pages > 0, "Read operations should load clean pages");
-        cleanup_file(path);
-    }
-
-    #[test]
-    fn buffer_dirty_pages_flushed_on_write() {
-        let path = "test-files/buffer_int_flush.rdb";
-        cleanup_file(path);
-        let pager = EnvoyV1::open(path).unwrap();
-
-        pager
-            .set("key1".into(), "value1".into(), SetFlag::UPSERT)
-            .unwrap();
-
-        let buf = pager.buffer.borrow();
-        let dirty_before = buf.to_dirty_iter().count();
-
-        // After set, dirty pages should be flushed
-        // (this happens in file_update -> page_write -> clear)
-        let dirty_after = pager.buffer.borrow().to_dirty_iter().count();
-
-        assert_eq!(
-            dirty_after, 0,
-            "All dirty pages should be flushed after set completes"
-        );
-        cleanup_file(path);
-    }
-
-    #[test]
-    fn buffer_nappend_increments_on_new_pages() {
-        let path = "test-files/buffer_int_nappend.rdb";
-        cleanup_file(path);
-        let pager = EnvoyV1::open(path).unwrap();
-
-        let nappend_before = pager.buffer.borrow().nappend;
-
-        pager
-            .set("key1".into(), "value1".into(), SetFlag::UPSERT)
-            .unwrap();
-
-        let nappend_after = pager.buffer.borrow().nappend;
-
-        // nappend should be 0 after clear() in page_write
-        assert_eq!(nappend_after, 0, "nappend should reset after page flush");
-        cleanup_file(path);
-    }
-
-    #[test]
-    fn buffer_npages_increments_after_flush() {
-        let path = "test-files/buffer_int_npages.rdb";
-        cleanup_file(path);
-        let pager = EnvoyV1::open(path).unwrap();
-
-        let npages_before = pager.buffer.borrow().npages;
-
-        pager
-            .set("key1".into(), "value1".into(), SetFlag::UPSERT)
-            .unwrap();
-
-        let npages_after = pager.buffer.borrow().npages;
-
-        // npages should have increased
-        assert!(
-            npages_after > npages_before,
-            "npages should increase after new pages are appended"
-        );
-        cleanup_file(path);
-    }
-
-    #[test]
-    fn buffer_freelist_pages_reused() {
-        let path = "test-files/buffer_int_freelist.rdb";
-        cleanup_file(path);
-        let pager = EnvoyV1::open(path).unwrap();
-
-        // Insert multiple pages
-        for i in 1..=20 {
-            pager
-                .set(
-                    format!("key{}", i).into(),
-                    format!("val{}", i).into(),
-                    SetFlag::UPSERT,
-                )
-                .unwrap();
-        }
-
-        let npages_before = pager.buffer.borrow().npages;
-
-        // Delete some pages (adds to freelist)
-        for i in 1..=10 {
-            pager.delete(format!("key{}", i).into()).unwrap();
-        }
-
-        // Insert again - should reuse freelist pages
-        for i in 21..=30 {
-            pager
-                .set(
-                    format!("key{}", i).into(),
-                    format!("val{}", i).into(),
-                    SetFlag::UPSERT,
-                )
-                .unwrap();
-        }
-
-        let npages_after = pager.buffer.borrow().npages;
-
-        // npages growth should be minimal if freelist pages are reused
-        assert!(
-            npages_after - npages_before < 15,
-            "Freelist reuse should prevent rapid npages growth"
-        );
-        cleanup_file(path);
-    }
-
-    #[test]
-    fn buffer_scan_loads_multiple_pages() {
-        let path = "test-files/buffer_int_scan.rdb";
-        cleanup_file(path);
-        let pager = EnvoyV1::open(path).unwrap();
-
-        // Insert multiple pages of data
-        for i in 1..=50 {
-            pager
-                .set(
-                    format!("key{:03}", i).into(),
-                    format!("val{}", i).into(),
-                    SetFlag::UPSERT,
-                )
-                .unwrap();
-        }
-
-        pager.buffer.borrow_mut().hmap.clear();
-
-        // Scan should load multiple pages
-        let mode = ScanMode::new_open("key".into(), Compare::GE).unwrap();
-        let _records = pager.scan(mode).unwrap();
-
-        let buf = pager.buffer.borrow();
-        assert!(
-            buf.hmap.len() > 0,
-            "Scan operations should load pages into buffer"
-        );
-        cleanup_file(path);
-    }
-
-    #[test]
-    fn buffer_recovery_on_failed_write() {
-        let path = "test-files/buffer_int_recovery.rdb";
-        cleanup_file(path);
-        let pager = EnvoyV1::open(path).unwrap();
-
-        pager
-            .set("key1".into(), "value1".into(), SetFlag::UPSERT)
-            .unwrap();
-
-        // Simulate a failed write scenario
-        pager.failed.set(true);
-
-        // The next operation should detect the failure and revert
-        // This is handled in update_or_revert
-        let result = pager.set("key2".into(), "value2".into(), SetFlag::UPSERT);
-
-        // After recovery attempt, buffer should be manageable
-        let buf = pager.buffer.borrow();
-        assert!(buf.hmap.len() < 100, "Buffer should be cleared on recovery");
-        cleanup_file(path);
-    }
-
-    #[test]
-    fn buffer_consistency_after_many_operations() {
-        let path = "test-files/buffer_int_consistency.rdb";
-        cleanup_file(path);
-        let pager = EnvoyV1::open(path).unwrap();
-
-        // Mix of inserts, updates, and deletes
-        for i in 1..=30 {
-            pager
-                .set(
-                    format!("key{}", i).into(),
-                    format!("val{}", i).into(),
-                    SetFlag::UPSERT,
-                )
-                .unwrap();
-        }
-
-        for i in 1..=10 {
-            pager
-                .set(
-                    format!("key{}", i).into(),
-                    format!("updated{}", i).into(),
-                    SetFlag::UPSERT,
-                )
-                .unwrap();
-        }
-
-        for i in 1..=5 {
-            pager.delete(format!("key{}", i).into()).unwrap();
-        }
-
-        // Verify data integrity
-        for i in 6..=10 {
-            let val = pager.get(format!("key{}", i).into()).unwrap();
-            assert_eq!(val, format!("updated{}", i).into());
-        }
-
-        let buf = pager.buffer.borrow();
-        let all_clean = buf.hmap.values().all(|e| !e.dirty);
-        assert!(
-            all_clean,
-            "All pages should be clean after operations complete"
-        );
-        cleanup_file(path);
-    }
-
-    #[test]
-    fn buffer_handles_value_updates_dirty_tracking() {
-        let path = "test-files/buffer_int_update.rdb";
-        cleanup_file(path);
-        let pager = EnvoyV1::open(path).unwrap();
-
-        pager
-            .set("key1".into(), "value1".into(), SetFlag::UPSERT)
-            .unwrap();
-
-        pager
-            .set("key1".into(), "value2".into(), SetFlag::UPSERT)
-            .unwrap();
-
-        let value = pager.get("key1".into()).unwrap();
-        assert_eq!(value, "value2".into());
-
-        let buf = pager.buffer.borrow();
-        assert_eq!(
-            buf.to_dirty_iter().count(),
-            0,
-            "All pages should be clean after flush"
-        );
-        cleanup_file(path);
     }
 }

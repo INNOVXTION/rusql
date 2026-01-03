@@ -344,9 +344,9 @@ impl TreeNode {
         flag: SetFlag,
         res: &mut SetResponse,
     ) -> Option<()> {
-        let k = node.get_key(idx).ok()?;
-        let v = node.get_val(idx).ok()?;
-        let key_exists: bool = k == key;
+        let old_k = node.get_key(idx).ok()?;
+        let old_v = node.get_val(idx).ok()?;
+        let key_exists: bool = old_k == key;
 
         match flag {
             // only add if missing
@@ -365,7 +365,7 @@ impl TreeNode {
                 if key_exists {
                     self.leaf_kvupdate(node, idx, key, val).unwrap();
                     res.updated = true;
-                    res.old = Some((k, v));
+                    res.old = Some((old_k, old_v));
 
                     Some(())
                 } else {
@@ -377,7 +377,7 @@ impl TreeNode {
                 if key_exists {
                     self.leaf_kvupdate(node, idx, key, val).unwrap();
                     res.updated = true;
-                    res.old = Some((k, v));
+                    res.old = Some((old_k, old_v));
 
                     Some(())
                 } else {

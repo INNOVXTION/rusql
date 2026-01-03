@@ -8,7 +8,7 @@ use tracing::{debug, error};
 use crate::database::{
     btree::{BTree, SetFlag, SetResponse, Tree},
     errors::Error,
-    pager::{KVEngine, Pager},
+    pager::{KVEngine, Pager, Transaction},
     tables::{Key, Record, Value},
     types::{Node, Pointer},
 };
@@ -33,6 +33,44 @@ impl KVEngine for MemPager {
     }
 
     fn scan(&self, mode: crate::database::btree::ScanMode) -> Result<Vec<Record>, Error> {
+        todo!()
+    }
+}
+
+impl Transaction for MemPager {
+    fn begin(&mut self) {
+        todo!()
+    }
+
+    fn abort(&mut self) {
+        todo!()
+    }
+
+    fn commit(&mut self) -> crate::database::errors::Result<()> {
+        todo!()
+    }
+
+    fn tree_get(&self, key: Key) -> crate::database::errors::Result<Value> {
+        todo!()
+    }
+
+    fn tree_scan(
+        &self,
+        mode: crate::database::btree::ScanMode,
+    ) -> crate::database::errors::Result<Vec<Record>> {
+        todo!()
+    }
+
+    fn tree_set(
+        &self,
+        key: Key,
+        val: Value,
+        flag: SetFlag,
+    ) -> crate::database::errors::Result<SetResponse> {
+        todo!()
+    }
+
+    fn tree_delete(&self, key: Key) -> crate::database::errors::Result<()> {
         todo!()
     }
 }

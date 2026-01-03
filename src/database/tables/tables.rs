@@ -2,7 +2,7 @@ use std::{marker::PhantomData, ops::Deref};
 
 use crate::database::{
     errors::{Error, Result, TableError},
-    pager::KVEngine,
+    pager::{KVEngine, Transaction},
     tables::{Key, Value, db::Database},
     types::{BTREE_MAX_VAL_SIZE, DataCell},
 };
@@ -169,7 +169,7 @@ impl TableBuilder {
     }
 
     /// parsing is WIP
-    pub fn build<KV: KVEngine>(self, pager: &mut Database<KV>) -> Result<Table> {
+    pub fn build<KV: KVEngine + Transaction>(self, pager: &mut Database<KV>) -> Result<Table> {
         let name = match self.name {
             Some(n) => {
                 if n.is_empty() {

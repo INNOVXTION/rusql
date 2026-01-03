@@ -24,11 +24,8 @@ pub const TRUNC_THRESHOLD: usize = 1000; // amount of free list entries which tr
 
 /// maximum size for nodes inside memory
 pub const NODE_SIZE: usize = PAGE_SIZE * 2;
-
-pub const DB_SIG: &'static str = "BuildYourOwnDB06";
-pub const METAPAGE_SIZE: usize = 16 + (8 * 6); // sig plus 6 eight byte values
-pub const SIG_SIZE: usize = 16;
 pub const PTR_SIZE: usize = 8;
+
 pub const U16_SIZE: usize = 2;
 
 /// implements deref to get to the underlying array

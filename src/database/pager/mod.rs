@@ -5,10 +5,11 @@ mod buffer;
 pub mod diskpager;
 pub mod freelist;
 pub mod mempager;
+mod metapage;
 mod mmap;
 mod transaction;
 
 // exporting to database module
-pub(crate) use diskpager::{EnvoyV1, NodeFlag, Pager};
+pub(crate) use diskpager::{DiskPager, NodeFlag, Pager};
 pub(crate) use mempager::mempage_tree;
-pub(crate) use transaction::{Envoy, KVEngine};
+pub(crate) use transaction::{Envoy, KVEngine, Transaction};
