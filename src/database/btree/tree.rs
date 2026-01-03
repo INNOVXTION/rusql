@@ -13,11 +13,8 @@ use crate::database::{
     btree::{cursor::ScanMode, node::*},
     errors::{Error, Result},
     helper::debug_print_tree,
-    pager::{
-        EnvoyV1,
-        diskpager::{KVEngine, NodeFlag, Pager},
-    },
-    tables::{Key, Record, Value},
+    pager::diskpager::{NodeFlag, Pager},
+    tables::{Key, Value},
     types::*,
 };
 
@@ -260,7 +257,7 @@ impl<P: Pager> BTree<P> {
     }
 
     /// recursive deletion, node = current node, returns updated node in case a deletion happened
-    fn tree_delete(&mut self, mut node: &TreeNode, key: &Key) -> Option<TreeNode> {
+    fn tree_delete(&mut self, node: &TreeNode, key: &Key) -> Option<TreeNode> {
         let idx = node.lookupidx(key);
         match node.get_type() {
             NodeType::Leaf => {
@@ -426,14 +423,13 @@ impl<P: Pager> Debug for BTree<P> {
 
 #[cfg(test)]
 mod test {
-    use std::error::Error;
 
-    use crate::database::pager::mempage_tree;
+    use crate::database::pager::{diskpager::KVEngine, mempage_tree};
 
     use super::*;
     use rand::Rng;
     use test_log::test;
-    use tracing::{Level, info, span};
+    use tracing::{Level, span};
 
     #[test]
     fn simple_insert() {
@@ -742,7 +738,7 @@ mod test {
         let tree = mempage_tree();
 
         let key = "big".to_string();
-        let too_big = "🚀".repeat(2000); // 
+        let too_big = "🚀".repeat(2000); //
 
         assert!(
             tree.set(key.into(), too_big.into(), SetFlag::UPSERT)

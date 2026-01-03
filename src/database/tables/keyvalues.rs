@@ -530,7 +530,6 @@ mod test {
     use super::super::tables::TableBuilder;
     use super::*;
     use test_log::test;
-    use tracing::{Level, info, span};
 
     #[test]
     fn key_cmp1() -> Result<()> {

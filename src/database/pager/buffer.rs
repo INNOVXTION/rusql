@@ -92,13 +92,11 @@ impl Buffer {
         self.hmap.remove(&ptr);
     }
 
-    /// helper function for debugging purposes
     pub fn debug_print(&self) {
         #[cfg(test)]
         {
             if let Ok("debug") = std::env::var("RUSQL_LOG_PAGER").as_deref() {
-                debug!("current buffer:");
-                debug!("---------");
+                debug!("current buffer:\n{:-<10}", "-");
                 for e in self.hmap.iter() {
                     let n = e.1.node.borrow();
                     debug!(
@@ -108,7 +106,7 @@ impl Buffer {
                         e.1.dirty
                     )
                 }
-                debug!("---------")
+                debug!("{:-<10}", "-");
             }
         }
     }

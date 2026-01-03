@@ -1,5 +1,4 @@
 use std::cell::{Cell, RefCell};
-use std::collections::hash_map::Keys;
 use std::collections::{HashMap, HashSet};
 use std::ops::{Deref, DerefMut};
 use std::os::fd::OwnedFd;
@@ -11,7 +10,7 @@ use tracing::{debug, error, info, instrument, warn};
 
 use crate::create_file_sync;
 use crate::database::BTree;
-use crate::database::btree::{ScanIter, ScanMode};
+use crate::database::btree::ScanMode;
 use crate::database::errors::FLError;
 use crate::database::helper::as_page;
 use crate::database::pager::buffer::Buffer;

@@ -1,14 +1,9 @@
-use std::{collections::HashMap, marker::PhantomData, ops::Deref};
+use std::{marker::PhantomData, ops::Deref};
 
 use crate::database::{
-    btree::{Compare, ScanMode, SetFlag},
     errors::{Error, Result, TableError},
     pager::diskpager::KVEngine,
-    tables::{
-        Key, Value,
-        db::Database,
-        records::{Query, Record},
-    },
+    tables::{Key, Value, db::Database},
     types::{BTREE_MAX_VAL_SIZE, DataCell},
 };
 use serde::{Deserialize, Serialize};
@@ -402,8 +397,9 @@ impl TypeCol {
 #[cfg(test)]
 mod test {
     use crate::database::{
-        btree::Compare,
+        btree::{Compare, ScanMode, SetFlag},
         pager::{diskpager::Envoy, mempage_tree},
+        tables::{Query, Record},
         types::DataCell,
     };
 
@@ -798,6 +794,8 @@ mod test {
 // these tests were cooked up by claude, good luck!
 #[cfg(test)]
 mod scan {
+    use crate::database::btree::{ScanMode, SetFlag};
+    use crate::database::tables::{Query, Record};
     use crate::database::{btree::Compare, pager::diskpager::Envoy};
 
     use super::super::db::*;
