@@ -34,16 +34,26 @@ pub enum SetFlag {
 }
 
 pub(crate) struct SetResponse {
-    old: Option<(Key, Value)>,
-    added: bool,
-    updated: bool,
+    pub added: bool,
+    pub updated: bool,
+    pub old: Option<(Key, Value)>,
+}
+
+impl Default for SetResponse {
+    fn default() -> Self {
+        Self {
+            added: false,
+            updated: false,
+            old: None,
+        }
+    }
 }
 
 pub(crate) trait Tree {
     type Codec: Pager;
 
     fn search(&self, key: Key) -> Option<Value>;
-    fn set(&mut self, key: Key, value: Value, flag: SetFlag) -> Result<()>;
+    fn set(&mut self, key: Key, value: Value, flag: SetFlag) -> Result<SetResponse>;
     fn scan(&self, mode: ScanMode) -> Result<ScanIter<'_, Self::Codec>>;
     fn delete(&mut self, key: Key) -> Result<()>;
 
@@ -55,8 +65,9 @@ impl<P: Pager> Tree for BTree<P> {
     type Codec = P;
 
     #[instrument(name = "tree insert", skip_all)]
-    fn set(&mut self, key: Key, val: Value, flag: SetFlag) -> Result<()> {
+    fn set(&mut self, key: Key, val: Value, flag: SetFlag) -> Result<SetResponse> {
         info!("inserting key: {key}, val: {val} flag: {flag:?}",);
+        let mut res = SetResponse::default();
 
         // get root node
         let root = match self.root_ptr {
@@ -78,13 +89,14 @@ impl<P: Pager> Tree for BTree<P> {
                 new_root.kvptr_append(1, Pointer::from(0), key, val)?;
                 self.root_ptr = Some(self.encode(new_root));
 
-                return Ok(());
+                res.added = true;
+                return Ok(res);
             }
         };
 
         // recursively insert kv
         let updated_root = self
-            .tree_insert(root.borrow().as_tn(), key, val, flag)
+            .tree_insert(root.borrow().as_tn(), key, val, flag, &mut res)
             .ok_or(Error::InsertError(
                 "couldnt fulfill set request".to_string(),
             ))?;
@@ -100,7 +112,7 @@ impl<P: Pager> Tree for BTree<P> {
                 "inserted without root split, root ptr {}",
                 self.root_ptr.unwrap()
             );
-            return Ok(());
+            return Ok(res);
         }
 
         // in case of split tree grows in height
@@ -119,7 +131,7 @@ impl<P: Pager> Tree for BTree<P> {
             "inserted with root split, new root ptr {}",
             self.root_ptr.unwrap()
         );
-        Ok(())
+        Ok(res)
     }
 
     #[instrument(name = "tree delete", skip_all)]
@@ -218,6 +230,7 @@ impl<P: Pager> BTree<P> {
         key: Key,
         val: Value,
         flag: SetFlag,
+        res: &mut SetResponse,
     ) -> Option<TreeNode> {
         let mut new = TreeNode::new();
         let idx = node.lookupidx(&key);
@@ -226,7 +239,7 @@ impl<P: Pager> BTree<P> {
                 debug_print_tree(&node, idx);
 
                 // updating or inserting kv
-                new.insert(node, key, val, idx, flag)?;
+                new.insert(node, key, val, idx, flag, res)?;
                 Some(new)
             }
             // walking down the tree until we hit a leaf node
@@ -234,8 +247,14 @@ impl<P: Pager> BTree<P> {
                 debug_print_tree(&node, idx);
 
                 let kptr = node.get_ptr(idx); // ptr of child below us
-                if let Some(knode) =
-                    BTree::tree_insert(self, self.decode(kptr).borrow().as_tn(), key, val, flag)
+                if let Some(knode) = BTree::tree_insert(
+                    self,
+                    self.decode(kptr).borrow().as_tn(),
+                    key,
+                    val,
+                    flag,
+                    res,
+                )
                 // node below us
                 {
                     assert_eq!(knode.get_key(0).unwrap(), node.get_key(idx).unwrap());

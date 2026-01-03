@@ -5,6 +5,7 @@ use std::rc::Rc;
 use super::super::codec::*;
 use super::tree::SetFlag;
 use crate::database::btree::BTree;
+use crate::database::btree::tree::SetResponse;
 use crate::database::pager::diskpager::Pager;
 use crate::database::tables::{Key, Value};
 use crate::database::types::Node;
@@ -341,14 +342,19 @@ impl TreeNode {
         val: Value,
         idx: u16,
         flag: SetFlag,
+        res: &mut SetResponse,
     ) -> Option<()> {
-        let key_exists: bool = node.get_key(idx).ok()? == key;
+        let k = node.get_key(idx).ok()?;
+        let v = node.get_val(idx).ok()?;
+        let key_exists: bool = k == key;
 
         match flag {
             // only add if missing
             SetFlag::INSERT => {
                 if !key_exists {
                     self.leaf_kvinsert(node, idx + 1, key, val).unwrap();
+                    res.added = true;
+
                     Some(())
                 } else {
                     None
@@ -358,6 +364,9 @@ impl TreeNode {
             SetFlag::UPDATE => {
                 if key_exists {
                     self.leaf_kvupdate(node, idx, key, val).unwrap();
+                    res.updated = true;
+                    res.old = Some((k, v));
+
                     Some(())
                 } else {
                     None
@@ -367,9 +376,14 @@ impl TreeNode {
             SetFlag::UPSERT => {
                 if key_exists {
                     self.leaf_kvupdate(node, idx, key, val).unwrap();
+                    res.updated = true;
+                    res.old = Some((k, v));
+
                     Some(())
                 } else {
                     self.leaf_kvinsert(node, idx + 1, key, val).unwrap();
+                    res.added = true;
+
                     Some(())
                 }
             }
