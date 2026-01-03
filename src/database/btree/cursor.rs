@@ -468,7 +468,7 @@ mod test {
             SetFlag, Tree,
             cursor::{Compare, ScanMode},
         },
-        pager::{diskpager::KVEngine, mempage_tree},
+        pager::{KVEngine, mempage_tree},
         tables::Record,
     };
 

@@ -13,7 +13,7 @@ use crate::database::{
     btree::{cursor::ScanMode, node::*},
     errors::{Error, Result},
     helper::debug_print_tree,
-    pager::diskpager::{NodeFlag, Pager},
+    pager::{NodeFlag, Pager},
     tables::{Key, Value},
     types::*,
 };
@@ -443,7 +443,7 @@ impl<P: Pager> Debug for BTree<P> {
 #[cfg(test)]
 mod test {
 
-    use crate::database::pager::{diskpager::KVEngine, mempage_tree};
+    use crate::database::pager::{KVEngine, mempage_tree};
 
     use super::*;
     use rand::Rng;

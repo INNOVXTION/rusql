@@ -22,44 +22,6 @@ use crate::database::{
     errors::{Error, PagerError},
     types::*,
 };
-/// outward facing api
-pub(crate) trait KVEngine {
-    fn get(&self, key: Key) -> Result<Value, Error>;
-    fn scan(&self, mode: ScanMode) -> Result<Vec<Record>, Error>;
-    fn set(&self, key: Key, val: Value, flag: SetFlag) -> Result<(), Error>;
-    fn delete(&self, key: Key) -> Result<(), Error>;
-}
-
-/// wrapper struct
-pub(crate) struct Envoy {
-    envoy: Rc<EnvoyV1>,
-}
-
-impl Envoy {
-    pub(crate) fn new(path: &'static str) -> Self {
-        Envoy {
-            envoy: EnvoyV1::open(path).expect("unexpected error"),
-        }
-    }
-}
-
-impl KVEngine for Envoy {
-    fn get(&self, key: Key) -> Result<Value, Error> {
-        self.envoy.get(key)
-    }
-
-    fn scan(&self, mode: ScanMode) -> Result<Vec<Record>, Error> {
-        self.envoy.scan(mode)
-    }
-
-    fn set(&self, key: Key, val: Value, flag: SetFlag) -> Result<(), Error> {
-        self.envoy.set(key, val, flag)
-    }
-
-    fn delete(&self, key: Key) -> Result<(), Error> {
-        self.envoy.delete(key)
-    }
-}
 
 /// indicates the encoding/decoding style of a node
 #[derive(Debug)]
@@ -258,7 +220,7 @@ impl EnvoyV1 {
     }
 
     #[instrument(name = "pager get", skip_all)]
-    fn get(&self, key: Key) -> Result<Value, Error> {
+    pub fn get(&self, key: Key) -> Result<Value, Error> {
         info!("getting...");
 
         self.tree
@@ -268,7 +230,7 @@ impl EnvoyV1 {
     }
 
     #[instrument(name = "pager scan", skip_all)]
-    fn scan(&self, mode: ScanMode) -> Result<Vec<Record>, Error> {
+    pub fn scan(&self, mode: ScanMode) -> Result<Vec<Record>, Error> {
         info!("scanning...");
 
         Ok(self
@@ -280,7 +242,7 @@ impl EnvoyV1 {
     }
 
     #[instrument(name = "pager set", skip_all)]
-    fn set(&self, key: Key, val: Value, flag: SetFlag) -> Result<(), Error> {
+    pub fn set(&self, key: Key, val: Value, flag: SetFlag) -> Result<(), Error> {
         info!("inserting...");
 
         let recov_page = metapage_save(self); // saving current metapage for possible rollback
@@ -292,15 +254,13 @@ impl EnvoyV1 {
     }
 
     #[instrument(name = "pager delete", skip_all)]
-    fn delete(&self, key: Key) -> Result<(), Error> {
+    pub fn delete(&self, key: Key) -> Result<(), Error> {
         info!("deleting...");
 
         let recov_page = metapage_save(self); // saving current metapage for possible rollback
         self.tree.borrow_mut().delete(key)?;
         self.update_or_revert(&recov_page)
     }
-
-    fn check_recovery() {}
 
     #[instrument(name = "pager update file", skip_all)]
     fn update_or_revert(&self, recov_page: &MetaPage) -> Result<(), Error> {
@@ -579,7 +539,7 @@ enum MpField {
     TailSeq = 16 + (8 * 5),
 }
 
-struct MetaPage(Box<[u8; METAPAGE_SIZE]>);
+pub(crate) struct MetaPage(Box<[u8; METAPAGE_SIZE]>);
 
 impl MetaPage {
     fn new() -> Self {

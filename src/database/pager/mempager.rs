@@ -8,7 +8,7 @@ use tracing::{debug, error};
 use crate::database::{
     btree::{BTree, SetFlag, SetResponse, Tree},
     errors::Error,
-    pager::diskpager::{KVEngine, Pager},
+    pager::{KVEngine, Pager},
     tables::{Key, Record, Value},
     types::{Node, Pointer},
 };

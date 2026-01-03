@@ -9,7 +9,7 @@ use crate::database::{
     btree::{Compare, ScanMode, SetFlag},
     codec::*,
     errors::{Error, Result, TableError},
-    pager::diskpager::KVEngine,
+    pager::KVEngine,
     types::DataCell,
 };
 /*

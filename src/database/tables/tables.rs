@@ -2,7 +2,7 @@ use std::{marker::PhantomData, ops::Deref};
 
 use crate::database::{
     errors::{Error, Result, TableError},
-    pager::diskpager::KVEngine,
+    pager::KVEngine,
     tables::{Key, Value, db::Database},
     types::{BTREE_MAX_VAL_SIZE, DataCell},
 };
@@ -398,7 +398,7 @@ impl TypeCol {
 mod test {
     use crate::database::{
         btree::{Compare, ScanMode, SetFlag},
-        pager::{diskpager::Envoy, mempage_tree},
+        pager::{Envoy, mempage_tree},
         tables::{Query, Record},
         types::DataCell,
     };
@@ -796,7 +796,7 @@ mod test {
 mod scan {
     use crate::database::btree::{ScanMode, SetFlag};
     use crate::database::tables::{Query, Record};
-    use crate::database::{btree::Compare, pager::diskpager::Envoy};
+    use crate::database::{btree::Compare, pager::Envoy};
 
     use super::super::db::*;
     use super::*;
