@@ -71,7 +71,7 @@ impl MetaTable {
             pkeys: META_TABLE_PKEYS,
             indices: vec![Index {
                 name: META_TABLE_COL1.to_string(),
-                columns: (0..META_TABLE_PKEYS).collect(),
+                columns: (0..META_TABLE_PKEYS as usize).collect(),
                 prefix: PKEY_PREFIX,
                 kind: IdxKind::Primary,
             }],
@@ -106,7 +106,7 @@ impl TDefTable {
             pkeys: DEF_TABLE_PKEYS,
             indices: vec![Index {
                 name: DEF_TABLE_COL1.to_string(),
-                columns: (0..DEF_TABLE_PKEYS).collect(),
+                columns: (0..DEF_TABLE_PKEYS as usize).collect(),
                 prefix: PKEY_PREFIX,
                 kind: IdxKind::Primary,
             }],
@@ -227,7 +227,7 @@ impl TableBuilder {
 
         let primary_idx = Index {
             name: cols[0].title.clone(),
-            columns: (0..pkeys).collect(),
+            columns: (0..pkeys as usize).collect(),
             prefix: PKEY_PREFIX,
             kind: IdxKind::Primary,
         };
@@ -329,7 +329,7 @@ impl Table {
 
         self.indices.push(Index {
             name: col.to_string(),
-            columns: vec![col_idx],
+            columns: vec![col_idx as usize],
             prefix: self.indices.len() as u16,
             kind: IdxKind::Secondary,
         });
@@ -360,7 +360,7 @@ pub(crate) struct Index {
     /// unique identifier
     pub name: String,
     /// indices into the table.cols
-    pub columns: Vec<u16>,
+    pub columns: Vec<usize>,
     /// prefix for encoding
     pub prefix: u16,
     pub kind: IdxKind,

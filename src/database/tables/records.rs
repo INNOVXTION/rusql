@@ -53,9 +53,10 @@ impl Record {
             }
         }
 
-        let mut pkey_slice = &self.data[..]; // primary key cells
-        let mut skey_slice = &self.data[..]; // secondary key cells
-        let mut cursor: usize = 0; // encoded columns in dataset
+        // vecs of indicies
+        let mut pkey_cells: Vec<&DataCell> = vec![];
+        let mut key_cells: Vec<&DataCell>;
+        let mut val_cells: Vec<&DataCell>;
         let mut res = vec![];
 
         for (i, idx) in schema.indices.iter().enumerate() {
@@ -70,29 +71,60 @@ impl Record {
                         ))
                         .into());
                     }
-                    debug!(?pkey_slice, ?skey_slice);
+                    // constructing Key
+                    pkey_cells = idx.columns.iter().map(|i| &self.data[*i]).collect();
+                    // constructing Value
+                    val_cells = (n_cols..self.data.len()).map(|i| &self.data[i]).collect();
+                    // chaining together
+                    debug!(?pkey_cells, ?val_cells);
+                    let data_iter = pkey_cells
+                        .iter()
+                        .map(|c| *c)
+                        .chain(val_cells.iter().map(|c| *c));
 
-                    let kv = encode_to_kv(schema.id, idx.prefix, pkey_slice, Some(n_cols))?;
+                    assert_eq!(pkey_cells.len(), schema.pkeys as usize);
+                    let kv = encode_to_kv(schema.id, idx.prefix, data_iter, Some(n_cols))?;
                     assert!(!kv.0.as_slice().len() > TID_LEN + PREFIX_LEN);
+
                     res.push(kv);
-                    pkey_slice = &self.data[..n_cols];
+                    val_cells.clear();
                 }
                 IdxKind::Secondary => {
-                    // secondary indices have empty values to make sure primary keys stay unique
-                    skey_slice = &self.data[cursor..cursor + n_cols];
-                    debug!(?pkey_slice, ?skey_slice);
+                    // constructing Key
+                    key_cells = idx.columns.iter().map(|i| &self.data[*i]).collect();
 
-                    // we reorganize the slice to be encoded:
-                    // [TID][PREFIX][SECONDARY COLS][PRIMARY COLS]
-                    let data_iter = skey_slice.iter().chain(pkey_slice.iter());
+                    // constructing Value
+                    val_cells = (pkey_cells.len()..self.data.len())
+                        .filter_map(|i| {
+                            if !idx.columns.contains(&i) {
+                                Some(&self.data[i])
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    // chaining together
+                    debug!(?key_cells, ?val_cells);
+                    let data_iter = key_cells.iter().map(|c| *c).chain(
+                        pkey_cells
+                            .iter()
+                            .map(|c| *c)
+                            .chain(val_cells.iter().map(|c| *c)),
+                    );
 
-                    let kv = encode_to_kv(schema.id, idx.prefix, data_iter, None)?;
+                    let kv = encode_to_kv(
+                        schema.id,
+                        idx.prefix,
+                        data_iter,
+                        Some(pkey_cells.len() + n_cols),
+                    )?;
                     assert!(!kv.0.as_slice().len() > TID_LEN + PREFIX_LEN);
+
                     res.push(kv);
+                    key_cells.clear();
+                    val_cells.clear();
                 }
             };
-
-            cursor += n_cols;
         }
         assert_eq!(res.len(), schema.indices.len());
         Ok(res.into_iter())
@@ -394,7 +426,44 @@ mod test {
 
         kv = rec.next().unwrap();
         assert_eq!(kv.0.to_string(), "2 1 10 hello");
-        assert_eq!(kv.1.to_string(), "");
+        assert_eq!(kv.1.to_string(), "world");
+
+        Ok(())
+    }
+
+    #[test]
+    fn records_secondary_indicies2() -> Result<()> {
+        let pager = mempage_tree();
+        let mut db = Database::new(pager);
+
+        let mut table = TableBuilder::new()
+            .name("mytable")
+            .id(5)
+            .pkey(1)
+            .add_col("id", TypeCol::INTEGER)
+            .add_col("name", TypeCol::BYTES)
+            .add_col("city", TypeCol::BYTES)
+            .add_col("job", TypeCol::BYTES)
+            .build(&mut db)
+            .unwrap();
+
+        table.add_index("city")?;
+        assert_eq!(table.indices.len(), 2);
+
+        let mut rec = Record::new()
+            .add(1)
+            .add("Alfred")
+            .add("Berlin")
+            .add("Firefighter")
+            .encode(&table)?;
+        let mut kv = rec.next().unwrap();
+
+        assert_eq!(kv.0.to_string(), "5 0 1");
+        assert_eq!(kv.1.to_string(), "Alfred Berlin Firefighter");
+
+        kv = rec.next().unwrap();
+        assert_eq!(kv.0.to_string(), "5 1 Berlin 1");
+        assert_eq!(kv.1.to_string(), "Alfred Firefighter");
 
         Ok(())
     }

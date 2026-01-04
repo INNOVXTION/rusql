@@ -99,7 +99,7 @@ where
                         .next()
                         .unwrap();
 
-                    self.kve.set(k, v, SetFlag::UPSERT).map_err(|e| {
+                    self.kve.set(k, v, SetFlag::UPDATE).map_err(|e| {
                         error!(?e);
                         TableError::TableIdError("error when retrieving id".to_string())
                     })?;
@@ -123,7 +123,7 @@ where
                     .next()
                     .unwrap();
 
-                self.kve.set(k, v, SetFlag::UPSERT).map_err(|e| {
+                self.kve.set(k, v, SetFlag::INSERT).map_err(|e| {
                     error!(?e);
                     TableError::TableIdError("error when retrieving id".to_string())
                 })?;
@@ -255,14 +255,26 @@ where
         let seek_key = Key::from_encoded_slice(&buf);
         let seek_mode = ScanMode::Open(seek_key, Compare::GT);
 
-        self.scan(seek_mode)
+        self.kve.scan(seek_mode)
     }
 
-    fn update_rec(&mut self, rec: Record, schema: &Table) -> Result<()> {
-        let mut iter = rec.encode(schema)?.into_iter().peekable();
+    fn insert(&mut self, rec: Record, schema: &Table) -> Result<()> {
+        for (k, v) in rec.encode(schema)? {
+            let res = self.kve.tree_set(k, v, SetFlag::INSERT)?;
+            if !res.added {
+                return Err(Error::InsertError("couldnt insert record".to_string()));
+            }
+        }
+        Ok(())
+    }
+
+    fn update(&mut self, rec: Record, schema: &Table) -> Result<()> {
+        let mut iter = rec.encode(schema)?.peekable();
+        let mut old_rec;
         let old_pk;
         let mut updated = 0;
 
+        // updating the primary key and retrieving the old one
         let primay_key = iter.next().ok_or(Error::InsertError(
             "record failed to generate a primary key".to_string(),
         ))?;
@@ -285,17 +297,16 @@ where
             return Ok(());
         }
 
-        // recreating the keys we update
-        let mut old_rec = Record::from_kv(old_pk).encode(schema)?.into_iter();
+        // recreating the keys from the update
+        old_rec = Record::from_kv(old_pk).encode(schema)?;
         old_rec.next(); // we skip the primary key since we already updated it
 
         // updating secondary keys
         for (k, v) in iter {
             if let Some(old_kv) = old_rec.next() {
-                // deleting the old key
                 self.kve.tree_delete(old_kv.0)?;
-                // inserting the new one
                 let res = self.kve.tree_set(k, v, SetFlag::INSERT)?;
+
                 debug_assert!(res.added);
                 updated += 1;
             } else {
@@ -307,7 +318,7 @@ where
         Ok(())
     }
 
-    fn creat_index() {}
+    fn create_index() {}
 
     fn delete_index() {}
 }
