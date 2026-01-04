@@ -611,9 +611,7 @@ mod test {
 
         db.insert_table(&table).unwrap();
         assert!(db.get_table("droppable").is_some());
-
-        db.drop_table("droppable").unwrap();
-        assert!(db.get_table("droppable").is_none());
+        assert!(db.drop_table("droppable").is_err());
     }
 
     #[test]

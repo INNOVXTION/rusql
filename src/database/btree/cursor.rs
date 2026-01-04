@@ -482,7 +482,7 @@ mod test {
 
         for i in 1u16..=100u16 {
             let key = format!("{}", i).into();
-            let tree_ref = tree.pager.btree.borrow();
+            let tree_ref = tree.pager.tree.borrow();
             let res = scan_single(&tree_ref, &key);
 
             assert!(res.is_some());
@@ -504,7 +504,7 @@ mod test {
 
         let key = 5i64.into();
         let q = ScanMode::Open(key, Compare::GT);
-        let tree_ref = tree.pager.btree.borrow();
+        let tree_ref = tree.pager.tree.borrow();
         let res = tree_ref.scan(q);
 
         assert!(res.is_ok());
@@ -529,7 +529,7 @@ mod test {
         }
 
         let key = 1i64.into();
-        let btree = tree.pager.btree.borrow();
+        let btree = tree.pager.tree.borrow();
         let mut cursor = seek(&btree, &key, Compare::EQ).unwrap();
 
         // Navigate through all elements using next()
@@ -555,7 +555,7 @@ mod test {
         }
 
         let key = 10i64.into();
-        let btree = tree.pager.btree.borrow();
+        let btree = tree.pager.tree.borrow();
         let mut cursor = seek(&btree, &key, Compare::EQ).unwrap();
 
         // Navigate backwards using prev()
@@ -587,7 +587,7 @@ mod test {
         // Test random keys
         for i in &[1i64, 10, 25, 40, 50] {
             let key = format!("{}", i).into();
-            let tree_ref = tree.pager.btree.borrow();
+            let tree_ref = tree.pager.tree.borrow();
             let res = scan_single(&tree_ref, &key);
 
             assert!(res.is_some());
@@ -608,7 +608,7 @@ mod test {
         }
 
         let key = 999i64.into();
-        let tree_ref = tree.pager.btree.borrow();
+        let tree_ref = tree.pager.tree.borrow();
         let res = scan_single(&tree_ref, &key);
 
         assert!(res.is_none());
@@ -627,7 +627,7 @@ mod test {
 
         let key = 5i64.into();
         let q = ScanMode::Open(key, Compare::GT);
-        let tree_ref = tree.pager.btree.borrow();
+        let tree_ref = tree.pager.tree.borrow();
         let res = tree_ref.scan(q);
 
         assert!(res.is_ok());
@@ -651,7 +651,7 @@ mod test {
 
         let key = 5i64.into();
         let q = ScanMode::Open(key, Compare::GE);
-        let tree_ref = tree.pager.btree.borrow();
+        let tree_ref = tree.pager.tree.borrow();
         let res = tree_ref.scan(q);
 
         assert!(res.is_ok());
@@ -674,7 +674,7 @@ mod test {
 
         let key = 6i64.into();
         let q = ScanMode::Open(key, Compare::LT);
-        let tree_ref = tree.pager.btree.borrow();
+        let tree_ref = tree.pager.tree.borrow();
         let res = tree_ref.scan(q);
 
         assert!(res.is_ok());
@@ -698,7 +698,7 @@ mod test {
 
         let key = 6i64.into();
         let q = ScanMode::Open(key, Compare::LE);
-        let tree_ref = tree.pager.btree.borrow();
+        let tree_ref = tree.pager.tree.borrow();
         let res = tree_ref.scan(q);
 
         assert!(res.is_ok());
@@ -721,7 +721,7 @@ mod test {
 
         let key = 1i64.into();
         let q = ScanMode::Open(key, Compare::GE);
-        let tree_ref = tree.pager.btree.borrow();
+        let tree_ref = tree.pager.tree.borrow();
         let res = tree_ref.scan(q);
 
         assert!(res.is_ok());
@@ -740,7 +740,7 @@ mod test {
 
         let key = 10i64.into();
         let q = ScanMode::Open(key, Compare::LE);
-        let tree_ref = tree.pager.btree.borrow();
+        let tree_ref = tree.pager.tree.borrow();
         let res = tree_ref.scan(q);
 
         assert!(res.is_ok());
@@ -757,7 +757,7 @@ mod test {
             tree.set(i.into(), "value".into(), SetFlag::UPSERT).unwrap();
         }
 
-        let tree_ref = tree.pager.btree.borrow();
+        let tree_ref = tree.pager.tree.borrow();
 
         // GT from last element
         let key = 10i64.into();
@@ -787,7 +787,7 @@ mod test {
 
         let key = 500i64.into();
         let q = ScanMode::Open(key, Compare::GT);
-        let tree_ref = tree.pager.btree.borrow();
+        let tree_ref = tree.pager.tree.borrow();
         let res = tree_ref.scan(q);
 
         assert!(res.is_ok());
@@ -811,7 +811,7 @@ mod test {
                 .unwrap();
         }
 
-        let btree = tree.pager.btree.borrow();
+        let btree = tree.pager.tree.borrow();
 
         // Test EQ - deref should return the exact match
         let key = 5i64.into();
@@ -847,7 +847,7 @@ mod test {
         let tree = mempage_tree();
 
         let key = 1i64.into();
-        let tree_ref = tree.pager.btree.borrow();
+        let tree_ref = tree.pager.tree.borrow();
         let res = scan_single(&tree_ref, &key);
 
         assert!(res.is_none());
@@ -865,7 +865,7 @@ mod test {
         let tree = mempage_tree();
         tree.set(1i64.into(), "value".into(), SetFlag::UPSERT)
             .unwrap();
-        let tree_ref = tree.pager.btree.borrow();
+        let tree_ref = tree.pager.tree.borrow();
 
         // Scan single
         let res = scan_single(&tree_ref, &1i64.into());

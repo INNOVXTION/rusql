@@ -149,7 +149,7 @@ where
         }
 
         let key = Query::with_key(&self.tdef)
-            .add("name", name)
+            .add(DEF_TABLE_COL1, name)
             .encode()
             .ok()?;
 
@@ -170,10 +170,11 @@ where
     pub fn drop_table(&mut self, name: &str) -> Result<()> {
         info!(name, "dropping table");
 
-        let table = if let Some(t) = self.get_table(name) {
-            t.clone()
-        } else {
-            return Err(TableError::DeleteTableError("table doesnt exist".to_string()).into());
+        let table = match self.get_table(name) {
+            Some(t) => t.clone(),
+            None => {
+                return Err(TableError::DeleteTableError("table doesnt exist".to_string()).into());
+            }
         };
 
         // delete keys
@@ -232,7 +233,11 @@ where
             "record failed to generate a primary key".to_string(),
         ))?;
 
-        match self.kve.tree_set(primay_key.0, primay_key.1, flag) {
+        let res = self.kve.tree_set(primay_key.0, primay_key.1, flag);
+        if res.is_ok() {
+            updated += 1;
+        }
+        match res {
             // update found (UPSERT or UPDATE)
             Ok(res) if res.updated => {
                 if iter.peek().is_none() {

@@ -121,7 +121,7 @@ impl KVEngine for Envoy {
         info!("inserting...");
 
         let recov_page = metapage_save(&self.pager); // saving current metapage for possible rollback
-        self.set(key, val, flag)?;
+        self.tree_set(key, val, flag)?;
         self.pager.update_or_revert(&recov_page)
     }
 

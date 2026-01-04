@@ -33,7 +33,13 @@ impl KVEngine for MemPager {
     }
 
     fn scan(&self, mode: crate::database::btree::ScanMode) -> Result<Vec<Record>, Error> {
-        todo!()
+        Ok(self
+            .pager
+            .tree
+            .borrow()
+            .scan(mode)
+            .map_err(|e| Error::SearchError(format!("scan error {e}")))?
+            .collect_records())
     }
 }
 
@@ -67,7 +73,7 @@ impl Transaction for MemPager {
         val: Value,
         flag: SetFlag,
     ) -> crate::database::errors::Result<SetResponse> {
-        todo!()
+        self.pager.tree.borrow_mut().set(key, val, flag)
     }
 
     fn tree_delete(&self, key: Key) -> crate::database::errors::Result<()> {
@@ -78,7 +84,7 @@ impl Transaction for MemPager {
 pub struct MemoryPager {
     freelist: RefCell<Vec<u64>>,
     pages: RefCell<HashMap<u64, Node>>,
-    pub btree: Box<RefCell<BTree<MemoryPager>>>,
+    pub tree: Box<RefCell<BTree<MemoryPager>>>,
 }
 
 /// constructor for in memory pager and tree
@@ -88,25 +94,25 @@ pub fn mempage_tree() -> MemPager {
         pager: Rc::new_cyclic(|w| MemoryPager {
             freelist: RefCell::new(Vec::from_iter((1..=100).rev())),
             pages: RefCell::new(HashMap::<u64, Node>::new()),
-            btree: Box::new(RefCell::new(BTree::<MemoryPager>::new(w.clone()))),
+            tree: Box::new(RefCell::new(BTree::<MemoryPager>::new(w.clone()))),
         }),
     }
 }
 
 impl MemoryPager {
     fn get(&self, key: Key) -> Result<Value, Error> {
-        self.btree
+        self.tree
             .borrow()
             .search(key)
             .ok_or(Error::SearchError("value not found".to_string()))
     }
 
     fn set(&self, key: Key, value: Value, flag: SetFlag) -> Result<SetResponse, Error> {
-        self.btree.borrow_mut().set(key, value, flag)
+        self.tree.borrow_mut().set(key, value, flag)
     }
 
     fn delete(&self, key: Key) -> Result<(), Error> {
-        self.btree.borrow_mut().delete(key)
+        self.tree.borrow_mut().delete(key)
     }
 }
 

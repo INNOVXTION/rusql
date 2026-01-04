@@ -458,7 +458,7 @@ mod test {
         tree.set("2".into(), "world".into(), SetFlag::UPSERT)
             .unwrap();
 
-        let t_ref = tree.pager.btree.borrow();
+        let t_ref = tree.pager.tree.borrow();
 
         assert_eq!(tree.get("1".into()).unwrap(), "hello".into());
         assert_eq!(tree.get("2".into()).unwrap(), "world".into());
@@ -491,7 +491,7 @@ mod test {
         tree.set("3".into(), "bonjour".into(), SetFlag::UPSERT)
             .unwrap();
         {
-            let t_ref = tree.pager.btree.borrow();
+            let t_ref = tree.pager.tree.borrow();
             assert_eq!(
                 t_ref
                     .decode(t_ref.get_root().unwrap())
@@ -512,7 +512,7 @@ mod test {
         }
 
         tree.delete("2".into()).unwrap();
-        let t_ref = tree.pager.btree.borrow();
+        let t_ref = tree.pager.tree.borrow();
         assert_eq!(tree.get("1".into()).unwrap(), "hello".into());
         assert_eq!(tree.get("3".into()).unwrap(), "bonjour".into());
         assert_eq!(
@@ -533,7 +533,7 @@ mod test {
             tree.set(format!("{i}").into(), "value".into(), SetFlag::UPSERT)
                 .unwrap()
         }
-        let t_ref = tree.pager.btree.borrow();
+        let t_ref = tree.pager.tree.borrow();
         assert_eq!(
             t_ref
                 .decode(t_ref.get_root().unwrap())
@@ -557,7 +557,7 @@ mod test {
             tree.set(format!("{i}").into(), "value".into(), SetFlag::UPSERT)
                 .unwrap()
         }
-        let t_ref = tree.pager.btree.borrow();
+        let t_ref = tree.pager.tree.borrow();
         assert_eq!(
             t_ref
                 .decode(t_ref.get_root().unwrap())
@@ -589,7 +589,7 @@ mod test {
         for i in 1u16..=200u16 {
             tree.delete(format!("{i}").into()).unwrap()
         }
-        let t_ref = tree.pager.btree.borrow();
+        let t_ref = tree.pager.tree.borrow();
         assert_eq!(
             t_ref
                 .decode(t_ref.get_root().unwrap())
@@ -619,7 +619,7 @@ mod test {
         for i in 1u16..=400u16 {
             tree.delete(format!("{i}").into()).unwrap()
         }
-        let t_ref = tree.pager.btree.borrow();
+        let t_ref = tree.pager.tree.borrow();
         assert_eq!(
             t_ref
                 .decode(t_ref.get_root().unwrap())
@@ -649,7 +649,7 @@ mod test {
         for i in (1..=400u16).rev() {
             tree.delete(format!("{i}").into()).unwrap()
         }
-        let t_ref = tree.pager.btree.borrow();
+        let t_ref = tree.pager.tree.borrow();
         assert_eq!(
             t_ref
                 .decode(t_ref.get_root().unwrap())
@@ -682,7 +682,7 @@ mod test {
             tree.delete(format!("{i}").into()).unwrap()
         }
         tree.delete(Key::new_empty()).unwrap();
-        let t_ref = tree.pager.btree.borrow();
+        let t_ref = tree.pager.tree.borrow();
         assert_eq!(t_ref.get_root(), None);
     }
 
@@ -695,7 +695,7 @@ mod test {
                 .unwrap()
         }
         {
-            let t_ref = tree.pager.btree.borrow();
+            let t_ref = tree.pager.tree.borrow();
             assert_eq!(
                 t_ref
                     .decode(t_ref.get_root().unwrap())
@@ -783,7 +783,7 @@ mod test {
     fn encode_decode_roundtrip() {
         // direct encode/decode roundtrip for a single node using the pager/btree ref
         let tree = mempage_tree();
-        let t_ref = tree.pager.btree.borrow();
+        let t_ref = tree.pager.tree.borrow();
 
         let mut node = TreeNode::new();
         node.set_header(NodeType::Leaf, 1);
