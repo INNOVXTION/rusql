@@ -44,28 +44,6 @@ impl Envoy {
     }
 }
 
-pub(crate) struct TX {
-    snap: Snapshot,
-    status: TXStatus,
-    kind: TXKind,
-}
-
-enum TXKind {
-    Read,
-    Write,
-}
-
-struct Snapshot {
-    root_ptr: Pointer,
-    metapage: MetaPage,
-}
-
-enum TXStatus {
-    Pending,
-    Failed,
-    Complete,
-}
-
 impl Transaction for Envoy {
     fn begin(&mut self) {
         self.rollback = Some(metapage_save(&self.pager));

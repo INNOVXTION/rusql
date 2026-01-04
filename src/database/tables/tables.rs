@@ -3,7 +3,7 @@ use std::{marker::PhantomData, ops::Deref};
 use crate::database::{
     errors::{Error, Result, TableError},
     pager::{KVEngine, Transaction},
-    tables::{Key, Value, db::Database},
+    tables::{Key, Value, table_db::TableDB},
     types::{BTREE_MAX_VAL_SIZE, DataCell},
 };
 use serde::{Deserialize, Serialize};
@@ -51,7 +51,7 @@ pub const PKEY_PREFIX: u16 = 0;
 
 /// wrapper for sentinal value
 #[derive(Serialize, Deserialize)]
-pub(super) struct MetaTable(Table);
+pub(crate) struct MetaTable(Table);
 
 impl MetaTable {
     pub fn new() -> Self {
@@ -86,7 +86,7 @@ impl MetaTable {
 
 /// wrapper for sentinal value
 #[derive(Serialize, Deserialize)]
-pub(super) struct TDefTable(Table);
+pub(crate) struct TDefTable(Table);
 
 impl TDefTable {
     pub fn new() -> Self {
@@ -169,7 +169,7 @@ impl TableBuilder {
     }
 
     /// parsing is WIP
-    pub fn build<KV: KVEngine + Transaction>(self, pager: &mut Database<KV>) -> Result<Table> {
+    pub fn build<KV: KVEngine + Transaction>(self, pager: &mut TableDB<KV>) -> Result<Table> {
         let name = match self.name {
             Some(n) => {
                 if n.is_empty() {
@@ -403,7 +403,7 @@ mod test {
         types::DataCell,
     };
 
-    use super::super::db::*;
+    use super::super::table_db::*;
     use super::*;
     use crate::database::helper::cleanup_file;
     use test_log::test;
@@ -413,14 +413,14 @@ mod test {
         let path = "table1.rdb";
         cleanup_file(path);
         let pager = Envoy::new(path);
-        let db = Database::new(pager);
+        let db = TableDB::new(pager);
         cleanup_file(path);
     }
 
     #[test]
     fn tables_encode_decode() {
         let pager = mempage_tree();
-        let mut db = Database::new(pager);
+        let mut db = TableDB::new(pager);
 
         let table = TableBuilder::new()
             .id(3)
@@ -443,7 +443,7 @@ mod test {
     #[test]
     fn records_insert_search() -> Result<()> {
         let pager = mempage_tree();
-        let mut db = Database::new(pager);
+        let mut db = TableDB::new(pager);
 
         let table = TableBuilder::new()
             .id(3)
@@ -488,7 +488,7 @@ mod test {
     #[test]
     fn query_input() {
         let pager = mempage_tree();
-        let mut db = Database::new(pager);
+        let mut db = TableDB::new(pager);
 
         let table = TableBuilder::new()
             .id(3)
@@ -524,7 +524,7 @@ mod test {
     #[test]
     fn table_ids() {
         let pager = mempage_tree();
-        let mut db = Database::new(pager);
+        let mut db = TableDB::new(pager);
         assert_eq!(db.new_tid().unwrap(), 3);
         assert_eq!(db.new_tid().unwrap(), 4);
         assert_eq!(db.new_tid().unwrap(), 5);
@@ -533,7 +533,7 @@ mod test {
     #[test]
     fn table_builder_validations() {
         let pager = mempage_tree();
-        let mut db = Database::new(pager);
+        let mut db = TableDB::new(pager);
 
         // empty name
         assert!(
@@ -582,7 +582,7 @@ mod test {
     #[test]
     fn duplicate_table_name_rejected() {
         let pager = mempage_tree();
-        let mut db = Database::new(pager);
+        let mut db = TableDB::new(pager);
 
         let table = TableBuilder::new()
             .id(12)
@@ -599,7 +599,7 @@ mod test {
     #[test]
     fn drop_table_removes_table() {
         let pager = mempage_tree();
-        let mut db = Database::new(pager);
+        let mut db = TableDB::new(pager);
 
         let table = TableBuilder::new()
             .id(13)
@@ -622,14 +622,14 @@ mod test {
         cleanup_file(path);
         {
             let pager = Envoy::new(path);
-            let mut db = Database::new(pager);
+            let mut db = TableDB::new(pager);
             assert_eq!(db.new_tid().unwrap(), 3);
             assert_eq!(db.new_tid().unwrap(), 4);
         }
         // reopen
         {
             let pager = Envoy::new(path);
-            let mut db = Database::new(pager);
+            let mut db = TableDB::new(pager);
             // next tid continues
             assert_eq!(db.new_tid().unwrap(), 5);
         }
@@ -639,7 +639,7 @@ mod test {
     #[test]
     fn invalid_queries_rejected() {
         let pager = mempage_tree();
-        let mut db = Database::new(pager);
+        let mut db = TableDB::new(pager);
 
         let table = TableBuilder::new()
             .id(16)
@@ -663,7 +663,7 @@ mod test {
         let path = "test-files/scan.rdb";
         cleanup_file(path);
         let pager = Envoy::new("test-files/scan.rdb");
-        let mut db = Database::new(pager);
+        let mut db = TableDB::new(pager);
 
         let table1 = TableBuilder::new()
             .id(5)
@@ -738,7 +738,7 @@ mod test {
         let path = "test-files/scan.rdb";
         cleanup_file(path);
         let pager = Envoy::new("test-files/scan.rdb");
-        let mut db = Database::new(pager);
+        let mut db = TableDB::new(pager);
 
         let table1 = TableBuilder::new()
             .id(5)
@@ -798,7 +798,7 @@ mod scan {
     use crate::database::tables::{Query, Record};
     use crate::database::{btree::Compare, pager::Envoy};
 
-    use super::super::db::*;
+    use super::super::table_db::*;
     use super::*;
     use crate::database::helper::cleanup_file;
     use test_log::test;
@@ -808,7 +808,7 @@ mod scan {
         let path = "test-files/scan_range.rdb";
         cleanup_file(path);
         let pager = Envoy::new(path);
-        let mut db = Database::new(pager);
+        let mut db = TableDB::new(pager);
 
         let table = TableBuilder::new()
             .id(10)
@@ -851,7 +851,7 @@ mod scan {
         let path = "test-files/scan_isolation.rdb";
         cleanup_file(path);
         let pager = Envoy::new(path);
-        let mut db = Database::new(pager);
+        let mut db = TableDB::new(pager);
 
         let table1 = TableBuilder::new()
             .id(20)
@@ -927,7 +927,7 @@ mod scan {
         let path = "test-files/scan_lt.rdb";
         cleanup_file(path);
         let pager = Envoy::new(path);
-        let mut db = Database::new(pager);
+        let mut db = TableDB::new(pager);
 
         let table = TableBuilder::new()
             .id(30)
@@ -972,7 +972,7 @@ mod scan {
         let path = "test-files/scan_empty.rdb";
         cleanup_file(path);
         let pager = Envoy::new(path);
-        let mut db = Database::new(pager);
+        let mut db = TableDB::new(pager);
 
         let table = TableBuilder::new()
             .id(40)
@@ -1011,7 +1011,7 @@ mod scan {
         let path = "test-files/scan_single.rdb";
         cleanup_file(path);
         let pager = Envoy::new(path);
-        let mut db = Database::new(pager);
+        let mut db = TableDB::new(pager);
 
         let table = TableBuilder::new()
             .id(50)
@@ -1046,7 +1046,7 @@ mod scan {
         let path = "test-files/scan_le.rdb";
         cleanup_file(path);
         let pager = Envoy::new(path);
-        let mut db = Database::new(pager);
+        let mut db = TableDB::new(pager);
 
         let table = TableBuilder::new()
             .id(60)
@@ -1088,7 +1088,7 @@ mod scan {
         let path = "test-files/scan_large.rdb";
         cleanup_file(path);
         let pager = Envoy::new(path);
-        let mut db = Database::new(pager);
+        let mut db = TableDB::new(pager);
 
         let table = TableBuilder::new()
             .id(70)
@@ -1131,7 +1131,7 @@ mod scan {
         let path = "test-files/scan_bytes.rdb";
         cleanup_file(path);
         let pager = Envoy::new(path);
-        let mut db = Database::new(pager);
+        let mut db = TableDB::new(pager);
 
         let table = TableBuilder::new()
             .id(80)
@@ -1173,7 +1173,7 @@ mod scan {
         let path = "test-files/scan_after_delete.rdb";
         cleanup_file(path);
         let pager = Envoy::new(path);
-        let mut db = Database::new(pager);
+        let mut db = TableDB::new(pager);
 
         let table = TableBuilder::new()
             .id(90)

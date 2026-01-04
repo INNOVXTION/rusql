@@ -2,6 +2,7 @@ use super::keyvalues::*;
 use super::records::*;
 use super::tables::*;
 use std::collections::HashMap;
+use std::iter::Scan;
 use tracing::instrument;
 use tracing::{debug, error, info};
 
@@ -19,59 +20,18 @@ use crate::database::{
  * |[TABLE ID][PREFIX][PK1 ][PK2 ]..|[ v1 ][ v2 ]..|
 */
 
-pub(crate) struct Database<KV: KVEngine + Transaction> {
+pub(crate) struct TableDB<KV: KVEngine + Transaction> {
     pub tdef: TDefTable,
     pub buffer: HashMap<String, Table>, // table name as key
     pub kve: KV,
 }
 
-// pub(crate) enum SearchRequest {
-//     Lookup(Key),
-//     Range(ScanMode),
-//     FullTable(ScanMode),
-// }
-
-// pub(crate) struct SetRequest {
-//     payload: Vec<(Key, Value)>,
-//     flag: SetFlag,
-// }
-
-// pub(crate) enum DeleteRequest {
-//     Table(ScanMode),
-//     Prefix(ScanMode),
-//     Row(Key),
-// }
-
-// impl DeleteRequest {
-//     fn table(schema: &Table) -> Result<Self> {
-//         let key = Query::with_tid(schema);
-//         let scan = ScanMode::new_open(key, Compare::GT)?;
-
-//         Ok(DeleteRequest::Table(scan))
-//     }
-
-//     fn prefix(schema: &Table, prefix: u16) -> Result<Self> {
-//         let key = Query::with_prefix(schema, prefix);
-//         let scan = ScanMode::new_open(key, Compare::GT)?;
-
-//         Ok(DeleteRequest::Table(scan))
-//     }
-
-//     fn row(schema: &Table, cols: &[&str], mut data: Vec<DataCell>) -> Result<Self> {
-//         let mut key = Query::with_key(schema);
-//         for i in 0..data.len() {
-//             key = key.add(&cols[i], data.remove(i));
-//         }
-//         Ok(DeleteRequest::Row(key.encode()?))
-//     }
-// }
-
-impl<KV> Database<KV>
+impl<KV> TableDB<KV>
 where
     KV: KVEngine + Transaction,
 {
     pub fn new(pager: KV) -> Self {
-        Database {
+        TableDB {
             tdef: TDefTable::new(),
             buffer: HashMap::new(),
             kve: pager,
@@ -204,17 +164,29 @@ where
     }
 
     /// TODO: decrement/free up table id
+    ///
+    /// drops table from schema table
     #[instrument(name = "drop table", skip_all)]
     pub fn drop_table(&mut self, name: &str) -> Result<()> {
         info!(name, "dropping table");
 
-        if self.get_table(name).is_none() {
-            error!("table doesnt exist");
-            return Err(TableError::DeleteTableError(
-                "table doesnt exist".to_string(),
-            ))?;
+        let table = if let Some(t) = self.get_table(name) {
+            t.clone()
+        } else {
+            return Err(TableError::DeleteTableError("table doesnt exist".to_string()).into());
+        };
+
+        // delete keys
+        let recs = self.full_table_scan(&table)?;
+        for rec in recs.into_iter() {
+            if let Some(kv) = rec.encode(&table)?.next() {
+                self.kve.tree_delete(kv.0)?
+            } else {
+                return Err(TableError::DeleteTableError("iterator error".to_string()).into());
+            }
         }
 
+        // delete from tdef
         let qu = Query::with_key(&self.tdef)
             .add(DEF_TABLE_COL1, name)
             .encode()?;
@@ -224,17 +196,6 @@ where
             error!(%e, "error when dropping table");
             TableError::DeleteTableError("dropping table error when deleting".to_string()).into()
         })
-    }
-
-    #[instrument(name = "insert rec", skip_all)]
-    pub fn insert_rec(&mut self, rec: Record, schema: &Table, flag: SetFlag) -> Result<()> {
-        info!(?rec, "inserting record");
-
-        // WIP FOR TESTING
-        let (key, value) = rec.encode(schema)?.next().unwrap();
-
-        self.kve.set(key, value, flag)?;
-        Ok(())
     }
 
     pub fn get_rec(&self, key: Key) -> Option<Value> {
@@ -248,27 +209,19 @@ where
     }
 
     pub fn full_table_scan(&self, schema: &Table) -> Result<Vec<Record>> {
-        let mut buf = [0u8; TID_LEN];
-
         // writing a seek key with TID
+        let mut buf = [0u8; TID_LEN];
         let _ = &mut buf[..].write_u32(schema.id);
         let seek_key = Key::from_encoded_slice(&buf);
-        let seek_mode = ScanMode::Open(seek_key, Compare::GT);
+        let seek_mode = ScanMode::new_open(seek_key, Compare::GT)?;
 
         self.kve.scan(seek_mode)
     }
 
-    fn insert(&mut self, rec: Record, schema: &Table) -> Result<()> {
-        for (k, v) in rec.encode(schema)? {
-            let res = self.kve.tree_set(k, v, SetFlag::INSERT)?;
-            if !res.added {
-                return Err(Error::InsertError("couldnt insert record".to_string()));
-            }
-        }
-        Ok(())
-    }
-
-    fn update(&mut self, rec: Record, schema: &Table) -> Result<()> {
+    /// inserts a record, keeps secondary indices in sync
+    #[instrument(name = "insert rec", skip_all)]
+    pub fn insert_rec(&mut self, rec: Record, schema: &Table, flag: SetFlag) -> Result<()> {
+        info!(?rec, "inserting record");
         let mut iter = rec.encode(schema)?.peekable();
         let mut old_rec;
         let old_pk;
@@ -279,46 +232,101 @@ where
             "record failed to generate a primary key".to_string(),
         ))?;
 
-        if let Ok(res) = self
-            .kve
-            .tree_set(primay_key.0, primay_key.1, SetFlag::UPDATE)
-            && res.updated
-        {
-            old_pk = res.old.expect("update successful");
-            updated += 1;
-        } else {
-            return Err(Error::InsertError(
-                "failed to update primary key".to_string(),
-            ));
-        }
+        match self.kve.tree_set(primay_key.0, primay_key.1, flag) {
+            // update found (UPSERT or UPDATE)
+            Ok(res) if res.updated => {
+                if iter.peek().is_none() {
+                    // there are no secondary keys, we are done
+                    return Ok(());
+                }
 
-        if iter.peek().is_none() {
-            // there are no secondary keys, we are done
-            return Ok(());
-        }
-
-        // recreating the keys from the update
-        old_rec = Record::from_kv(old_pk).encode(schema)?;
-        old_rec.next(); // we skip the primary key since we already updated it
-
-        // updating secondary keys
-        for (k, v) in iter {
-            if let Some(old_kv) = old_rec.next() {
-                self.kve.tree_delete(old_kv.0)?;
-                let res = self.kve.tree_set(k, v, SetFlag::INSERT)?;
-
-                debug_assert!(res.added);
+                old_pk = res.old.expect("update successful");
                 updated += 1;
-            } else {
-                return Err(Error::InsertError("failed to retrieve old key".to_string()));
+
+                // recreating the keys from the update
+                old_rec = Record::from_kv(old_pk).encode(schema)?;
+                old_rec.next(); // we skip the primary key since we already updated it
+
+                // updating secondary keys
+                for (k, v) in iter {
+                    if let Some(old_kv) = old_rec.next() {
+                        self.kve.tree_delete(old_kv.0)?;
+                        let res = self.kve.tree_set(k, v, SetFlag::INSERT)?;
+
+                        if !res.added {
+                            return Err(Error::InsertError("couldnt insert record".to_string()));
+                        }
+
+                        updated += 1;
+                    } else {
+                        return Err(Error::InsertError("failed to retrieve old key".to_string()));
+                    }
+                }
             }
+            // INSERT only
+            Ok(res) if res.added => {
+                for (k, v) in iter {
+                    // inserting secondary keys
+                    let res = self.kve.tree_set(k, v, SetFlag::INSERT)?;
+
+                    if !res.added {
+                        return Err(Error::InsertError("couldnt insert record".to_string()));
+                    }
+
+                    updated += 1;
+                }
+            }
+            // Key couldnt be inserted/updated
+            Err(e) => {
+                return Err(Error::InsertError("couldnt insert record".to_string()));
+            }
+            _ => unreachable!("we accounted for all cases"),
         }
 
         debug_assert_eq!(updated, schema.indices.len());
         Ok(())
     }
 
-    fn create_index() {}
+    fn delete_rec(&mut self, rec: Record, schema: &Table) -> Result<()> {
+        let mut iter = rec.encode(schema)?.peekable();
+        let mut updated = 0;
 
-    fn delete_index() {}
+        let primay_key = iter.next().ok_or(Error::DeleteError(
+            "record failed to generate a primary key".to_string(),
+        ))?;
+
+        // deleting primary key
+        if let Ok(()) = self.kve.tree_delete(primay_key.0) {
+            updated += 1;
+        } else {
+            return Err(Error::DeleteError("key doesnt exist".to_string()));
+        }
+
+        // checking for secondary keys
+        if iter.peek().is_none() {
+            return Ok(());
+        }
+
+        // deleting secondary keys
+        for (k, v) in iter {
+            self.kve.tree_delete(k)?;
+            updated += 1;
+        }
+
+        debug_assert_eq!(updated, schema.indices.len());
+        Ok(())
+    }
+
+    fn create_index(&self, col: &str, table: &Table) {
+        // TODO cant delete from tdef or meta
+    }
+
+    fn delete_index(&self, col: &str, table: &Table) {}
+
+    fn del_prefix(schema: &Table, prefix: u16) -> Result<ScanMode> {
+        let key = Query::with_prefix(schema, prefix);
+        let scan = ScanMode::new_open(key, Compare::GT)?;
+
+        Ok(scan)
+    }
 }

@@ -334,7 +334,7 @@ where
 
 #[cfg(test)]
 mod test {
-    use crate::database::{pager::mempage_tree, tables::db::Database};
+    use crate::database::{pager::mempage_tree, tables::table_db::TableDB};
 
     use super::super::tables::TableBuilder;
     use super::*;
@@ -343,7 +343,7 @@ mod test {
     #[test]
     fn record1() -> Result<()> {
         let pager = mempage_tree();
-        let mut db = Database::new(pager);
+        let mut db = TableDB::new(pager);
 
         let table = TableBuilder::new()
             .name("mytable")
@@ -399,7 +399,7 @@ mod test {
     #[test]
     fn records_secondary_indicies1() -> Result<()> {
         let pager = mempage_tree();
-        let mut db = Database::new(pager);
+        let mut db = TableDB::new(pager);
 
         let mut table = TableBuilder::new()
             .name("mytable")
@@ -434,7 +434,7 @@ mod test {
     #[test]
     fn records_secondary_indicies2() -> Result<()> {
         let pager = mempage_tree();
-        let mut db = Database::new(pager);
+        let mut db = TableDB::new(pager);
 
         let mut table = TableBuilder::new()
             .name("mytable")

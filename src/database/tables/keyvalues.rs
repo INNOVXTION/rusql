@@ -524,7 +524,7 @@ impl std::fmt::Display for Value {
 mod test {
     use crate::database::{
         pager::mempage_tree,
-        tables::{Record, db::Database},
+        tables::{Record, table_db::TableDB},
     };
 
     use super::super::tables::TableBuilder;
@@ -534,7 +534,7 @@ mod test {
     #[test]
     fn key_cmp1() -> Result<()> {
         let pager = mempage_tree();
-        let mut db = Database::new(pager);
+        let mut db = TableDB::new(pager);
 
         let table = TableBuilder::new()
             .name("mytable")
