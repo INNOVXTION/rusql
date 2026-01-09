@@ -83,12 +83,11 @@ impl DerefMut for MetaPage {
 /// returns metapage object of current pager state
 pub fn metapage_save(pager: &DiskPager) -> MetaPage {
     let flc = pager.freelist.borrow().get_config();
-    let tr_ref = pager.tree.borrow();
     let mut data = MetaPage::new();
 
     debug!(
         sig = DB_SIG,
-        root_ptr = ?tr_ref.get_root(),
+        root_ptr = ?pager.tree.get(),
         npages = pager.buffer.borrow().npages,
         fl_head_ptr = ?flc.head_page,
         fl_head_seq = flc.head_seq,
@@ -100,7 +99,7 @@ pub fn metapage_save(pager: &DiskPager) -> MetaPage {
 
     use MpField as M;
     data.set_sig(DB_SIG);
-    data.set_ptr(M::RootPtr, tr_ref.get_root());
+    data.set_ptr(M::RootPtr, pager.tree.get());
     data.set_ptr(M::Npages, Some(pager.buffer.borrow().npages.into()));
 
     data.set_ptr(M::HeadPage, flc.head_page);
@@ -118,11 +117,9 @@ pub fn metapage_save(pager: &DiskPager) -> MetaPage {
 pub fn metapage_load(pager: &DiskPager, meta: &MetaPage) {
     debug!("loading metapage");
 
-    let mut tr_ref = pager.tree.borrow_mut();
-
     match meta.read_ptr(MpField::RootPtr) {
-        Pointer(0) => tr_ref.set_root(None),
-        n => tr_ref.set_root(Some(n)),
+        Pointer(0) => pager.tree.set(None),
+        n => pager.tree.set(Some(n)),
     };
 
     *pager.version.borrow_mut() = meta.read_ptr(MpField::Version).get();

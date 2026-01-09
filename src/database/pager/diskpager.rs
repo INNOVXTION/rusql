@@ -59,7 +59,7 @@ pub(crate) struct DiskPager {
 
     pub failed: Cell<bool>,
 
-    pub tree: Rc<RefCell<dyn Tree<Codec = Self>>>, // only used as reference for transactions
+    pub tree: Cell<Option<Pointer>>, // only used as reference for transactions
     pub freelist: Rc<RefCell<dyn GC<Codec = Self>>>,
 
     pub version: RefCell<u64>,
@@ -226,7 +226,7 @@ impl DiskPager {
                 total: 0,
                 chunks: vec![],
             }),
-            tree: Rc::new(RefCell::new(BTree::<Self>::new(w.clone()))),
+            tree: Cell::new(None),
             freelist: Rc::new(RefCell::new(FreeList::<Self>::new(w.clone()))),
 
             version: RefCell::new(1),

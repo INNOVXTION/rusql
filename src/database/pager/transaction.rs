@@ -45,7 +45,7 @@ impl Transaction for DiskPager {
         TX {
             db: txdb,
             tree: BTree {
-                root_ptr: self.tree.borrow().get_root(),
+                root_ptr: self.tree.get(),
                 pager: weak,
             },
             version,
@@ -194,7 +194,7 @@ impl DiskPager {
         };
 
         // flip over root and version
-        self.tree.borrow_mut().set_root(tx.tree.get_root());
+        self.tree.set(tx.tree.get_root());
         self.version.replace(tx.version);
         self.freelist.borrow_mut().set_cur_ver(tx.version);
         self.ongoing.borrow_mut().pop(tx.version);
