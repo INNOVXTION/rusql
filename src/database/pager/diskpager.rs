@@ -94,6 +94,7 @@ impl Pager for DiskPager {
     /// `BTree.get`, reads a page possibly from buffer or disk
     fn page_read(&self, ptr: Pointer, flag: NodeFlag) -> Rc<RefCell<Node>> {
         let mut buf_ref = self.buffer.borrow_mut();
+
         // check buffer first
         debug!(node=?flag, %ptr, "page read");
         if let Some(n) = buf_ref.get(ptr) {
@@ -466,17 +467,16 @@ impl DiskPager {
     }
 
     pub fn read(&self, ptr: Pointer, flag: NodeFlag) -> Rc<RefCell<Node>> {
-        let _lock = self.lock.lock();
-        let mut buf_ref = self.buffer.borrow_mut();
-
         // check buffer first
         debug!(node=?flag, %ptr, "page read");
-        if let Some(n) = buf_ref.get(ptr) {
+        if let Some(n) = self.buffer.borrow().get(ptr) {
             debug!("page found in buffer!");
             n
         } else {
+            let _lock = self.lock.lock();
+            let mut buf_ref = self.buffer.borrow_mut();
+
             debug!("reading from disk...");
-            // buf_ref.debug_print();
 
             let n = self.decode(ptr, flag);
 

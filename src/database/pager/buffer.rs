@@ -55,24 +55,13 @@ impl NodeBuffer {
             .into_iter()
     }
 
-    /// removes retired pages, marks dirty pages as clean
+    /// marks dirty pages as clean
     pub fn clear(&mut self) {
-        // let mut v = vec![];
-
         for (p, entry) in self.hmap.iter_mut() {
             if entry.dirty {
                 entry.dirty = false;
             }
-            // if entry.retired {
-            //     v.push(*p);
-            // }
         }
-
-        // // removing retired pages from buffer
-        // for p in v.iter() {
-        //     let k = self.hmap.remove(p);
-        //     debug_assert!(k.is_some());
-        // }
     }
 
     pub fn insert_clean(&mut self, ptr: Pointer, node: Node, version: u64) {

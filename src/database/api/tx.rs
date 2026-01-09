@@ -1222,3 +1222,131 @@ mod scan {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod pager_test {
+    use super::*;
+    use crate::database::{
+        api::{kvdb::KVDB, tx::TXKind},
+        btree::SetFlag,
+        helper::cleanup_file,
+        pager::transaction::Transaction,
+        tables::Value,
+    };
+    use rand::Rng;
+    use std::sync::Arc;
+    use test_log::test;
+
+    #[test]
+    fn open_pager() {
+        let path = "test-files/open_pager.rdb";
+        cleanup_file(path);
+        let _db = Arc::new(KVDB::new(path));
+        cleanup_file(path);
+    }
+
+    #[test]
+    fn disk_insert1() -> Result<()> {
+        let path = "test-files/disk_insert1.rdb";
+        cleanup_file(path);
+        let db = Arc::new(KVDB::new(path));
+        let mut tx = db.begin(&db, TXKind::Write);
+
+        tx.tree.set(
+            "1".into(),
+            Value::from_unencoded_str("val"),
+            SetFlag::UPSERT,
+        )?;
+        assert_eq!(
+            tx.tree.get("1".into()).unwrap(),
+            Value::from_unencoded_str("val")
+        );
+
+        db.commit(tx)?;
+        cleanup_file(path);
+        Ok(())
+    }
+
+    #[test]
+    fn disk_insert2() -> Result<()> {
+        let path = "test-files/disk_insert2.rdb";
+        cleanup_file(path);
+        let db = Arc::new(KVDB::new(path));
+        let mut tx = db.begin(&db, TXKind::Write);
+
+        for i in 1u16..=300u16 {
+            tx.tree
+                .set(format!("{i}").into(), "value".into(), SetFlag::UPSERT)?;
+        }
+        for i in 1u16..=300u16 {
+            assert_eq!(tx.tree.get(format!("{i}").into()).unwrap(), "value".into())
+        }
+
+        db.commit(tx)?;
+        cleanup_file(path);
+        Ok(())
+    }
+
+    #[test]
+    fn disk_delete1() -> Result<()> {
+        let path = "test-files/disk_delete1.rdb";
+        cleanup_file(path);
+        let db = Arc::new(KVDB::new(path));
+        let mut tx = db.begin(&db, TXKind::Write);
+
+        for i in 1u16..=300u16 {
+            tx.tree
+                .set(format!("{i}").into(), "value".into(), SetFlag::UPSERT)?;
+        }
+        for i in 1u16..=300u16 {
+            tx.tree.delete(format!("{i}").into())?;
+        }
+
+        db.commit(tx)?;
+        cleanup_file(path);
+        Ok(())
+    }
+
+    #[test]
+    fn disk_random1() -> Result<()> {
+        let path = "test-files/disk_random1.rdb";
+        cleanup_file(path);
+        let db = Arc::new(KVDB::new(path));
+        let mut tx = db.begin(&db, TXKind::Write);
+
+        for _ in 1u16..=1000 {
+            tx.tree.set(
+                format!("{:?}", rand::rng().random_range(1..1000)).into(),
+                Value::from_unencoded_str("val"),
+                SetFlag::UPSERT,
+            )?;
+        }
+
+        db.commit(tx)?;
+        cleanup_file(path);
+        Ok(())
+    }
+
+    #[test]
+    fn disk_delete2() -> Result<()> {
+        let path = "test-files/disk_delete2.rdb";
+        cleanup_file(path);
+        let db = Arc::new(KVDB::new(path));
+        let mut tx = db.begin(&db, TXKind::Write);
+
+        for k in 1u16..=1000 {
+            tx.tree.set(
+                format!("{}", k).into(),
+                Value::from_unencoded_str("val"),
+                SetFlag::UPSERT,
+            )?;
+        }
+        for k in 1u16..=1000 {
+            tx.tree.delete(format!("{}", k).into())?;
+        }
+
+        db.commit(tx)?;
+        cleanup_file(path);
+        Ok(())
+    }
+}

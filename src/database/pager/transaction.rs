@@ -162,7 +162,7 @@ impl DiskPager {
             count += 1;
         }
 
-        // adding deallocedp ages to the freelist
+        // adding dealloced pages back to the freelist
         for ptr in tx_buf.dealloc_q.iter() {
             self.freelist.borrow_mut().append(*ptr, tx.version)?;
         }
