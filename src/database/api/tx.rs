@@ -361,7 +361,7 @@ impl TX {
 }
 
 #[cfg(test)]
-mod test {
+mod tables {
     use crate::database::{
         api::{kvdb::KVDB, tx::TXKind},
         btree::{Compare, ScanMode, SetFlag},

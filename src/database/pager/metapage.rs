@@ -83,12 +83,13 @@ impl DerefMut for MetaPage {
 /// returns metapage object of current pager state
 pub fn metapage_save(pager: &DiskPager) -> MetaPage {
     let flc = pager.freelist.borrow().get_config();
+    let npages = pager.buffer.read().npages;
     let mut data = MetaPage::new();
 
     debug!(
         sig = DB_SIG,
         root_ptr = ?pager.tree.get(),
-        npages = pager.buffer.borrow().npages,
+        npages = npages,
         fl_head_ptr = ?flc.head_page,
         fl_head_seq = flc.head_seq,
         fl_tail_ptr = ?flc.tail_page,
@@ -100,7 +101,7 @@ pub fn metapage_save(pager: &DiskPager) -> MetaPage {
     use MpField as M;
     data.set_sig(DB_SIG);
     data.set_ptr(M::RootPtr, pager.tree.get());
-    data.set_ptr(M::Npages, Some(pager.buffer.borrow().npages.into()));
+    data.set_ptr(M::Npages, Some(npages.into()));
 
     data.set_ptr(M::HeadPage, flc.head_page);
     data.set_ptr(M::HeadSeq, Some(flc.head_seq.into()));
@@ -123,7 +124,7 @@ pub fn metapage_load(pager: &DiskPager, meta: &MetaPage) {
     };
 
     *pager.version.borrow_mut() = meta.read_ptr(MpField::Version).get();
-    pager.buffer.borrow_mut().npages = meta.read_ptr(MpField::Npages).get();
+    pager.buffer.write().npages = meta.read_ptr(MpField::Npages).get();
 
     let flc = FLConfig {
         head_page: Some(meta.read_ptr(MpField::HeadPage)),
@@ -145,7 +146,7 @@ pub fn metapage_read(pager: &DiskPager, file_size: u64) {
     if file_size == 0 {
         // empty file
         debug!("root read: empty file...");
-        pager.buffer.borrow_mut().npages = 2; // reserved for meta page and one free list node
+        pager.buffer.write().npages = 2; // reserved for meta page and one free list node
         let flc = FLConfig {
             head_page: Some(Pointer::from(1u64)),
             head_seq: 0,
@@ -164,7 +165,7 @@ pub fn metapage_read(pager: &DiskPager, file_size: u64) {
     meta.copy_from_slice(&pager.mmap.borrow().chunks[0].to_slice()[..METAPAGE_SIZE]);
     metapage_load(pager, &meta);
 
-    assert!(pager.buffer.borrow().npages != 0);
+    assert!(pager.buffer.read().npages != 0);
 }
 
 /// writes meta page to disk

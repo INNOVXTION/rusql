@@ -55,14 +55,7 @@ impl Transaction for DiskPager {
         }
     }
 
-    fn abort(&self, tx: TX) {
-        let _guard = self.lock.lock();
-        metapage_load(&self, &tx.rollback);
-
-        let mut buf = self.buffer.borrow_mut();
-        buf.nappend = 0;
-        buf.hmap.clear();
-    }
+    fn abort(&self, tx: TX) {}
 
     fn commit(&self, tx: TX) -> Result<()> {
         let _guard = self.lock.lock();
@@ -97,7 +90,7 @@ impl DiskPager {
             metapage_load(self, recov_page);
 
             // discard buffer
-            self.buffer.borrow_mut().hmap.clear();
+            self.buffer.write().hmap.clear();
             self.failed.set(true);
 
             return Err(e);
@@ -127,7 +120,7 @@ impl DiskPager {
 
         let tx_buf = tx.db.tx_buf.as_ref().unwrap().borrow();
         let nwrites = tx_buf.write_map.len();
-        let npages = self.buffer.borrow().npages;
+        let npages = self.buffer.read().npages;
 
         // extend the mmap if needed
         let new_size = (npages as usize + nwrites) * PAGE_SIZE; // amount of pages in bytes
@@ -167,8 +160,10 @@ impl DiskPager {
             self.freelist.borrow_mut().append(*ptr, tx.version)?;
         }
 
+        let mut disk_buf = self.buffer.write();
+
         // freelist write
-        for pair in self.buffer.borrow_mut().to_dirty_iter() {
+        for pair in disk_buf.to_dirty_iter() {
             debug!(
                 "writing pager buffer {:<10} at {:<5}",
                 pair.1.get_type(),
@@ -200,7 +195,6 @@ impl DiskPager {
         self.ongoing.borrow_mut().pop(tx.version);
 
         // adjust buffer
-        let mut disk_buf = self.buffer.borrow_mut();
 
         disk_buf.npages += disk_buf.nappend + tx_buf.nappend as u64;
         disk_buf.nappend = 0;

@@ -3,8 +3,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::os::fd::OwnedFd;
 use std::rc::Rc;
 
-use parking_lot::Mutex;
 use parking_lot::ReentrantMutex;
+use parking_lot::{Mutex, RwLock};
 use rustix::fs::{fstat, fsync, ftruncate};
 use tracing::{debug, error, info, instrument, warn};
 
@@ -13,7 +13,7 @@ use crate::database::BTree;
 use crate::database::api::tx::TX;
 use crate::database::errors::FLError;
 use crate::database::helper::as_page;
-use crate::database::pager::buffer::{NodeBuffer, OngoingTX};
+use crate::database::pager::buffer::{DiskBuffer, OngoingTX};
 use crate::database::pager::freelist::{FLConfig, FLNode, FreeList, GC};
 use crate::database::pager::metapage::*;
 use crate::database::pager::mmap::*;
@@ -54,12 +54,12 @@ impl std::fmt::Display for NodeFlag {
 pub(crate) struct DiskPager {
     path: &'static str,
     pub database: OwnedFd,
-    pub buffer: RefCell<NodeBuffer>, // read only pages
+    pub buffer: RwLock<DiskBuffer>, // read only pages
     pub mmap: RefCell<Mmap>,
 
     pub failed: Cell<bool>,
 
-    pub tree: Cell<Option<Pointer>>, // only used as reference for transactions
+    pub tree: Cell<Option<Pointer>>, // root pointer
     pub freelist: Rc<RefCell<dyn GC<Codec = Self>>>,
 
     pub version: RefCell<u64>,
@@ -93,7 +93,7 @@ impl Pager for DiskPager {
     ///
     /// `BTree.get`, reads a page possibly from buffer or disk
     fn page_read(&self, ptr: Pointer, flag: NodeFlag) -> Rc<RefCell<Node>> {
-        let mut buf_ref = self.buffer.borrow_mut();
+        let buf_ref = self.buffer.read();
 
         // check buffer first
         debug!(node=?flag, %ptr, "page read");
@@ -102,6 +102,8 @@ impl Pager for DiskPager {
             n
         } else {
             debug!("reading from disk...");
+            drop(buf_ref);
+            let mut buf_ref = self.buffer.write();
             let n = self.decode(ptr, flag);
 
             buf_ref.insert_clean(ptr, n.clone(), *self.version.borrow());
@@ -119,11 +121,10 @@ impl Pager for DiskPager {
             assert_ne!(ptr.0, 0);
 
             // loading page into buffer
-            self.buffer
-                .borrow_mut()
-                .insert_dirty(ptr, node, *self.version.borrow());
+            let mut buf = self.buffer.write();
+            buf.insert_dirty(ptr, node, *self.version.borrow());
 
-            self.buffer.borrow().debug_print();
+            buf.debug_print();
             ptr
         } else {
             // increment append?
@@ -156,10 +157,8 @@ impl GCCallbacks for DiskPager {
     ///
     /// pageAppend
     fn encode(&self, node: Node) -> Pointer {
-        let _guard = self.lock.lock();
-
-        let buf_ref = &mut self.buffer.borrow_mut();
-        let ptr = Pointer(buf_ref.npages + buf_ref.nappend);
+        let mut buf = self.buffer.write();
+        let ptr = Pointer(buf.npages + buf.nappend);
 
         // empty db has n_pages = 1 (meta page)
         assert!(node.fits_page());
@@ -170,9 +169,9 @@ impl GCCallbacks for DiskPager {
             ptr.0
         );
 
-        buf_ref.nappend += 1;
-        buf_ref.insert_dirty(ptr, node, *self.version.borrow());
-        buf_ref.debug_print();
+        buf.nappend += 1;
+        buf.insert_dirty(ptr, node, *self.version.borrow());
+        buf.debug_print();
 
         assert_ne!(ptr.0, 0);
         ptr
@@ -182,9 +181,7 @@ impl GCCallbacks for DiskPager {
     ///
     /// checks buffer for allocated page and returns pointer
     fn update(&self, ptr: Pointer) -> Rc<RefCell<Node>> {
-        let _guard = self.lock.lock();
-
-        let buf = &mut self.buffer.borrow_mut();
+        let mut buf = self.buffer.write();
 
         // checking buffer,...
         let entry = match buf.get(ptr) {
@@ -217,11 +214,7 @@ impl DiskPager {
             path,
             database: create_file_sync(path).expect("file open error"),
             failed: Cell::new(false),
-            buffer: RefCell::new(NodeBuffer {
-                hmap: HashMap::new(),
-                nappend: 0,
-                npages: 0,
-            }),
+            buffer: RwLock::new(DiskBuffer::new()),
             mmap: RefCell::new(Mmap {
                 total: 0,
                 chunks: vec![],
@@ -257,7 +250,7 @@ impl DiskPager {
             debug!(
                 "\npager initialized:\nmmap.total {}\nn_pages {}\nchunks.len {}",
                 pager.mmap.borrow().total,
-                pager.buffer.borrow().npages,
+                pager.buffer.read().npages,
                 pager.mmap.borrow().chunks.len(),
             );
         }
@@ -265,105 +258,105 @@ impl DiskPager {
         Ok(pager)
     }
 
-    #[instrument(name = "pager update file", skip_all)]
-    pub fn update_or_revert(&self, recov_page: &MetaPage) -> Result<(), Error> {
-        debug!("tree operation complete, updating file");
+    // #[instrument(name = "pager update file", skip_all)]
+    // pub fn update_or_revert(&self, recov_page: &MetaPage) -> Result<(), Error> {
+    //     debug!("tree operation complete, updating file");
 
-        // making sure the meta page is a known good state after a potential write error
-        if self.failed.get() {
-            debug!("failed update detected, restoring meta page...");
+    //     // making sure the meta page is a known good state after a potential write error
+    //     if self.failed.get() {
+    //         debug!("failed update detected, restoring meta page...");
 
-            metapage_write(self, recov_page).expect("meta page recovery write error");
-            fsync(&self.database).expect("fsync metapage for restoration failed");
-            self.failed.set(false);
-        };
+    //         metapage_write(self, recov_page).expect("meta page recovery write error");
+    //         fsync(&self.database).expect("fsync metapage for restoration failed");
+    //         self.failed.set(false);
+    //     };
 
-        // in case the file writing fails, we revert back to the old meta page
-        if let Err(e) = self.file_update() {
-            warn!(%e, "file update failed! Reverting meta page...");
+    //     // in case the file writing fails, we revert back to the old meta page
+    //     if let Err(e) = self.file_update() {
+    //         warn!(%e, "file update failed! Reverting meta page...");
 
-            // save the pager from before the current operation to be rewritten later
-            metapage_load(self, recov_page);
+    //         // save the pager from before the current operation to be rewritten later
+    //         metapage_load(self, recov_page);
 
-            // discard buffer
-            self.buffer.borrow_mut().hmap.clear();
-            self.failed.set(true);
+    //         // discard buffer
+    //         self.buffer.borrow_mut().hmap.clear();
+    //         self.failed.set(true);
 
-            return Err(Error::PagerError(e));
-        }
-        Ok(())
-    }
+    //         return Err(Error::PagerError(e));
+    //     }
+    //     Ok(())
+    // }
 
-    /// write sequence
-    pub fn file_update(&self) -> Result<(), PagerError> {
-        // updating free list for next update
-        self.freelist.borrow_mut().set_max_seq();
+    // /// write sequence
+    // pub fn file_update(&self) -> Result<(), PagerError> {
+    //     // updating free list for next update
+    //     self.freelist.borrow_mut().set_max_seq();
 
-        // flush buffer to disk
-        self.page_write()?;
-        fsync(&self.database)?;
+    //     // flush buffer to disk
+    //     self.page_write()?;
+    //     fsync(&self.database)?;
 
-        // write currently loaded metapage to disk
-        metapage_write(self, &metapage_save(self))?;
-        fsync(&self.database)?;
+    //     // write currently loaded metapage to disk
+    //     metapage_write(self, &metapage_save(self))?;
+    //     fsync(&self.database)?;
 
-        Ok(())
-    }
+    //     Ok(())
+    // }
 
-    /// helper function: writePages, flushes the buffer
-    pub fn page_write(&self) -> Result<(), PagerError> {
-        debug!("writing page...");
+    // /// helper function: writePages, flushes the buffer
+    // pub fn page_write(&self) -> Result<(), PagerError> {
+    //     debug!("writing page...");
 
-        let buf = self.buffer.borrow();
-        let buf_len = buf.hmap.len();
-        let npage = buf.npages;
+    //     let buf = self.buffer.borrow();
+    //     let buf_len = buf.hmap.len();
+    //     let npage = buf.npages;
 
-        // extend the mmap if needed
-        let new_size = (npage as usize + buf_len) * PAGE_SIZE; // amount of pages in bytes
-        mmap_extend(self, new_size).map_err(|e| {
-            error!(%e, new_size, "Error when extending mmap");
-            e
-        })?;
-        debug!(
-            nappend = buf.nappend,
-            buffer = buf_len,
-            "pages to be written:"
-        );
+    //     // extend the mmap if needed
+    //     let new_size = (npage as usize + buf_len) * PAGE_SIZE; // amount of pages in bytes
+    //     mmap_extend(self, new_size).map_err(|e| {
+    //         error!(%e, new_size, "Error when extending mmap");
+    //         e
+    //     })?;
+    //     debug!(
+    //         nappend = buf.nappend,
+    //         buffer = buf_len,
+    //         "pages to be written:"
+    //     );
 
-        // iterate over buffer and write nodes to designated pages
-        let mut bytes_written: usize = 0;
-        let mut count = 0;
+    //     // iterate over buffer and write nodes to designated pages
+    //     let mut bytes_written: usize = 0;
+    //     let mut count = 0;
 
-        for pair in buf.to_dirty_iter() {
-            debug!("writing {:<10} at {:<5}", pair.1.get_type(), pair.0);
-            assert!(pair.0.get() != 0); // never write to the meta page
+    //     for pair in buf.to_dirty_iter() {
+    //         debug!("writing {:<10} at {:<5}", pair.1.get_type(), pair.0);
+    //         assert!(pair.0.get() != 0); // never write to the meta page
 
-            let offset = pair.0.get() * PAGE_SIZE as u64;
-            let io_slice = rustix::io::IoSlice::new(&pair.1[..PAGE_SIZE]);
-            bytes_written +=
-                rustix::io::pwrite(&self.database, &io_slice, offset).map_err(|e| {
-                    error!(?e, "page writing error!");
-                    PagerError::WriteFileError(e)
-                })?;
-            count += 1;
-        }
-        debug!(bytes_written, "bytes written:");
-        if bytes_written != count * PAGE_SIZE {
-            return Err(PagerError::PageWriteError(
-                "wrong amount of bytes written".to_string(),
-            ));
-        };
+    //         let offset = pair.0.get() * PAGE_SIZE as u64;
+    //         let io_slice = rustix::io::IoSlice::new(&pair.1[..PAGE_SIZE]);
+    //         bytes_written +=
+    //             rustix::io::pwrite(&self.database, &io_slice, offset).map_err(|e| {
+    //                 error!(?e, "page writing error!");
+    //                 PagerError::WriteFileError(e)
+    //             })?;
+    //         count += 1;
+    //     }
+    //     debug!(bytes_written, "bytes written:");
+    //     if bytes_written != count * PAGE_SIZE {
+    //         return Err(PagerError::PageWriteError(
+    //             "wrong amount of bytes written".to_string(),
+    //         ));
+    //     };
 
-        // adjust buffer
-        drop(buf);
-        let mut buf = self.buffer.borrow_mut();
+    //     // adjust buffer
+    //     drop(buf);
+    //     let mut buf = self.buffer.borrow_mut();
 
-        buf.npages += buf.nappend;
-        buf.nappend = 0;
-        buf.clear();
+    //     buf.npages += buf.nappend;
+    //     buf.nappend = 0;
+    //     buf.clear();
 
-        Ok(())
-    }
+    //     Ok(())
+    // }
 
     /// decodes a page from the mmap
     ///
@@ -424,7 +417,10 @@ impl DiskPager {
     /// after tree operations. Truncation amount is based on count_trunc_pages() algorithm
     #[instrument(skip_all)]
     pub fn truncate(&self, list: Vec<Pointer>) -> Result<(), Error> {
-        let npages = self.buffer.borrow().npages;
+        let mut buf = self.buffer.write();
+        let _guard = self.lock.lock();
+
+        let npages = buf.npages;
         if npages <= 2 {
             return Err(
                 FLError::TruncateError("cant truncate from empty database".to_string()).into(),
@@ -453,7 +449,7 @@ impl DiskPager {
                 }
                 let new_npage = npages - count;
 
-                self.buffer.borrow_mut().npages = new_npage;
+                buf.npages = new_npage;
                 metapage_write(self, &metapage_save(self))?;
                 fsync(&self.database)?;
 
@@ -469,24 +465,24 @@ impl DiskPager {
     pub fn read(&self, ptr: Pointer, flag: NodeFlag) -> Rc<RefCell<Node>> {
         // check buffer first
         debug!(node=?flag, %ptr, "page read");
-        if let Some(n) = self.buffer.borrow().get(ptr) {
+        if let Some(n) = self.buffer.read().get(ptr) {
             debug!("page found in buffer!");
             n
         } else {
-            let _lock = self.lock.lock();
-            let mut buf_ref = self.buffer.borrow_mut();
+            let mut buf = self.buffer.write();
 
             debug!("reading from disk...");
 
             let n = self.decode(ptr, flag);
 
-            buf_ref.insert_clean(ptr, n.clone(), *self.version.borrow());
-            buf_ref.get(ptr).expect("we just inserted it")
+            buf.insert_clean(ptr, n.clone(), *self.version.borrow());
+            buf.get(ptr).expect("we just inserted it")
         }
     }
 
     pub fn alloc(&self, node: &Node, version: u64, nappend: u32) -> AllocatedPage {
         let _lock = self.lock.lock();
+        let buf = self.buffer.read();
 
         let max_ver = match self.ongoing.borrow_mut().get_oldest_version() {
             Some(n) => n,
@@ -500,7 +496,7 @@ impl DiskPager {
             debug!("allocating from buffer");
 
             assert_ne!(ptr.0, 0);
-            self.buffer.borrow().debug_print();
+            buf.debug_print();
 
             let page = AllocatedPage {
                 ptr,
@@ -511,9 +507,7 @@ impl DiskPager {
             page
         } else {
             debug!("allocating from append");
-
-            let buf_ref = self.buffer.borrow();
-            let ptr = Pointer(buf_ref.npages + nappend as u64);
+            let ptr = Pointer(buf.npages + nappend as u64);
             assert_ne!(ptr.0, 0);
 
             // empty db has n_pages = 1 (meta page)
@@ -525,7 +519,7 @@ impl DiskPager {
                 ptr.0
             );
 
-            buf_ref.debug_print();
+            buf.debug_print();
 
             let page = AllocatedPage {
                 ptr,

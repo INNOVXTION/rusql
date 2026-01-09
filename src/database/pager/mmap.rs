@@ -84,7 +84,6 @@ fn mmap_new(fd: &OwnedFd, offset: u64, length: usize) -> Result<Chunk, PagerErro
 /// checks for sufficient space, exponentially extends the mmap
 pub fn mmap_extend(db: &DiskPager, size: usize) -> Result<(), PagerError> {
     let mmap_ref = db.mmap.borrow();
-    let buf_ref = db.buffer.borrow();
 
     // do we need to extend?
     if size <= mmap_ref.total {

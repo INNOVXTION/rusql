@@ -7,7 +7,7 @@ use tracing::debug;
 use crate::database::pager::diskpager::PageOrigin;
 use crate::database::{
     api::{kvdb::KVDB, tx::TXKind},
-    pager::{NodeBuffer, NodeFlag, Pager},
+    pager::{DiskBuffer, NodeFlag, Pager},
     types::{Node, Pointer},
 };
 
