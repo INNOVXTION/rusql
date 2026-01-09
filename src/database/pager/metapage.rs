@@ -16,11 +16,11 @@ use crate::database::{
 // | 16B |    8B    |     8B    |
 //
 // new
-// | sig | root_ptr | page_used | head_page | head_seq | tail_page | tail_seq |
-// | 16B |    8B    |     8B    |     8B    |    8B    |     8B    |    8B    |
+// | sig | root_ptr | page_used | head_page | head_seq | tail_page | tail_seq | version |
+// | 16B |    8B    |     8B    |     8B    |    8B    |     8B    |    8B    |    8B   |
 
 pub const DB_SIG: &'static str = "BuildYourOwnDB06";
-pub const METAPAGE_SIZE: usize = 16 + (8 * 6); // sig plus 6 eight byte values
+pub const METAPAGE_SIZE: usize = 16 + (8 * 7); // sig plus 6 eight byte values
 pub const SIG_SIZE: usize = 16;
 
 // offsets
@@ -32,12 +32,13 @@ enum MpField {
     HeadSeq = 16 + (8 * 3),
     TailPage = 16 + (8 * 4),
     TailSeq = 16 + (8 * 5),
+    Version = 16 + (8 * 6),
 }
 
 pub(crate) struct MetaPage(Box<[u8; METAPAGE_SIZE]>);
 
 impl MetaPage {
-    fn new() -> Self {
+    pub fn new() -> Self {
         MetaPage(Box::new([0u8; METAPAGE_SIZE]))
     }
 
@@ -93,6 +94,7 @@ pub fn metapage_save(pager: &DiskPager) -> MetaPage {
         fl_head_seq = flc.head_seq,
         fl_tail_ptr = ?flc.tail_page,
         fl_tail_seq = flc.tail_seq,
+        version = *pager.version.borrow(),
         "saving meta page:"
     );
 
@@ -106,6 +108,7 @@ pub fn metapage_save(pager: &DiskPager) -> MetaPage {
     data.set_ptr(M::TailPage, flc.tail_page);
     data.set_ptr(M::TailSeq, Some(flc.tail_seq.into()));
 
+    data.set_ptr(M::Version, Some(Pointer::from(*pager.version.borrow())));
     data
 }
 
@@ -122,6 +125,7 @@ pub fn metapage_load(pager: &DiskPager, meta: &MetaPage) {
         n => tr_ref.set_root(Some(n)),
     };
 
+    *pager.version.borrow_mut() = meta.read_ptr(MpField::Version).get();
     pager.buffer.borrow_mut().npages = meta.read_ptr(MpField::Npages).get();
 
     let flc = FLConfig {
@@ -130,6 +134,9 @@ pub fn metapage_load(pager: &DiskPager, meta: &MetaPage) {
 
         tail_page: Some(meta.read_ptr(MpField::TailPage)),
         tail_seq: meta.read_ptr(MpField::TailSeq).get() as usize,
+
+        max_ver: meta.read_ptr(MpField::Version).get(),
+        cur_ver: meta.read_ptr(MpField::Version).get(),
     };
 
     pager.freelist.borrow_mut().set_config(&flc);
@@ -147,6 +154,9 @@ pub fn metapage_read(pager: &DiskPager, file_size: u64) {
             head_seq: 0,
             tail_page: Some(Pointer::from(1u64)),
             tail_seq: 0,
+
+            max_ver: 1,
+            cur_ver: 1,
         };
         pager.freelist.borrow_mut().set_config(&flc);
         return;

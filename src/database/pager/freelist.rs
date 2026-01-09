@@ -4,8 +4,8 @@ use std::ops::{Deref, DerefMut};
 use std::rc::{Rc, Weak};
 
 use crate::database::codec::{NumDecode, NumEncode};
-use crate::database::pager::diskpager::{NodeFlag, Pager};
-use crate::database::types::Node;
+use crate::database::pager::diskpager::{GCCallbacks, NodeFlag, Pager};
+use crate::database::types::{FREE_PAGE, Node, VER_SIZE};
 use crate::database::{
     btree::TreeNode,
     errors::FLError,
@@ -13,14 +13,18 @@ use crate::database::{
 };
 use tracing::debug;
 
-pub(crate) struct FreeList<P: Pager> {
+pub(crate) struct FreeList<P: Pager + GCCallbacks> {
+    pub pager: Weak<P>,
+
     head_page: Option<Pointer>,
     head_seq: usize,
     tail_page: Option<Pointer>,
     tail_seq: usize,
-    /// maximum amount of items in the list
-    pub max_seq: usize,
-    pub pager: Weak<P>,
+
+    pub max_seq: usize, // maximum amount of items in the list
+
+    cur_ver: u64, // reflects the current pager
+    max_ver: u64, // version permitted to give out, oldest version in diskpager.ongoing
 }
 
 /*
@@ -40,29 +44,34 @@ pub(crate) struct FLConfig {
     pub head_seq: usize,
     pub tail_page: Option<Pointer>,
     pub tail_seq: usize,
+
+    pub cur_ver: u64,
+    pub max_ver: u64,
 }
 
 pub(crate) trait GC {
     type Codec: Pager;
 
     fn get(&mut self) -> Option<Pointer>;
-    fn append(&mut self, ptr: Pointer) -> Result<(), FLError>;
+    fn append(&mut self, ptr: Pointer, version: u64) -> Result<(), FLError>;
 
     fn get_config(&self) -> FLConfig;
     fn set_config(&mut self, flc: &FLConfig);
 
     fn peek_ptr(&self) -> Option<Vec<Pointer>>;
     fn set_max_seq(&mut self);
+    fn set_max_ver(&mut self, version: u64);
+    fn set_cur_ver(&mut self, version: u64);
 }
 
-impl<P: Pager> GC for FreeList<P> {
+impl<P: Pager + GCCallbacks> GC for FreeList<P> {
     type Codec = P;
     /// removes a page from the head, decrement head seq
     fn get(&mut self) -> Option<Pointer> {
         match self.pop_head() {
             (Some(ptr), Some(head)) => {
                 debug!(%ptr, "retrieving from freelist with head: ");
-                self.append(head).unwrap();
+                self.append(head, FREE_PAGE).unwrap();
                 Some(ptr)
             }
             (Some(ptr), None) => {
@@ -76,13 +85,18 @@ impl<P: Pager> GC for FreeList<P> {
 
     /// add a page to the tail increment tail seq
     /// PushTail
-    fn append(&mut self, ptr: Pointer) -> Result<(), FLError> {
+    fn append(&mut self, ptr: Pointer, version: u64) -> Result<(), FLError> {
         debug!("appending {} to free list...", ptr);
         assert!(self.tail_page.is_some());
 
         // updates tail page, by getting a reference to the buffer if its already in there
         // updating appending the pointer
-        self.update_set_ptr(self.tail_page.unwrap(), ptr, seq_to_idx(self.tail_seq));
+        self.update_set_ptr(
+            self.tail_page.unwrap(),
+            ptr,
+            version,
+            seq_to_idx(self.tail_seq),
+        );
         self.tail_seq += 1;
 
         // allocating new node if the the node is full
@@ -117,7 +131,7 @@ impl<P: Pager> GC for FreeList<P> {
                     // moves tail to new empty page
                     self.tail_page = Some(next);
                     // appending the empty head
-                    self.update_set_ptr(self.tail_page.unwrap(), head, 0);
+                    self.update_set_ptr(self.tail_page.unwrap(), head, FREE_PAGE, 0);
                     self.tail_seq = 0; // experimental
                     self.tail_seq += 1; // accounting for re-added head
                 }
@@ -150,7 +164,7 @@ impl<P: Pager> GC for FreeList<P> {
                 break;
             }
 
-            list.push(node.borrow().as_fl().get_ptr(seq_to_idx(head)));
+            list.push(node.borrow().as_fl().get_ptr(seq_to_idx(head)).0);
             head += 1;
 
             if seq_to_idx(head) == 0 {
@@ -168,6 +182,8 @@ impl<P: Pager> GC for FreeList<P> {
             head_seq: self.head_seq,
             tail_page: self.tail_page,
             tail_seq: self.tail_seq,
+            cur_ver: self.cur_ver,
+            max_ver: self.max_ver,
         }
     }
 
@@ -176,15 +192,25 @@ impl<P: Pager> GC for FreeList<P> {
         self.head_seq = flc.head_seq;
         self.tail_page = flc.tail_page;
         self.tail_seq = flc.tail_seq;
+        self.cur_ver = flc.cur_ver;
+        self.max_ver = flc.max_ver;
     }
 
     /// increments the max_seq for next transaction cycle
     fn set_max_seq(&mut self) {
         self.max_seq = self.tail_seq
     }
+
+    fn set_max_ver(&mut self, version: u64) {
+        self.max_ver = version
+    }
+
+    fn set_cur_ver(&mut self, version: u64) {
+        self.cur_ver = version
+    }
 }
 
-impl<P: Pager> FreeList<P> {
+impl<P: Pager + GCCallbacks> FreeList<P> {
     // callbacks
 
     /// reads page, gets page, removes from buffer if available
@@ -200,10 +226,7 @@ impl<P: Pager> FreeList<P> {
     }
 
     /// returns ptr to node inside the allocation buffer
-    /// # SAFETY:
-    /// needs to be called in isolation, calls to encode can resize the buffer
-    /// and therefore invalidate the returning pointer, use the dedicated helper functions!
-    unsafe fn update(&self, ptr: Pointer) -> Rc<RefCell<Node>> {
+    fn update(&self, ptr: Pointer) -> Rc<RefCell<Node>> {
         let strong = self.pager.upgrade().unwrap();
         strong.update(ptr)
     }
@@ -217,6 +240,8 @@ impl<P: Pager> FreeList<P> {
             tail_seq: 0,
             max_seq: 0,
             pager: pager,
+            cur_ver: 0,
+            max_ver: 0,
         }
     }
 
@@ -230,10 +255,16 @@ impl<P: Pager> FreeList<P> {
         }
 
         let ptr = self.update_get_ptr(self.head_page.unwrap(), seq_to_idx(self.head_seq));
+
+        // is the version retrieved newer than max_ver
+        if ptr.1 > self.max_ver {
+            return (None, None);
+        }
+
         self.head_seq += 1;
         debug!(
             "getting ptr {} from head at {}",
-            ptr,
+            ptr.0,
             self.head_page.unwrap()
         );
 
@@ -243,48 +274,35 @@ impl<P: Pager> FreeList<P> {
             // self.head_page = Some(node.get_next());
             self.head_page = Some(self.update_get_next(self.head_page.unwrap()));
             self.head_seq = 0; // experimental: resetting the counter
-            return (Some(ptr), Some(head));
+            return (Some(ptr.0), Some(head));
         }
-        (Some(ptr), None)
+        (Some(ptr.0), None)
     }
 
-    /// safety function to call update()
     /// gets pointer from idx
-    fn update_get_ptr(&self, node: Pointer, idx: u16) -> Pointer {
-        // SAFETY: see callback at the top
-        unsafe {
-            let r = self.update(node);
-            let mut r_mut = r.borrow_mut();
-            let node_ptr = r_mut.as_fl_mut();
-            node_ptr.get_ptr(idx)
-        }
+    fn update_get_ptr(&self, node: Pointer, idx: u16) -> (Pointer, u64) {
+        let r = self.update(node);
+        let mut r_mut = r.borrow_mut();
+        let node_ptr = r_mut.as_fl_mut();
+        node_ptr.get_ptr(idx)
     }
 
-    /// safety function to call update()
     /// sets ptr at idx for free list node
-    fn update_set_ptr(&self, node: Pointer, ptr: Pointer, idx: u16) {
-        // SAFETY: see callback at the top
-        unsafe {
-            let r = self.update(node);
-            let mut r_mut = r.borrow_mut();
-            let node_ptr = r_mut.as_fl_mut();
-            node_ptr.set_ptr(idx, ptr);
-        }
+    fn update_set_ptr(&self, node: Pointer, ptr: Pointer, version: u64, idx: u16) {
+        let r = self.update(node);
+        let mut r_mut = r.borrow_mut();
+        let node_ptr = r_mut.as_fl_mut();
+        node_ptr.set_ptr(idx, ptr, version);
     }
 
-    /// safety function to call update()
     /// gets next ptr from free list node
     fn update_get_next(&self, node: Pointer) -> Pointer {
-        // SAFETY: see callback at the top
-        unsafe {
-            let r = self.update(node);
-            let mut r_mut = r.borrow_mut();
-            let node_ptr = r_mut.as_fl_mut();
-            node_ptr.get_next()
-        }
+        let r = self.update(node);
+        let mut r_mut = r.borrow_mut();
+        let node_ptr = r_mut.as_fl_mut();
+        node_ptr.get_next()
     }
 
-    /// safety function to call update()
     /// sets next ptr for free list node
     fn update_set_next(&self, node: Pointer, ptr: Pointer) {
         // SAFETY: see callback at the top
@@ -311,11 +329,11 @@ fn seq_to_idx(seq: usize) -> u16 {
 }
 
 const FREE_LIST_NEXT: usize = 8;
-const FREE_LIST_CAP: usize = (PAGE_SIZE - FREE_LIST_NEXT) / 8;
+const FREE_LIST_CAP: usize = (PAGE_SIZE - FREE_LIST_NEXT) / (PTR_SIZE + VER_SIZE);
 
 // -------Free List Node-------
 // | next | pointers | unused |
-// |  8B  |   n*8B   |   ...  |
+// |  8B  | n*(8B+8B)|   ...  |
 
 #[derive(Debug)]
 pub struct FLNode(Box<[u8; PAGE_SIZE]>);
@@ -327,25 +345,34 @@ impl FLNode {
 
     fn get_next(&self) -> Pointer {
         debug!("getting next");
+
         (&self[0..]).read_u64().into()
-        // read_pointer(&self, 0).expect("reading next ptr failed")
     }
 
     fn set_next(&mut self, ptr: Pointer) {
         debug!(ptr = ?ptr, "setting next");
+
         (&mut self[0..]).write_u64(ptr.get());
     }
 
-    fn get_ptr(&self, idx: u16) -> Pointer {
+    fn get_ptr(&self, idx: u16) -> (Pointer, u64) {
         debug!(idx, "getting pointer from free list node");
-        let offset = FREE_LIST_NEXT + (FREE_LIST_NEXT * idx as usize);
-        (&self[offset..]).read_u64().into()
+        let offset = FREE_LIST_NEXT + ((PTR_SIZE + VER_SIZE) * idx as usize);
+        let mut slice = &self[offset..];
+
+        let ptr = Pointer::from(slice.read_u64());
+        let ver = slice.read_u64();
+
+        (ptr, ver)
     }
 
-    fn set_ptr(&mut self, idx: u16, ptr: Pointer) {
+    fn set_ptr(&mut self, idx: u16, ptr: Pointer, version: u64) {
         debug!(idx, ptr = ?ptr, "free list node: setting pointer");
-        let offset = FREE_LIST_NEXT + (PTR_SIZE * idx as usize);
-        (&mut self[offset..]).write_u64(ptr.get());
+        let offset = FREE_LIST_NEXT + ((PTR_SIZE + VER_SIZE) * idx as usize);
+
+        (&mut self[offset..])
+            .write_u64(ptr.get())
+            .write_u64(version);
     }
 }
 
@@ -377,7 +404,7 @@ impl DerefMut for FLNode {
     }
 }
 
-impl<P: Pager> Debug for FreeList<P> {
+impl<P: Pager + GCCallbacks> Debug for FreeList<P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FreeList")
             .field("head page", &self.head_page)

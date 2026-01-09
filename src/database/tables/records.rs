@@ -71,10 +71,13 @@ impl Record {
                         ))
                         .into());
                     }
+
                     // constructing Key
                     pkey_cells = idx.columns.iter().map(|i| &self.data[*i]).collect();
+
                     // constructing Value
                     val_cells = (n_cols..self.data.len()).map(|i| &self.data[i]).collect();
+
                     // chaining together
                     debug!(?pkey_cells, ?val_cells);
                     let data_iter = pkey_cells
@@ -83,6 +86,7 @@ impl Record {
                         .chain(val_cells.iter().map(|c| *c));
 
                     assert_eq!(pkey_cells.len(), schema.pkeys as usize);
+
                     let kv = encode_to_kv(schema.id, idx.prefix, data_iter, Some(n_cols))?;
                     assert!(!kv.0.as_slice().len() > TID_LEN + PREFIX_LEN);
 
@@ -103,6 +107,7 @@ impl Record {
                             }
                         })
                         .collect();
+
                     // chaining together
                     debug!(?key_cells, ?val_cells);
                     let data_iter = key_cells.iter().map(|c| *c).chain(
@@ -332,18 +337,161 @@ where
     ))
 }
 
+// #[cfg(test)]
+// mod test {
+//     use crate::database::pager::mempage_tree;
+
+//     use super::super::tables::TableBuilder;
+//     use super::*;
+//     use test_log::test;
+
+//     #[test]
+//     fn record1() -> Result<()> {
+//         let pager = mempage_tree();
+//         let mut db = TableKV::new(pager);
+
+//         let table = TableBuilder::new()
+//             .name("mytable")
+//             .id(2)
+//             .pkey(2)
+//             .add_col("greeter", TypeCol::BYTES)
+//             .add_col("number", TypeCol::INTEGER)
+//             .add_col("gretee", TypeCol::BYTES)
+//             .build(&mut db)
+//             .unwrap();
+
+//         let s1 = "hello";
+//         let i1 = 10;
+//         let s2 = "world";
+
+//         let rec = Record::new().add(s1).add(i1).add(s2);
+
+//         let kv = rec.encode(&table)?.next().unwrap();
+//         assert_eq!(kv.0.to_string(), "2 0 hello 10");
+//         assert_eq!(kv.1.to_string(), "world");
+//         Ok(())
+//     }
+
+//     #[test]
+//     fn records_test_str() -> Result<()> {
+//         let key = Key::from_unencoded_type("hello".to_string());
+//         assert_eq!(key.to_string(), "1 0 hello");
+
+//         let key: Key = "hello".into();
+//         assert_eq!(key.to_string(), "1 0 hello");
+
+//         let key = Key::from_unencoded_type("owned hello".to_string());
+//         assert_eq!(key.to_string(), "1 0 owned hello");
+
+//         let val: Value = "world".into();
+//         assert_eq!(val.to_string(), "world");
+//         Ok(())
+//     }
+
+//     #[test]
+//     fn key_cmp2() -> Result<()> {
+//         let k2: Key = "9".into();
+//         let k3: Key = "10".into();
+//         let k1: Key = "1".into();
+//         let k4: Key = "1".into();
+//         assert!(k3 < k2);
+//         assert!(k1 < k2);
+//         assert!(k1 < k3);
+//         assert!(k1 == k4);
+//         Ok(())
+//     }
+
+//     #[test]
+//     fn records_secondary_indicies1() -> Result<()> {
+//         let pager = mempage_tree();
+//         let mut db = TableKV::new(pager);
+
+//         let mut table = TableBuilder::new()
+//             .name("mytable")
+//             .id(2)
+//             .pkey(1)
+//             .add_col("greeter", TypeCol::BYTES)
+//             .add_col("number", TypeCol::INTEGER)
+//             .add_col("gretee", TypeCol::BYTES)
+//             .build(&mut db)
+//             .unwrap();
+
+//         table.add_index("number")?;
+//         assert_eq!(table.indices.len(), 2);
+
+//         let s1 = "hello";
+//         let i1 = 10;
+//         let s2 = "world";
+
+//         let mut rec = Record::new().add(s1).add(i1).add(s2).encode(&table)?;
+//         let mut kv = rec.next().unwrap();
+
+//         assert_eq!(kv.0.to_string(), "2 0 hello");
+//         assert_eq!(kv.1.to_string(), "10 world");
+
+//         kv = rec.next().unwrap();
+//         assert_eq!(kv.0.to_string(), "2 1 10 hello");
+//         assert_eq!(kv.1.to_string(), "world");
+
+//         Ok(())
+//     }
+
+//     #[test]
+//     fn records_secondary_indicies2() -> Result<()> {
+//         let pager = mempage_tree();
+//         let mut db = TableKV::new(pager);
+
+//         let mut table = TableBuilder::new()
+//             .name("mytable")
+//             .id(5)
+//             .pkey(1)
+//             .add_col("id", TypeCol::INTEGER)
+//             .add_col("name", TypeCol::BYTES)
+//             .add_col("city", TypeCol::BYTES)
+//             .add_col("job", TypeCol::BYTES)
+//             .build(&mut db)
+//             .unwrap();
+
+//         table.add_index("city")?;
+//         assert_eq!(table.indices.len(), 2);
+
+//         let mut rec = Record::new()
+//             .add(1)
+//             .add("Alfred")
+//             .add("Berlin")
+//             .add("Firefighter")
+//             .encode(&table)?;
+//         let mut kv = rec.next().unwrap();
+
+//         assert_eq!(kv.0.to_string(), "5 0 1");
+//         assert_eq!(kv.1.to_string(), "Alfred Berlin Firefighter");
+
+//         kv = rec.next().unwrap();
+//         assert_eq!(kv.0.to_string(), "5 1 Berlin 1");
+//         assert_eq!(kv.1.to_string(), "Alfred Firefighter");
+
+//         Ok(())
+//     }
+// }
+
 #[cfg(test)]
 mod test {
-    use crate::database::{pager::mempage_tree, tables::table_db::TableDB};
+    use crate::database::api::{kvdb::KVDB, tx::TXKind};
+    use crate::database::pager::mempage_tree;
+    use crate::database::pager::transaction::Transaction;
+    use std::sync::Arc;
 
     use super::super::tables::TableBuilder;
     use super::*;
+    use crate::database::helper::cleanup_file;
     use test_log::test;
 
     #[test]
     fn record1() -> Result<()> {
-        let pager = mempage_tree();
-        let mut db = TableDB::new(pager);
+        let path = "test-files/record1.rdb";
+        cleanup_file(path);
+        let db = Arc::new(KVDB::new(path));
+        let mut tx = db.begin(&db, TXKind::Write);
 
         let table = TableBuilder::new()
             .name("mytable")
@@ -352,8 +500,7 @@ mod test {
             .add_col("greeter", TypeCol::BYTES)
             .add_col("number", TypeCol::INTEGER)
             .add_col("gretee", TypeCol::BYTES)
-            .build(&mut db)
-            .unwrap();
+            .build(&mut tx)?;
 
         let s1 = "hello";
         let i1 = 10;
@@ -364,6 +511,8 @@ mod test {
         let kv = rec.encode(&table)?.next().unwrap();
         assert_eq!(kv.0.to_string(), "2 0 hello 10");
         assert_eq!(kv.1.to_string(), "world");
+        db.commit(tx)?;
+        cleanup_file(path);
         Ok(())
     }
 
@@ -398,8 +547,10 @@ mod test {
 
     #[test]
     fn records_secondary_indicies1() -> Result<()> {
-        let pager = mempage_tree();
-        let mut db = TableDB::new(pager);
+        let path = "test-files/records_secondary_indicies1.rdb";
+        cleanup_file(path);
+        let db = Arc::new(KVDB::new(path));
+        let mut tx = db.begin(&db, TXKind::Write);
 
         let mut table = TableBuilder::new()
             .name("mytable")
@@ -408,8 +559,7 @@ mod test {
             .add_col("greeter", TypeCol::BYTES)
             .add_col("number", TypeCol::INTEGER)
             .add_col("gretee", TypeCol::BYTES)
-            .build(&mut db)
-            .unwrap();
+            .build(&mut tx)?;
 
         table.add_index("number")?;
         assert_eq!(table.indices.len(), 2);
@@ -428,13 +578,17 @@ mod test {
         assert_eq!(kv.0.to_string(), "2 1 10 hello");
         assert_eq!(kv.1.to_string(), "world");
 
+        db.commit(tx)?;
+        cleanup_file(path);
         Ok(())
     }
 
     #[test]
     fn records_secondary_indicies2() -> Result<()> {
-        let pager = mempage_tree();
-        let mut db = TableDB::new(pager);
+        let path = "test-files/records_secondary_indicies2.rdb";
+        cleanup_file(path);
+        let db = Arc::new(KVDB::new(path));
+        let mut tx = db.begin(&db, TXKind::Write);
 
         let mut table = TableBuilder::new()
             .name("mytable")
@@ -444,8 +598,7 @@ mod test {
             .add_col("name", TypeCol::BYTES)
             .add_col("city", TypeCol::BYTES)
             .add_col("job", TypeCol::BYTES)
-            .build(&mut db)
-            .unwrap();
+            .build(&mut tx)?;
 
         table.add_index("city")?;
         assert_eq!(table.indices.len(), 2);
@@ -465,6 +618,8 @@ mod test {
         assert_eq!(kv.0.to_string(), "5 1 Berlin 1");
         assert_eq!(kv.1.to_string(), "Alfred Firefighter");
 
+        db.commit(tx)?;
+        cleanup_file(path);
         Ok(())
     }
 }

@@ -11,6 +11,7 @@ use crate::database::{
     types::Node,
 };
 
+#[derive(Debug, Clone)]
 pub(crate) enum ScanMode {
     // scanning the entire table starting from key
     Open(Key, Compare),
@@ -22,7 +23,9 @@ pub(crate) enum ScanMode {
 }
 
 impl ScanMode {
-    /// scans the entire table starting from key
+    /// builds an open scanner for open ended scans, never crosses TID boundaries
+    ///
+    /// ScanMode is lazy, and wont yied anything until `.into_iter()` is called
     pub fn new_open(key: Key, cmp: Compare) -> Result<Self> {
         if cmp == Compare::EQ {
             return Err(ScanError::ScanCreateError(
@@ -32,7 +35,10 @@ impl ScanMode {
         }
         Ok(ScanMode::Open(key, cmp))
     }
+
     /// scans a range between two keys, predicates dictate starting position for lo and hi
+    ///
+    /// ScanMode is lazy, and wont yied anything until `.into_iter()` is called
     pub fn new_range(lo: (Key, Compare), hi: (Key, Compare)) -> Result<Self> {
         let tid = lo.0.get_tid();
         if tid != hi.0.get_tid() {
@@ -335,7 +341,7 @@ fn node_lookup(node: &TreeNode, key: &Key, flag: &Compare) -> Option<u16> {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, PartialOrd)]
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 pub(crate) enum Compare {
     LT, // <
     LE, // <=
@@ -349,16 +355,21 @@ fn cmp_lt(node: &TreeNode, key: &Key) -> Option<u16> {
     let mut lo: u16 = 0;
     let mut hi: u16 = nkeys;
 
-    debug!(
-        "cmp_lt, key: {} in {:?} nkeys {}",
-        key,
-        node.get_type(),
-        nkeys
-    );
+    #[cfg(test)]
+    {
+        if let Ok("debug") = std::env::var("RUSQL_LOG_CMP").as_deref() {
+            debug!(
+                "cmp_lt, key: {} in {:?} nkeys {}",
+                key,
+                node.get_type(),
+                nkeys
+            );
+        }
+    }
+
     while hi > lo {
         let m = (hi + lo) / 2;
         let v = node.get_key(m).ok()?;
-        debug!(%v, %key, "comparing v against key");
         // if v == *key {
         //     return None; // key already exists
         // };
@@ -377,7 +388,18 @@ pub(super) fn cmp_le(node: &TreeNode, key: &Key) -> Option<u16> {
     let mut lo: u16 = 0;
     let mut hi: u16 = nkeys;
 
-    debug!("cmp_le in {:?} nkeys {}", node.get_type(), nkeys);
+    #[cfg(test)]
+    {
+        if let Ok("debug") = std::env::var("RUSQL_LOG_CMP").as_deref() {
+            debug!(
+                "cmp_le, key: {} in {:?} nkeys {}",
+                key,
+                node.get_type(),
+                nkeys
+            );
+        }
+    }
+
     while hi > lo {
         let m = (hi + lo) / 2; // mid point
         let v = node.get_key(m).ok()?; // key at m
@@ -399,7 +421,18 @@ fn cmp_gt(node: &TreeNode, key: &Key) -> Option<u16> {
     let mut lo: u16 = 0;
     let mut hi: u16 = nkeys;
 
-    debug!("cmp_gt in {:?} nkeys {}", node.get_type(), nkeys);
+    #[cfg(test)]
+    {
+        if let Ok("debug") = std::env::var("RUSQL_LOG_CMP").as_deref() {
+            debug!(
+                "cmp_gt, key: {} in {:?} nkeys {}",
+                key,
+                node.get_type(),
+                nkeys
+            );
+        }
+    }
+
     while hi > lo {
         let m = (hi + lo) / 2; // mid point
         let v = node.get_key(m).ok()?; // key at m
@@ -418,7 +451,18 @@ fn cmp_ge(node: &TreeNode, key: &Key) -> Option<u16> {
     let mut lo: u16 = 0;
     let mut hi: u16 = nkeys;
 
-    debug!("cmp_ge in {:?} nkeys {}", node.get_type(), nkeys);
+    #[cfg(test)]
+    {
+        if let Ok("debug") = std::env::var("RUSQL_LOG_CMP").as_deref() {
+            debug!(
+                "cmp_ge, key: {} in {:?} nkeys {}",
+                key,
+                node.get_type(),
+                nkeys
+            );
+        }
+    }
+
     while hi > lo {
         let m = (hi + lo) / 2; // mid point
         let v = node.get_key(m).ok()?; // key at m
@@ -440,7 +484,18 @@ fn cmp_eq(node: &TreeNode, key: &Key) -> Option<u16> {
     let mut lo: u16 = 0;
     let mut hi: u16 = nkeys;
 
-    debug!("cmp_eq in {:?} nkeys {}", node.get_type(), nkeys);
+    #[cfg(test)]
+    {
+        if let Ok("debug") = std::env::var("RUSQL_LOG_CMP").as_deref() {
+            debug!(
+                "cmp_eq, key: {} in {:?} nkeys {}",
+                key,
+                node.get_type(),
+                nkeys
+            );
+        }
+    }
+
     while hi > lo {
         let m = (hi + lo) / 2; // mid point
         let v = node.get_key(m).ok()?; // key at m

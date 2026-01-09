@@ -1,15 +1,13 @@
-#[cfg(test)]
-mod disk_tests;
-
 mod buffer;
 pub mod diskpager;
 pub mod freelist;
 pub mod mempager;
-mod metapage;
+pub mod metapage;
 mod mmap;
-mod transaction;
+pub mod transaction;
 
 // exporting to database module
+pub(crate) use buffer::{BufferEntry, NodeBuffer};
 pub(crate) use diskpager::{DiskPager, NodeFlag, Pager};
-pub(crate) use mempager::mempage_tree;
-pub(crate) use transaction::{Envoy, KVEngine, Transaction};
+pub(crate) use mempager::{KVEngine, mempage_tree};
+pub(crate) use metapage::MetaPage;

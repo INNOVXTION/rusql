@@ -25,6 +25,8 @@ pub const TRUNC_THRESHOLD: usize = 1000; // amount of free list entries which tr
 /// maximum size for nodes inside memory
 pub const NODE_SIZE: usize = PAGE_SIZE * 2;
 pub const PTR_SIZE: usize = 8;
+pub const VER_SIZE: usize = std::mem::size_of::<u64>();
+pub const FREE_PAGE: u64 = 0; // sentinel value for pages that are free to be reused, unreachable from any committed root
 
 pub const U16_SIZE: usize = 2;
 

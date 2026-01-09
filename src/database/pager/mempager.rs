@@ -6,12 +6,22 @@ use std::{cell::RefCell, collections::HashMap, rc::Rc};
 use tracing::{debug, error};
 
 use crate::database::{
-    btree::{BTree, SetFlag, SetResponse, Tree},
-    errors::Error,
-    pager::{KVEngine, Pager, Transaction},
+    btree::{BTree, ScanMode, SetFlag, SetResponse, Tree},
+    errors::{Error, Result},
+    pager::{Pager, diskpager::GCCallbacks},
     tables::{Key, Record, Value},
     types::{Node, Pointer},
 };
+
+/// outward facing api
+///
+/// deprecated, for mempager testing only
+pub(crate) trait KVEngine {
+    fn get(&self, key: Key) -> Result<Value>;
+    fn scan(&self, mode: ScanMode) -> Result<Vec<Record>>;
+    fn set(&self, key: Key, val: Value, flag: SetFlag) -> Result<()>;
+    fn delete(&self, key: Key) -> Result<()>;
+}
 
 // wrapper
 pub(crate) struct MemPager {
@@ -19,20 +29,20 @@ pub(crate) struct MemPager {
 }
 
 impl KVEngine for MemPager {
-    fn get(&self, key: Key) -> Result<Value, Error> {
+    fn get(&self, key: Key) -> Result<Value> {
         self.pager.get(key)
     }
 
-    fn set(&self, key: Key, val: Value, flag: SetFlag) -> Result<(), Error> {
+    fn set(&self, key: Key, val: Value, flag: SetFlag) -> Result<()> {
         let _ = self.pager.set(key, val, flag)?;
         Ok(())
     }
 
-    fn delete(&self, key: Key) -> Result<(), Error> {
+    fn delete(&self, key: Key) -> Result<()> {
         self.pager.delete(key)
     }
 
-    fn scan(&self, mode: crate::database::btree::ScanMode) -> Result<Vec<Record>, Error> {
+    fn scan(&self, mode: crate::database::btree::ScanMode) -> Result<Vec<Record>> {
         Ok(self
             .pager
             .tree
@@ -43,47 +53,9 @@ impl KVEngine for MemPager {
     }
 }
 
-impl Transaction for MemPager {
-    fn begin(&mut self) {
-        todo!()
-    }
-
-    fn abort(&mut self) {
-        todo!()
-    }
-
-    fn commit(&mut self) -> crate::database::errors::Result<()> {
-        todo!()
-    }
-
-    fn tree_get(&self, key: Key) -> crate::database::errors::Result<Value> {
-        todo!()
-    }
-
-    fn tree_scan(
-        &self,
-        mode: crate::database::btree::ScanMode,
-    ) -> crate::database::errors::Result<Vec<Record>> {
-        todo!()
-    }
-
-    fn tree_set(
-        &self,
-        key: Key,
-        val: Value,
-        flag: SetFlag,
-    ) -> crate::database::errors::Result<SetResponse> {
-        self.pager.tree.borrow_mut().set(key, val, flag)
-    }
-
-    fn tree_delete(&self, key: Key) -> crate::database::errors::Result<()> {
-        todo!()
-    }
-}
-
 pub struct MemoryPager {
     freelist: RefCell<Vec<u64>>,
-    pages: RefCell<HashMap<u64, Node>>,
+    pages: RefCell<HashMap<Pointer, Node>>,
     pub tree: Box<RefCell<BTree<MemoryPager>>>,
 }
 
@@ -93,25 +65,25 @@ pub fn mempage_tree() -> MemPager {
     MemPager {
         pager: Rc::new_cyclic(|w| MemoryPager {
             freelist: RefCell::new(Vec::from_iter((1..=100).rev())),
-            pages: RefCell::new(HashMap::<u64, Node>::new()),
+            pages: RefCell::new(HashMap::<Pointer, Node>::new()),
             tree: Box::new(RefCell::new(BTree::<MemoryPager>::new(w.clone()))),
         }),
     }
 }
 
 impl MemoryPager {
-    fn get(&self, key: Key) -> Result<Value, Error> {
+    fn get(&self, key: Key) -> Result<Value> {
         self.tree
             .borrow()
-            .search(key)
+            .get(key)
             .ok_or(Error::SearchError("value not found".to_string()))
     }
 
-    fn set(&self, key: Key, value: Value, flag: SetFlag) -> Result<SetResponse, Error> {
+    fn set(&self, key: Key, value: Value, flag: SetFlag) -> Result<SetResponse> {
         self.tree.borrow_mut().set(key, value, flag)
     }
 
-    fn delete(&self, key: Key) -> Result<(), Error> {
+    fn delete(&self, key: Key) -> Result<()> {
         self.tree.borrow_mut().delete(key)
     }
 }
@@ -121,7 +93,7 @@ impl Pager for MemoryPager {
         Rc::new(RefCell::new(
             self.pages
                 .borrow_mut()
-                .get(&ptr.0)
+                .get(&ptr)
                 .unwrap_or_else(|| {
                     error!("couldnt retrieve page at ptr {}", ptr);
                     panic!("page decode error")
@@ -130,7 +102,7 @@ impl Pager for MemoryPager {
         ))
     }
 
-    fn page_alloc(&self, node: Node) -> Pointer {
+    fn page_alloc(&self, node: Node, version: u64) -> Pointer {
         if !node.fits_page() {
             panic!("trying to encode node exceeding page size");
         }
@@ -140,7 +112,7 @@ impl Pager for MemoryPager {
             .pop()
             .expect("no free page available");
         debug!("encoding node at ptr {}", free_page);
-        self.pages.borrow_mut().insert(free_page, node);
+        self.pages.borrow_mut().insert(free_page.into(), node);
         Pointer(free_page)
     }
 
@@ -149,13 +121,25 @@ impl Pager for MemoryPager {
         self.freelist.borrow_mut().push(ptr.0);
         self.pages
             .borrow_mut()
-            .remove(&ptr.0)
+            .remove(&ptr)
             .expect("couldnt remove() page number");
     }
+}
 
+impl GCCallbacks for MemoryPager {
     // not needed for in memory pager
     fn encode(&self, node: Node) -> Pointer {
-        unreachable!()
+        if !node.fits_page() {
+            panic!("trying to encode node exceeding page size");
+        }
+        let free_page = self
+            .freelist
+            .borrow_mut()
+            .pop()
+            .expect("no free page available");
+        debug!("encoding node at ptr {}", free_page);
+        self.pages.borrow_mut().insert(free_page.into(), node);
+        Pointer(free_page)
     }
 
     // not needed for in memory pager

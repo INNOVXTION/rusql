@@ -19,8 +19,8 @@ use crate::database::{
 };
 
 pub(crate) struct BTree<P: Pager> {
-    root_ptr: Option<Pointer>,
-    pager: Weak<P>,
+    pub root_ptr: Option<Pointer>,
+    pub pager: Weak<P>,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -52,7 +52,7 @@ impl Default for SetResponse {
 pub(crate) trait Tree {
     type Codec: Pager;
 
-    fn search(&self, key: Key) -> Option<Value>;
+    fn get(&self, key: Key) -> Option<Value>;
     fn set(&mut self, key: Key, value: Value, flag: SetFlag) -> Result<SetResponse>;
     fn scan(&self, mode: ScanMode) -> Result<ScanIter<'_, Self::Codec>>;
     fn delete(&mut self, key: Key) -> Result<()>;
@@ -179,7 +179,7 @@ impl<P: Pager> Tree for BTree<P> {
     }
 
     #[instrument(name = "tree search", skip_all)]
-    fn search(&self, key: Key) -> Option<Value> {
+    fn get(&self, key: Key) -> Option<Value> {
         info!("searching: {key}",);
         self.tree_search(self.decode(self.root_ptr?).borrow().as_tn(), key)
     }
@@ -215,7 +215,7 @@ impl<P: Pager> BTree<P> {
 
     pub fn encode(&self, node: TreeNode) -> Pointer {
         let strong = self.pager.upgrade().expect("tree callback encode failed");
-        strong.page_alloc(Node::Tree(node))
+        strong.page_alloc(Node::Tree(node), 0)
     }
 
     pub fn dealloc(&self, ptr: Pointer) {
@@ -247,6 +247,7 @@ impl<P: Pager> BTree<P> {
                 debug_print_tree(&node, idx);
 
                 let kptr = node.get_ptr(idx); // ptr of child below us
+                debug!(%kptr);
                 if let Some(knode) = BTree::tree_insert(
                     self,
                     self.decode(kptr).borrow().as_tn(),

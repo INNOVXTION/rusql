@@ -1,22 +1,23 @@
-use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet};
-use std::ops::{Deref, DerefMut};
+use std::cell::{Cell, Ref, RefCell};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::os::fd::OwnedFd;
 use std::rc::Rc;
-use std::str::FromStr;
 
+use parking_lot::Mutex;
+use parking_lot::ReentrantMutex;
 use rustix::fs::{fstat, fsync, ftruncate};
 use tracing::{debug, error, info, instrument, warn};
 
 use crate::create_file_sync;
 use crate::database::BTree;
-use crate::database::btree::ScanMode;
+use crate::database::api::tx::TX;
 use crate::database::errors::FLError;
 use crate::database::helper::as_page;
-use crate::database::pager::buffer::Buffer;
+use crate::database::pager::buffer::{NodeBuffer, OngoingTX};
 use crate::database::pager::freelist::{FLConfig, FLNode, FreeList, GC};
 use crate::database::pager::metapage::*;
 use crate::database::pager::mmap::*;
+use crate::database::pager::transaction::TXHistory;
 use crate::database::tables::{Key, Record, Value};
 use crate::database::{
     btree::{SetFlag, Tree, TreeNode},
@@ -31,6 +32,19 @@ pub(crate) enum NodeFlag {
     Freelist,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct AllocatedPage {
+    pub ptr: Pointer,
+    pub version: u64,
+    pub origin: PageOrigin,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum PageOrigin {
+    Append,
+    Freelist,
+}
+
 impl std::fmt::Display for NodeFlag {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "node type: {:?}", self)
@@ -40,13 +54,21 @@ impl std::fmt::Display for NodeFlag {
 pub(crate) struct DiskPager {
     path: &'static str,
     pub database: OwnedFd,
-    pub buffer: RefCell<Buffer>,
+    pub buffer: RefCell<NodeBuffer>, // read only pages
     pub mmap: RefCell<Mmap>,
 
     pub failed: Cell<bool>,
 
-    pub tree: Rc<RefCell<dyn Tree<Codec = Self>>>,
+    pub tree: Rc<RefCell<dyn Tree<Codec = Self>>>, // only used as reference for transactions
     pub freelist: Rc<RefCell<dyn GC<Codec = Self>>>,
+
+    pub version: RefCell<u64>,
+    pub ongoing: RefCell<OngoingTX>,
+
+    pub history: RefCell<TXHistory>,
+    pub rollback: RefCell<MetaPage>,
+
+    pub lock: ReentrantMutex<()>,
     // WIP
     // clean factor
     // counter after deletion for cleanup
@@ -56,9 +78,11 @@ pub(crate) struct DiskPager {
 pub(crate) trait Pager {
     // tree callbacks
     fn page_read(&self, ptr: Pointer, flag: NodeFlag) -> Rc<RefCell<Node>>; //tree decode
-    fn page_alloc(&self, node: Node) -> Pointer; //tree encode
+    fn page_alloc(&self, node: Node, version: u64) -> Pointer; //tree encode
     fn dealloc(&self, ptr: Pointer); // tree dealloc/del
+}
 
+pub(crate) trait GCCallbacks {
     // FL callbacks
     fn encode(&self, node: Node) -> Pointer; // FL encode
     fn update(&self, ptr: Pointer) -> Rc<RefCell<Node>>; // FL update
@@ -79,7 +103,7 @@ impl Pager for DiskPager {
             debug!("reading from disk...");
             let n = self.decode(ptr, flag);
 
-            buf_ref.insert_clean(ptr, n.clone());
+            buf_ref.insert_clean(ptr, n.clone(), *self.version.borrow());
             buf_ref.get(ptr).expect("we just inserted it")
         }
     }
@@ -87,16 +111,18 @@ impl Pager for DiskPager {
     /// allocates a new page to be encoded, checks freelist first before appending to disk
     ///
     /// pageAlloc, new
-    fn page_alloc(&self, node: Node) -> Pointer {
+    fn page_alloc(&self, node: Node, version: u64) -> Pointer {
         // check freelist first
         debug!("allocating ...");
         if let Some(ptr) = self.freelist.borrow_mut().get() {
             assert_ne!(ptr.0, 0);
 
             // loading page into buffer
-            self.buffer.borrow_mut().insert_dirty(ptr, node);
+            self.buffer
+                .borrow_mut()
+                .insert_dirty(ptr, node, *self.version.borrow());
 
-            &self.buffer.borrow().debug_print();
+            self.buffer.borrow().debug_print();
             ptr
         } else {
             // increment append?
@@ -112,21 +138,25 @@ impl Pager for DiskPager {
         // adding to freelist
         self.freelist
             .borrow_mut()
-            .append(ptr)
+            .append(ptr, *self.version.borrow())
             .expect("dealloc error");
 
-        // retiring page from buffer, to be cleared later
-        if let Some(entry) = self.buffer.borrow_mut().hmap.get_mut(&ptr) {
-            entry.retired = true;
-        };
+        // // retiring page from buffer, to be cleared later
+        // if let Some(entry) = self.buffer.borrow_mut().hmap.get_mut(&ptr) {
+        //     entry.retired = true;
+        // };
     }
+}
 
+impl GCCallbacks for DiskPager {
     /// adds pages to buffer to be encoded to disk later (append)
     ///
     /// does not check if node exists in buffer!
     ///
     /// pageAppend
     fn encode(&self, node: Node) -> Pointer {
+        let _guard = self.lock.lock();
+
         let buf_ref = &mut self.buffer.borrow_mut();
         let ptr = Pointer(buf_ref.npages + buf_ref.nappend);
 
@@ -140,7 +170,7 @@ impl Pager for DiskPager {
         );
 
         buf_ref.nappend += 1;
-        buf_ref.insert_dirty(ptr, node);
+        buf_ref.insert_dirty(ptr, node, *self.version.borrow());
         buf_ref.debug_print();
 
         assert_ne!(ptr.0, 0);
@@ -151,6 +181,8 @@ impl Pager for DiskPager {
     ///
     /// checks buffer for allocated page and returns pointer
     fn update(&self, ptr: Pointer) -> Rc<RefCell<Node>> {
+        let _guard = self.lock.lock();
+
         let buf = &mut self.buffer.borrow_mut();
 
         // checking buffer,...
@@ -162,13 +194,14 @@ impl Pager for DiskPager {
             None => {
                 // decoding page from disk and loading it into buffer
                 debug!(%ptr, "reading free list from disk...");
-                buf.insert_dirty(ptr, self.decode(ptr, NodeFlag::Freelist));
+                buf.insert_dirty(
+                    ptr,
+                    self.decode(ptr, NodeFlag::Freelist),
+                    *self.version.borrow(),
+                );
                 buf.get(ptr).expect("we just inserted it")
             }
         };
-
-        // we just inserted the node as FLNode so this cast should be safe
-        // let p = entry as *mut Node as *mut FLNode;
         buf.debug_print();
         entry
     }
@@ -183,7 +216,7 @@ impl DiskPager {
             path,
             database: create_file_sync(path).expect("file open error"),
             failed: Cell::new(false),
-            buffer: RefCell::new(Buffer {
+            buffer: RefCell::new(NodeBuffer {
                 hmap: HashMap::new(),
                 nappend: 0,
                 npages: 0,
@@ -194,6 +227,17 @@ impl DiskPager {
             }),
             tree: Rc::new(RefCell::new(BTree::<Self>::new(w.clone()))),
             freelist: Rc::new(RefCell::new(FreeList::<Self>::new(w.clone()))),
+
+            version: RefCell::new(1),
+            ongoing: RefCell::new(OngoingTX {
+                map: BTreeMap::new(),
+            }),
+            rollback: RefCell::new(MetaPage::new()),
+            history: RefCell::new(TXHistory {
+                history: HashMap::new(),
+                limit: 0,
+            }),
+            lock: ReentrantMutex::new(()),
         });
 
         let fd_size = fstat(&pager.database)
@@ -375,7 +419,7 @@ impl DiskPager {
         }
     }
 
-    /// attempts to truncate the file. Makes call to and modifies freelist. This function should therefore be called
+    /// attempts to truncate the file. Makes calls to and modifies freelist. This function should therefore be called
     /// after tree operations. Truncation amount is based on count_trunc_pages() algorithm
     #[instrument(skip_all)]
     pub fn truncate(&self, list: Vec<Pointer>) -> Result<(), Error> {
@@ -420,11 +464,83 @@ impl DiskPager {
             None => Ok(()),
         }
     }
+
+    pub fn read(&self, ptr: Pointer, flag: NodeFlag) -> Rc<RefCell<Node>> {
+        let _lock = self.lock.lock();
+        let mut buf_ref = self.buffer.borrow_mut();
+
+        // check buffer first
+        debug!(node=?flag, %ptr, "page read");
+        if let Some(n) = buf_ref.get(ptr) {
+            debug!("page found in buffer!");
+            n
+        } else {
+            debug!("reading from disk...");
+            // buf_ref.debug_print();
+
+            let n = self.decode(ptr, flag);
+
+            buf_ref.insert_clean(ptr, n.clone(), *self.version.borrow());
+            buf_ref.get(ptr).expect("we just inserted it")
+        }
+    }
+
+    pub fn alloc(&self, node: &Node, version: u64, nappend: u32) -> AllocatedPage {
+        let _lock = self.lock.lock();
+
+        let max_ver = match self.ongoing.borrow_mut().get_oldest_version() {
+            Some(n) => n,
+            None => *self.version.borrow(),
+        };
+        let mut fl_ref = self.freelist.borrow_mut();
+        fl_ref.set_max_ver(max_ver);
+
+        // check freelist first
+        if let Some(ptr) = fl_ref.get() {
+            debug!("allocating from buffer");
+
+            assert_ne!(ptr.0, 0);
+            self.buffer.borrow().debug_print();
+
+            let page = AllocatedPage {
+                ptr,
+                version,
+                origin: PageOrigin::Freelist,
+            };
+
+            page
+        } else {
+            debug!("allocating from append");
+
+            let buf_ref = self.buffer.borrow();
+            let ptr = Pointer(buf_ref.npages + nappend as u64);
+            assert_ne!(ptr.0, 0);
+
+            // empty db has n_pages = 1 (meta page)
+            assert!(node.fits_page());
+
+            debug!(
+                "encode: adding {:?} at page: {} to buffer",
+                node.get_type(),
+                ptr.0
+            );
+
+            buf_ref.debug_print();
+
+            let page = AllocatedPage {
+                ptr,
+                version,
+                origin: PageOrigin::Append,
+            };
+
+            page
+        }
+    }
 }
 
 /// returns the number of pages that can be safely truncated, by evaluating a contiguous sequence at the end of the freelist. This function has O(n logn ) worst case performance.
 ///
-/// Credit to ranveer for this
+/// credit to ranveer
 fn count_trunc_pages(npages: u64, freelist: &[Pointer]) -> Option<u64> {
     if freelist.is_empty() || npages <= 2 {
         return None;
@@ -481,62 +597,6 @@ fn count_trunc_pages(npages: u64, freelist: &[Pointer]) -> Option<u64> {
 #[cfg(test)]
 mod truncate {
     use super::*;
-
-    // // O(n) algo
-    // fn count_trunc_pages(npages: u64, list: &[Pointer]) -> Option<u64> {
-    //     // Validation 1: Empty list
-    //     if list.is_empty() {
-    //         return None;
-    //     }
-
-    //     // Validation 2: npages too small
-    //     if npages <= 2 {
-    //         return None;
-    //     }
-
-    //     // Build map: page -> position in freelist (1-indexed)
-    //     let mut mpp: HashMap<u64, u64> = HashMap::new();
-
-    //     for (idx, &page) in list.iter().enumerate() {
-    //         let page_num = page.0;
-
-    //         // Validation 3: Page must be within file bounds
-    //         if page_num >= npages {
-    //             return None;
-    //         }
-
-    //         // Use first occurrence (ignore duplicates)
-    //         mpp.entry(page_num).or_insert((idx as u64) + 1);
-    //     }
-
-    //     // Check from npages-1 downward for consecutive pages at end
-    //     let mut st: BTreeSet<u64> = BTreeSet::new();
-    //     let mut current_page = npages - 1;
-    //     let mut max_cnt = 0;
-
-    //     loop {
-    //         if mpp.contains_key(&current_page) {
-    //             let pos = *mpp.get(&current_page).unwrap();
-    //             st.insert(pos);
-
-    //             // Check if positions form sequencehey< : 1,2,3...k
-    //             if let Some(&max_pos) = st.iter().next_back() {
-    //                 if max_pos == st.len() as u64 {
-    //                     max_cnt = st.len() as u64;
-    //                 }
-    //             }
-    //         } else {
-    //             // Page not in freelist, sequence broken
-    //             break;
-    //         }
-
-    //         if current_page == 0 {
-    //             break;
-    //         }
-    //         current_page -= 1;
-    //     }
-    //     if max_cnt == 0 { None } else { Some(max_cnt) }
-    // }
 
     fn ptr(page: u64) -> Pointer {
         Pointer::from(page)
@@ -810,3 +870,147 @@ mod truncate {
         assert_eq!(result, Some(2));
     }
 }
+
+// // pager tests
+// #[cfg(test)]
+// mod test {
+
+//     use super::*;
+//     use crate::database::{btree::SetFlag, helper::cleanup_file};
+//     use rand::Rng;
+//     use test_log::test;
+
+//     #[test]
+//     fn open_pager() {
+//         let path = "test-files/open_pager.rdb";
+//         cleanup_file(path);
+//         let pager = DiskPager::open(path).unwrap();
+//         assert_eq!(pager.buffer.borrow().npages, 2);
+//         cleanup_file(path);
+//     }
+
+//     #[test]
+//     fn disk_insert1() {
+//         let path = "test-files/disk_insert1.rdb";
+//         cleanup_file(path);
+//         let pager = DiskPager::open(path).unwrap();
+//         pager.tree.borrow_mut().set(
+//             "1".into(),
+//             Value::from_unencoded_str("val"),
+//             SetFlag::UPSERT,
+//         );
+//         assert_eq!(
+//             pager.tree.borrow().get("1".into()).unwrap(),
+//             Value::from_unencoded_str("val")
+//         );
+//         cleanup_file(path);
+//     }
+
+//     #[test]
+//     fn disk_insert2() {
+//         let path = "test-files/disk_insert2.rdb";
+//         cleanup_file(path);
+//         let pager = DiskPager::open(path).unwrap();
+
+//         for i in 1u16..=300u16 {
+//             pager
+//                 .tree
+//                 .borrow_mut()
+//                 .set(format!("{i}").into(), "value".into(), SetFlag::UPSERT);
+//         }
+//         for i in 1u16..=300u16 {
+//             assert_eq!(
+//                 pager.tree.borrow().get(format!("{i}").into()).unwrap(),
+//                 "value".into()
+//             )
+//         }
+//         cleanup_file(path);
+//     }
+
+//     #[test]
+//     fn disk_delete1() {
+//         let path = "test-files/disk_delete1.rdb";
+//         cleanup_file(path);
+//         let pager = DiskPager::open(path).unwrap();
+
+//         for i in 1u16..=300u16 {
+//             pager
+//                 .tree
+//                 .borrow_mut()
+//                 .set(format!("{i}").into(), "value".into(), SetFlag::UPSERT);
+//         }
+//         for i in 1u16..=300u16 {
+//             pager
+//                 .tree
+//                 .borrow_mut()
+//                 .delete(format!("{i}").into())
+//                 .unwrap();
+//         }
+//         cleanup_file(path);
+//     }
+
+//     #[test]
+//     fn disk_random1() {
+//         let path = "test-files/disk_random1.rdb";
+//         cleanup_file(path);
+//         let pager = DiskPager::open(path).unwrap();
+
+//         for _ in 1u16..=1000 {
+//             pager.tree.borrow_mut().set(
+//                 format!("{:?}", rand::rng().random_range(1..1000)).into(),
+//                 Value::from_unencoded_str("val"),
+//                 SetFlag::UPSERT,
+//             );
+//         }
+//         cleanup_file(path);
+//     }
+
+//     #[test]
+//     fn disk_delete2() {
+//         let path = "test-files/disk_delete2.rdb";
+//         cleanup_file(path);
+//         let pager = DiskPager::open(path).unwrap();
+
+//         for k in 1u16..=1000 {
+//             pager.tree.borrow_mut().set(
+//                 format!("{}", k).into(),
+//                 Value::from_unencoded_str("val"),
+//                 SetFlag::UPSERT,
+//             );
+//         }
+//         for k in 1u16..=1000 {
+//             pager
+//                 .tree
+//                 .borrow_mut()
+//                 .delete(format!("{}", k).into())
+//                 .unwrap()
+//         }
+//         cleanup_file(path);
+//     }
+
+//     // #[test]
+//     // fn cleanup_test() {
+//     //     let path = "test-files/disk_cleanup.rdb";
+//     //     cleanup_file(path);
+//     //     let pager = DiskPager::open(path);
+//     //     // assert_eq!(fd_size, PAGE_SIZE as u64 * 2);
+//     //     for k in 1u16..=500 {
+//     //         pager
+//     //             .set(format!("{}", k).into(), Value::from_unencoded_str("val"))
+//     //             .unwrap()
+//     //     }
+//     //     for k in 1u16..=500 {
+//     //         pager.delete(format!("{}", k).into()).unwrap()
+//     //     }
+//     //     pager.truncate();
+//     //     let fd_size = fs::fstat(&pager.database)
+//     //         .map_err(|e| {
+//     //             error!("Error when getting file size");
+//     //             Error::PagerError(PagerError::FDError(e))
+//     //         })
+//     //         .unwrap()
+//     //         .st_size as u64;
+//     //     cleanup_file(path);
+//     //     assert_eq!(fd_size, PAGE_SIZE as u64 * 2);
+//     // }
+// }

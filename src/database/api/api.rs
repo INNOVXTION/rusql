@@ -1,8 +1,17 @@
-use std::sync::{Arc, atomic::AtomicU64};
+use std::{
+    collections::HashMap,
+    rc::Rc,
+    sync::{Arc, atomic::AtomicU64},
+};
 
-use parking_lot::MutexGuard;
+use parking_lot::RwLock;
 
-use crate::database::{pager::Envoy, tables::TableDB};
+use crate::database::{
+    BTree,
+    api::kvdb::KVDB,
+    pager::{BufferEntry, DiskPager, MetaPage, NodeBuffer},
+    types::Pointer,
+};
 
 // outward API
 trait DatabaseAPI {
@@ -19,19 +28,19 @@ trait DatabaseAPI {
 }
 
 struct Database {
-    db: Arc<TableDB<Envoy>>,
-    version: Arc<AtomicU64>,
-    write_lock: MutexGuard<'static, ()>,
+    db: Arc<KVDB>,
 }
 
-pub struct ReadTx {
-    version: u64,
-    pager: Arc<TableDB<Envoy>>,
-}
+impl Database {
+    fn new(path: &'static str) -> Self {
+        Database {
+            db: Arc::new(KVDB::new(path)),
+        }
+    }
 
-// pub struct WriteTx {
-//     pager: Arc<TableDB<Envoy>>,
-//     version: Arc<AtomicU64>,
-//     _guard: MutexGuard<'static, ()>,
-//     snapshot: MetaPage,
-// }
+    fn select() {
+        // TX begin
+        // IDX strategy
+        // TX commit
+    }
+}

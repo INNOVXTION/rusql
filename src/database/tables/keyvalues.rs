@@ -18,7 +18,7 @@ use crate::database::types::DataCell;
 // [ 4B  ][    2B    ][1B TYPE][8B INT][1B TYPE][4B STRLEN][nB STR]|
 
 /// owned object of encoded data used for tree operations
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct Key(Rc<[u8]>);
 
 impl Key {
@@ -398,10 +398,15 @@ fn cell_cmp(a: &[u8], b: &[u8]) -> Ordering {
     let mut val_a = a;
     let mut val_b = b;
 
-    debug!(len_a = val_a.len());
-    debug!(?val_a);
-    debug!(len_b = val_b.len());
-    debug!(?val_b);
+    #[cfg(test)]
+    {
+        if let Ok("debug") = std::env::var("RUSQL_LOG_CMP").as_deref() {
+            debug!(len_a = val_a.len());
+            debug!(?val_a);
+            debug!(len_b = val_b.len());
+            debug!(?val_b);
+        }
+    }
 
     loop {
         if let Some(o) = len_cmp(val_a, val_b) {
@@ -442,7 +447,7 @@ fn cell_cmp(a: &[u8], b: &[u8]) -> Ordering {
                 let int_a = val_a.read_i64();
                 let int_b = val_b.read_i64();
 
-                debug!(int_a, int_b, "comparing integer");
+                // debug!(int_a, int_b, "comparing integer");
 
                 // flipping the sign bit for comparison
                 let in_a = int_a as u64 ^ 0x8000_0000_0000_0000;
@@ -450,7 +455,7 @@ fn cell_cmp(a: &[u8], b: &[u8]) -> Ordering {
 
                 match int_a.cmp(&int_b) {
                     Ordering::Equal => {
-                        debug!("integer are equal");
+                        // debug!("integer are equal");
                     }
                     o => return o,
                 }
@@ -520,21 +525,107 @@ impl std::fmt::Display for Value {
     }
 }
 
+// #[cfg(test)]
+// mod test {
+//     use crate::database::{pager::mempage_tree, tables::Record};
+
+//     use super::super::tables::TableBuilder;
+//     use super::*;
+//     use test_log::test;
+
+//     #[test]
+//     fn key_cmp1() -> Result<()> {
+//         let pager = mempage_tree();
+//         let mut db = KVDB::new(pager);
+
+//         let table = TableBuilder::new()
+//             .name("mytable")
+//             .id(2)
+//             .pkey(2)
+//             .add_col("greeter", TypeCol::BYTES)
+//             .add_col("number", TypeCol::INTEGER)
+//             .add_col("gretee", TypeCol::BYTES)
+//             .build(&mut db)?;
+
+//         let kv1 = Record::new()
+//             .add("hello")
+//             .add(10)
+//             .add("world")
+//             .encode(&table)?
+//             .next()
+//             .unwrap();
+
+//         let kv2 = Record::new()
+//             .add("hello")
+//             .add(10)
+//             .add("world")
+//             .encode(&table)?
+//             .next()
+//             .unwrap();
+
+//         assert_eq!(kv1, kv2);
+//         assert_eq!(kv1.0.to_string(), "2 0 hello 10");
+
+//         let kv3 = Record::new()
+//             .add("smol")
+//             .add(5)
+//             .add("world")
+//             .encode(&table)?
+//             .next()
+//             .unwrap();
+
+//         assert!(kv2.0 < kv3.0);
+//         assert_eq!(kv3.0.to_string(), "2 0 smol 5");
+//         Ok(())
+//     }
+
+//     #[test]
+//     fn key_cmp2() -> Result<()> {
+//         let k2: Key = "9".into();
+//         let k3: Key = "10".into();
+//         let k1: Key = "1".into();
+//         let k4: Key = "1".into();
+//         assert!(k3 < k2);
+//         assert!(k1 < k2);
+//         assert!(k1 < k3);
+//         assert!(k1 == k4);
+//         Ok(())
+//     }
+
+//     #[test]
+//     fn empty_key() {
+//         let k: Key = "".into();
+
+//         // 4 tid, 2 prefix, 1 type bit, 4 str len
+//         assert_eq!(k.as_slice().len(), 11);
+//         assert_eq!(k.to_string(), "1 0 ");
+
+//         let e = Key::new_empty();
+//         assert_eq!(e.len(), 6);
+//         assert!(e.is_empty());
+//     }
+// }
+
+// Updated tests for keyvalues.rs - replace the test module starting at line 523
+
 #[cfg(test)]
 mod test {
-    use crate::database::{
-        pager::mempage_tree,
-        tables::{Record, table_db::TableDB},
-    };
+    use crate::database::api::{kvdb::KVDB, tx::TXKind};
+    use crate::database::pager::transaction::Transaction;
+    use crate::database::{pager::mempage_tree, tables::Record};
+    use std::sync::Arc;
 
     use super::super::tables::TableBuilder;
     use super::*;
+    use crate::database::helper::cleanup_file;
     use test_log::test;
 
     #[test]
     fn key_cmp1() -> Result<()> {
-        let pager = mempage_tree();
-        let mut db = TableDB::new(pager);
+        let path = "test-files/key_cmp1.rdb";
+        cleanup_file(path);
+        let db = Arc::new(KVDB::new(path));
+        let mut tx = db.begin(&db, TXKind::Write);
 
         let table = TableBuilder::new()
             .name("mytable")
@@ -543,7 +634,7 @@ mod test {
             .add_col("greeter", TypeCol::BYTES)
             .add_col("number", TypeCol::INTEGER)
             .add_col("gretee", TypeCol::BYTES)
-            .build(&mut db)?;
+            .build(&mut tx)?;
 
         let kv1 = Record::new()
             .add("hello")
@@ -574,6 +665,8 @@ mod test {
 
         assert!(kv2.0 < kv3.0);
         assert_eq!(kv3.0.to_string(), "2 0 smol 5");
+        db.commit(tx)?;
+        cleanup_file(path);
         Ok(())
     }
 

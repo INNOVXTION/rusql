@@ -82,7 +82,7 @@ pub fn debug_print_tree(node: &TreeNode, idx: u16) {
                 debug!(
                     idx = i,
                     key = node.get_key(i).unwrap().to_string(),
-                    "-- keys in node:"
+                    "keys: "
                 );
             }
             debug!("---------");

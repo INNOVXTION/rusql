@@ -26,6 +26,7 @@ pub enum Error {
     FreeListError(#[from] FLError),
     TableError(#[from] TableError),
     ScanError(#[from] ScanError),
+    TransactionError(#[from] TXError),
 
     StrCastError(#[from] Utf8Error),
     IntCastError(#[from] Option<TryFromIntError>),
@@ -55,6 +56,7 @@ impl Display for Error {
             E::TableError(e) => write!(f, "Table Error {e}"),
             E::SysFileError(e) => write!(f, "Errno {e}"),
             E::ScanError(e) => write!(f, "Scan error {e}"),
+            E::TransactionError(e) => write!(f, "transaction error {e}"),
         }
     }
 }
@@ -187,4 +189,20 @@ pub(crate) enum ScanError {
     ScanCreateError(String),
     #[error("{0}")]
     IterCreateError(String),
+}
+
+#[derive(Error, Debug)]
+pub(crate) enum TXError {
+    #[error("write function called on read TX")]
+    MismatchedKindError,
+    #[error("key range error")]
+    KeyRangeError,
+
+    // transaction trait errors
+    #[error("commit error: {0}")]
+    CommitError(String),
+    #[error("abort error: {0}")]
+    AbortError(String),
+    #[error("initialize error {0}")]
+    TxBeginError(String),
 }
