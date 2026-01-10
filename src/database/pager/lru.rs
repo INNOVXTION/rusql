@@ -1,6 +1,6 @@
-use std::{collections::HashMap, hash::BuildHasher, ptr::null_mut};
+use std::{collections::HashMap, ptr::null_mut};
 
-struct LRU<K, V>
+pub(crate) struct LRU<K, V>
 where
     K: Eq + std::hash::Hash + Copy,
     V: Sized,
@@ -16,7 +16,7 @@ where
     K: Eq + std::hash::Hash + Copy,
     V: Sized,
 {
-    fn new(cap: usize) -> Self {
+    pub fn new(cap: usize) -> Self {
         LRU {
             map: HashMap::with_capacity(cap),
             ll: LinkedList::new(),
@@ -25,13 +25,25 @@ where
         }
     }
 
-    fn put(&mut self, key: K, val: V) {
+    pub fn put(&mut self, key: K, val: V) {
+        // Check if key already exists
+        if let Some(existing) = self.map.get_mut(&key) {
+            existing.val = val;
+
+            self.ll.disconnect_node(&existing);
+
+            let ptr = self.get_ptr(key).expect("key exists");
+            self.ll.push_tail(ptr);
+            return;
+        }
+
         let new = Box::new(Node {
             key,
             val,
             next: null_mut(),
             prev: null_mut(),
         });
+
         if self.len < self.cap {
             self.map.insert(key, new);
 
@@ -47,24 +59,24 @@ where
         self.len += 1;
     }
 
-    fn get(&mut self, key: K) -> Option<&Node<K, V>> {
+    pub fn get(&mut self, key: K) -> Option<&V> {
         let ptr = self.get_ptr(key)?;
         let n = self.map.get(&key)?;
 
         self.ll.disconnect_node(&n);
         self.ll.push_tail(ptr);
 
-        Some(n)
+        Some(&n.val)
     }
 
-    fn remove(&mut self, key: K) -> Option<Box<Node<K, V>>> {
+    pub fn remove(&mut self, key: K) -> Option<V> {
         let ptr = self.get_ptr(key)?;
         let n = self.map.remove(&key)?;
 
         self.ll.disconnect_node(&n);
         self.len -= 1;
 
-        Some(n)
+        Some(n.val)
     }
 
     fn evict_lru(&mut self) {
@@ -110,23 +122,6 @@ where
             head: std::ptr::null_mut(),
             tail: std::ptr::null_mut(),
             len: 0,
-        }
-    }
-
-    fn push_front(&mut self, new: *mut Node<K, V>) {
-        unsafe {
-            (*new).next = null_mut();
-            (*new).prev = null_mut();
-
-            if !self.head.is_null() {
-                (*self.head).next = new;
-                (*new).prev = self.head;
-            } else {
-                self.tail = new;
-            }
-
-            self.head = new;
-            self.len += 1;
         }
     }
 
@@ -228,8 +223,7 @@ mod lru {
         cache.put(1, 100);
         assert_eq!(cache.len, 1);
 
-        let node = cache.get(1).unwrap();
-        assert_eq!(node.val, 100);
+        assert_eq!(*cache.get(1).unwrap(), 100);
     }
 
     #[test]
@@ -240,9 +234,9 @@ mod lru {
         cache.put(3, 300);
 
         assert_eq!(cache.len, 3);
-        assert_eq!(cache.get(1).unwrap().val, 100);
-        assert_eq!(cache.get(2).unwrap().val, 200);
-        assert_eq!(cache.get(3).unwrap().val, 300);
+        assert_eq!(*cache.get(1).unwrap(), 100);
+        assert_eq!(*cache.get(2).unwrap(), 200);
+        assert_eq!(*cache.get(3).unwrap(), 300);
     }
 
     #[test]
@@ -255,9 +249,9 @@ mod lru {
 
         assert_eq!(cache.len, 3);
         assert!(cache.get(1).is_none()); // 1 should be evicted
-        assert_eq!(cache.get(2).unwrap().val, 200);
-        assert_eq!(cache.get(3).unwrap().val, 300);
-        assert_eq!(cache.get(4).unwrap().val, 400);
+        assert_eq!(*cache.get(2).unwrap(), 200);
+        assert_eq!(*cache.get(3).unwrap(), 300);
+        assert_eq!(*cache.get(4).unwrap(), 400);
     }
 
     #[test]
@@ -280,10 +274,10 @@ mod lru {
         // Add key 4, which should evict key 2 (least recently used)
         cache.put(4, 400);
 
-        assert_eq!(cache.get(1).unwrap().val, 100);
+        assert_eq!(*cache.get(1).unwrap(), 100);
         assert!(cache.get(2).is_none()); // 2 should be evicted
-        assert_eq!(cache.get(3).unwrap().val, 300);
-        assert_eq!(cache.get(4).unwrap().val, 400);
+        assert_eq!(*cache.get(3).unwrap(), 300);
+        assert_eq!(*cache.get(4).unwrap(), 400);
     }
 
     #[test]
@@ -294,12 +288,12 @@ mod lru {
         cache.put(3, 300); // Should evict 1
 
         assert!(cache.get(1).is_none());
-        assert_eq!(cache.get(2).unwrap().val, 200);
+        assert_eq!(*cache.get(2).unwrap(), 200); // This moves 2 to MRU
 
-        cache.put(4, 400); // Should evict 3
-        assert!(cache.get(3).is_none());
-        assert_eq!(cache.get(2).unwrap().val, 200);
-        assert_eq!(cache.get(4).unwrap().val, 400);
+        cache.put(4, 400); // Should evict 3 (not 2, since we just accessed 2)
+        assert!(cache.get(3).is_none()); // 3 is evicted
+        assert_eq!(*cache.get(2).unwrap(), 200); // 2 still exists
+        assert_eq!(*cache.get(4).unwrap(), 400);
     }
 
     #[test]
@@ -309,8 +303,7 @@ mod lru {
         cache.put(2, 200);
 
         let removed = cache.remove(1);
-        assert!(removed.is_some());
-        assert_eq!(removed.unwrap().val, 100);
+        assert_eq!(removed, Some(100));
         assert_eq!(cache.len, 1);
         assert!(cache.get(1).is_none());
     }
@@ -332,11 +325,11 @@ mod lru {
         cache.put(2, 200);
         cache.put(3, 300);
 
-        cache.remove(2); // Remove middle element
+        assert_eq!(cache.remove(2), Some(200)); // Remove middle element
         assert_eq!(cache.len, 2);
-        assert_eq!(cache.get(1).unwrap().val, 100);
+        assert_eq!(*cache.get(1).unwrap(), 100);
         assert!(cache.get(2).is_none());
-        assert_eq!(cache.get(3).unwrap().val, 300);
+        assert_eq!(*cache.get(3).unwrap(), 300);
     }
 
     #[test]
@@ -346,10 +339,10 @@ mod lru {
         cache.put(2, 200);
         cache.put(3, 300);
 
-        cache.remove(3); // Remove head (most recent)
+        assert_eq!(cache.remove(3), Some(300)); // Remove head (most recent)
         assert_eq!(cache.len, 2);
-        assert_eq!(cache.get(1).unwrap().val, 100);
-        assert_eq!(cache.get(2).unwrap().val, 200);
+        assert_eq!(*cache.get(1).unwrap(), 100);
+        assert_eq!(*cache.get(2).unwrap(), 200);
         assert!(cache.get(3).is_none());
     }
 
@@ -360,11 +353,11 @@ mod lru {
         cache.put(2, 200);
         cache.put(3, 300);
 
-        cache.remove(1); // Remove tail (least recent)
+        assert_eq!(cache.remove(1), Some(100)); // Remove tail (least recent)
         assert_eq!(cache.len, 2);
         assert!(cache.get(1).is_none());
-        assert_eq!(cache.get(2).unwrap().val, 200);
-        assert_eq!(cache.get(3).unwrap().val, 300);
+        assert_eq!(*cache.get(2).unwrap(), 200);
+        assert_eq!(*cache.get(3).unwrap(), 300);
     }
 
     #[test]
@@ -372,7 +365,7 @@ mod lru {
         let mut cache = LRU::new(3);
         cache.put(1, 100);
 
-        cache.remove(1);
+        assert_eq!(cache.remove(1), Some(100));
         assert_eq!(cache.len, 0);
         assert!(cache.get(1).is_none());
     }
@@ -381,11 +374,11 @@ mod lru {
     fn test_capacity_one() {
         let mut cache = LRU::new(1);
         cache.put(1, 100);
-        assert_eq!(cache.get(1).unwrap().val, 100);
+        assert_eq!(*cache.get(1).unwrap(), 100);
 
         cache.put(2, 200);
         assert!(cache.get(1).is_none());
-        assert_eq!(cache.get(2).unwrap().val, 200);
+        assert_eq!(*cache.get(2).unwrap(), 200);
     }
 
     #[test]
@@ -404,10 +397,10 @@ mod lru {
         // Key 3 is least recently used, should be evicted
         cache.put(4, 400);
 
-        assert_eq!(cache.get(1).unwrap().val, 100);
-        assert_eq!(cache.get(2).unwrap().val, 200);
+        assert_eq!(*cache.get(1).unwrap(), 100);
+        assert_eq!(*cache.get(2).unwrap(), 200);
         assert!(cache.get(3).is_none());
-        assert_eq!(cache.get(4).unwrap().val, 400);
+        assert_eq!(*cache.get(4).unwrap(), 400);
     }
 
     #[test]
@@ -424,8 +417,8 @@ mod lru {
         cache.put(4, 400); // Evicts 3
         assert!(cache.get(3).is_none());
 
-        assert_eq!(cache.get(1).unwrap().val, 100);
-        assert_eq!(cache.get(4).unwrap().val, 400);
+        assert_eq!(*cache.get(1).unwrap(), 100);
+        assert_eq!(*cache.get(4).unwrap(), 400);
     }
 
     #[test]
@@ -446,8 +439,8 @@ mod lru {
         cache.put(5, 500);
 
         assert_eq!(cache.len, 2);
-        assert_eq!(cache.get(4).unwrap().val, 400);
-        assert_eq!(cache.get(5).unwrap().val, 500);
+        assert_eq!(*cache.get(4).unwrap(), 400);
+        assert_eq!(*cache.get(5).unwrap(), 500);
     }
 
     #[test]
@@ -467,7 +460,7 @@ mod lru {
         }
 
         for i in 5..10 {
-            assert_eq!(cache.get(i).unwrap().val, i * 100);
+            assert_eq!(*cache.get(i).unwrap(), i * 100);
         }
     }
 
@@ -479,15 +472,14 @@ mod lru {
         cache.put(3, 300);
 
         // Get and verify value
-        let node = cache.get(1).unwrap();
-        assert_eq!(node.val, 100);
+        assert_eq!(*cache.get(1).unwrap(), 100);
 
         // After accessing 1, add new item
         cache.put(4, 400);
 
         // Key 2 should be evicted (not 1, which was just accessed)
         assert!(cache.get(2).is_none());
-        assert_eq!(cache.get(1).unwrap().val, 100);
+        assert_eq!(*cache.get(1).unwrap(), 100);
     }
 
     #[test]
@@ -497,34 +489,12 @@ mod lru {
         cache.put("two", 2);
         cache.put("three", 3);
 
-        assert_eq!(cache.get("one").unwrap().val, 1);
-        assert_eq!(cache.get("two").unwrap().val, 2);
-        assert_eq!(cache.get("three").unwrap().val, 3);
+        assert_eq!(*cache.get("one").unwrap(), 1);
+        assert_eq!(*cache.get("two").unwrap(), 2);
+        assert_eq!(*cache.get("three").unwrap(), 3);
 
         cache.put("four", 4);
         assert!(cache.get("one").is_none());
-    }
-
-    #[test]
-    fn test_different_value_types() {
-        #[derive(Debug, PartialEq, Clone, Copy)]
-        struct Value {
-            data: i32,
-        }
-
-        impl BuildHasher for Value {
-            type Hasher = std::collections::hash_map::DefaultHasher;
-            fn build_hasher(&self) -> Self::Hasher {
-                std::collections::hash_map::DefaultHasher::new()
-            }
-        }
-
-        let mut cache: LRU<i32, Value> = LRU::new(2);
-        cache.put(1, Value { data: 100 });
-        cache.put(2, Value { data: 200 });
-
-        assert_eq!(cache.get(1).unwrap().val.data, 100);
-        assert_eq!(cache.get(2).unwrap().val.data, 200);
     }
 
     #[test]
@@ -545,5 +515,19 @@ mod lru {
 
         cache.put(5, 500); // Eviction
         assert_eq!(cache.ll.len, 3);
+    }
+
+    #[test]
+    fn test_overwrite_existing_key() {
+        let mut cache = LRU::new(3);
+        cache.put(1, 100);
+        cache.put(2, 200);
+        cache.put(3, 300);
+
+        // Overwrite key 1 with new value
+        cache.put(1, 999);
+
+        assert_eq!(cache.len, 3);
+        assert_eq!(*cache.get(1).unwrap(), 999);
     }
 }
