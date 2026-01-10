@@ -1,6 +1,7 @@
 mod buffer;
 pub mod diskpager;
 pub mod freelist;
+mod lru;
 pub mod mempager;
 pub mod metapage;
 mod mmap;
