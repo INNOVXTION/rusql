@@ -31,7 +31,6 @@ where
             existing.val = val;
 
             self.ll.disconnect_node(&existing);
-
             let ptr = self.get_ptr(key).expect("key exists");
             self.ll.push_tail(ptr);
             return;
@@ -77,6 +76,13 @@ where
         self.len -= 1;
 
         Some(n.val)
+    }
+
+    pub fn iter(&self) -> LRUIter<'_, K, V> {
+        LRUIter {
+            lru: self,
+            ptr: self.ll.head,
+        }
     }
 
     fn evict_lru(&mut self) {
@@ -142,6 +148,30 @@ where
         }
     }
 
+    fn pop_front(&mut self) -> Option<K> {
+        unsafe {
+            if self.head.is_null() {
+                return None;
+            }
+            let n = self.head;
+
+            // its the only node
+            if (*n).next.is_null() && (*n).prev.is_null() {
+                self.head = null_mut();
+                self.tail = null_mut();
+                self.len -= 1;
+
+                return Some((*n).key);
+            }
+
+            self.head = (*n).prev;
+            (*self.head).next = null_mut();
+            self.len -= 1;
+
+            Some((*n).key)
+        }
+    }
+
     fn disconnect_node(&mut self, node: &Node<K, V>) {
         unsafe {
             let next = node.next;
@@ -180,28 +210,32 @@ where
             self.len -= 1;
         }
     }
+}
 
-    fn pop_front(&mut self) -> Option<K> {
+pub(crate) struct LRUIter<'a, K, V>
+where
+    K: Eq + std::hash::Hash + Copy,
+    V: Sized,
+{
+    lru: &'a LRU<K, V>,
+    ptr: *mut Node<K, V>,
+}
+
+impl<'a, K, V> Iterator for LRUIter<'a, K, V>
+where
+    K: Eq + std::hash::Hash + Copy,
+    V: Sized,
+{
+    type Item = (&'a K, &'a V);
+
+    fn next(&mut self) -> Option<Self::Item> {
         unsafe {
-            if self.head.is_null() {
+            if self.ptr.is_null() {
                 return None;
             }
-            let n = self.head;
-
-            // its the only node
-            if (*n).next.is_null() && (*n).prev.is_null() {
-                self.head = null_mut();
-                self.tail = null_mut();
-                self.len -= 1;
-
-                return Some((*n).key);
-            }
-
-            self.head = (*n).prev;
-            (*self.head).next = null_mut();
-            self.len -= 1;
-
-            Some((*n).key)
+            let res = Some((&(*self.ptr).key, &(*self.ptr).val));
+            self.ptr = (*self.ptr).prev;
+            res
         }
     }
 }
@@ -529,5 +563,242 @@ mod lru {
 
         assert_eq!(cache.len, 3);
         assert_eq!(*cache.get(1).unwrap(), 999);
+    }
+
+    #[test]
+    fn test_iter_empty_cache() {
+        let cache: LRU<i32, i32> = LRU::new(3);
+        let items: Vec<_> = cache.iter().collect();
+        assert_eq!(items.len(), 0);
+    }
+
+    #[test]
+    fn test_iter_single_item() {
+        let mut cache = LRU::new(3);
+        cache.put(1, 100);
+
+        let items: Vec<_> = cache.iter().collect();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0], (&1, &100));
+    }
+
+    #[test]
+    fn test_iter_multiple_items() {
+        let mut cache = LRU::new(3);
+        cache.put(1, 100);
+        cache.put(2, 200);
+        cache.put(3, 300);
+
+        let items: Vec<_> = cache.iter().collect();
+        assert_eq!(items.len(), 3);
+        // Iterator goes from head (LRU) to tail (MRU)
+        assert_eq!(items[0], (&1, &100)); // Least recent
+        assert_eq!(items[1], (&2, &200));
+        assert_eq!(items[2], (&3, &300)); // Most recent
+    }
+
+    #[test]
+    fn test_iter_order_matches_recency() {
+        let mut cache = LRU::new(3);
+        cache.put(1, 100);
+        cache.put(2, 200);
+        cache.put(3, 300);
+
+        // Access 1, making it most recent
+        cache.get(1);
+
+        let items: Vec<_> = cache.iter().collect();
+        // New order: 2 (LRU), 3, 1 (MRU)
+        assert_eq!(items[0], (&2, &200));
+        assert_eq!(items[1], (&3, &300));
+        assert_eq!(items[2], (&1, &100));
+    }
+
+    #[test]
+    fn test_iter_after_eviction() {
+        let mut cache = LRU::new(2);
+        cache.put(1, 100);
+        cache.put(2, 200);
+        cache.put(3, 300); // Evicts 1
+
+        let items: Vec<_> = cache.iter().collect();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0], (&2, &200)); // LRU
+        assert_eq!(items[1], (&3, &300)); // MRU
+    }
+
+    #[test]
+    fn test_iter_after_removal() {
+        let mut cache = LRU::new(3);
+        cache.put(1, 100);
+        cache.put(2, 200);
+        cache.put(3, 300);
+
+        cache.remove(2);
+
+        let items: Vec<_> = cache.iter().collect();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0], (&1, &100));
+        assert_eq!(items[1], (&3, &300));
+    }
+
+    #[test]
+    fn test_iter_after_update() {
+        let mut cache = LRU::new(3);
+        cache.put(1, 100);
+        cache.put(2, 200);
+        cache.put(3, 300);
+
+        // Update value of key 1
+        cache.put(1, 999);
+
+        let items: Vec<_> = cache.iter().collect();
+        // Key 1 should now be most recent with updated value
+        // Order: 2 (LRU), 3, 1 (MRU)
+        assert_eq!(items[0], (&2, &200));
+        assert_eq!(items[1], (&3, &300));
+        assert_eq!(items[2], (&1, &999));
+    }
+
+    #[test]
+    fn test_iter_does_not_modify_cache() {
+        let mut cache = LRU::new(3);
+        cache.put(1, 100);
+        cache.put(2, 200);
+        cache.put(3, 300);
+
+        // Iterate twice and verify order is the same
+        let items1: Vec<_> = cache.iter().collect();
+        let items2: Vec<_> = cache.iter().collect();
+
+        assert_eq!(items1, items2);
+        assert_eq!(cache.len, 3);
+    }
+
+    #[test]
+    fn test_iter_with_complex_access_pattern() {
+        let mut cache = LRU::new(4);
+        cache.put(1, 100);
+        cache.put(2, 200);
+        cache.put(3, 300);
+        cache.put(4, 400);
+
+        // Access pattern: 2, 1, 3
+        cache.get(2);
+        cache.get(1);
+        cache.get(3);
+
+        let items: Vec<_> = cache.iter().collect();
+        // Order should be: 4 (LRU), 2, 1, 3 (MRU)
+        assert_eq!(items[0], (&4, &400));
+        assert_eq!(items[1], (&2, &200));
+        assert_eq!(items[2], (&1, &100));
+        assert_eq!(items[3], (&3, &300));
+    }
+
+    #[test]
+    fn test_iter_multiple_times() {
+        let mut cache = LRU::new(3);
+        cache.put(1, 100);
+        cache.put(2, 200);
+
+        let _items1: Vec<_> = cache.iter().collect();
+        let _items2: Vec<_> = cache.iter().collect();
+        let items3: Vec<_> = cache.iter().collect();
+
+        // Should still work after multiple iterations
+        assert_eq!(items3.len(), 2);
+        assert_eq!(items3[0], (&1, &100));
+        assert_eq!(items3[1], (&2, &200));
+    }
+
+    #[test]
+    fn test_iter_partial_consumption() {
+        let mut cache = LRU::new(3);
+        cache.put(1, 100);
+        cache.put(2, 200);
+        cache.put(3, 300);
+
+        let mut iter = cache.iter();
+        assert_eq!(iter.next(), Some((&1, &100)));
+        assert_eq!(iter.next(), Some((&2, &200)));
+        // Don't consume the last item
+        drop(iter);
+
+        // Cache should still be intact
+        assert_eq!(cache.len, 3);
+    }
+
+    #[test]
+    fn test_iter_with_string_keys() {
+        let mut cache: LRU<&str, i32> = LRU::new(3);
+        cache.put("apple", 1);
+        cache.put("banana", 2);
+        cache.put("cherry", 3);
+
+        let items: Vec<_> = cache.iter().collect();
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0], (&"apple", &1));
+        assert_eq!(items[1], (&"banana", &2));
+        assert_eq!(items[2], (&"cherry", &3));
+    }
+
+    #[test]
+    fn test_iter_find_key() {
+        let mut cache = LRU::new(5);
+        for i in 0..5 {
+            cache.put(i, i * 100);
+        }
+
+        let found = cache.iter().find(|(k, _)| **k == 3);
+        assert_eq!(found, Some((&3, &300)));
+    }
+
+    #[test]
+    fn test_iter_filter_values() {
+        let mut cache = LRU::new(5);
+        cache.put(1, 100);
+        cache.put(2, 250);
+        cache.put(3, 300);
+        cache.put(4, 150);
+
+        let high_values: Vec<_> = cache.iter().filter(|(_, v)| **v >= 200).collect();
+
+        assert_eq!(high_values.len(), 2);
+    }
+
+    #[test]
+    fn test_iter_map_values() {
+        let mut cache = LRU::new(3);
+        cache.put(1, 100);
+        cache.put(2, 200);
+        cache.put(3, 300);
+
+        let doubled: Vec<_> = cache.iter().map(|(k, v)| (*k, *v * 2)).collect();
+
+        assert_eq!(doubled[0], (1, 200));
+        assert_eq!(doubled[1], (2, 400));
+        assert_eq!(doubled[2], (3, 600));
+    }
+
+    #[test]
+    fn test_iter_count() {
+        let mut cache = LRU::new(10);
+        for i in 0..7 {
+            cache.put(i, i);
+        }
+
+        assert_eq!(cache.iter().count(), 7);
+    }
+
+    #[test]
+    fn test_iter_after_capacity_one() {
+        let mut cache = LRU::new(1);
+        cache.put(1, 100);
+        cache.put(2, 200); // Evicts 1
+
+        let items: Vec<_> = cache.iter().collect();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0], (&2, &200));
     }
 }

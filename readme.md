@@ -6,10 +6,9 @@ A minimal, from-scratch database engine in Rust.
 - B+Tree based key-value storage
 - Memory-mapped file I/O 
 - Free-list garbage collection
-- Durable copy-on-write architecture
+- Copy-on-write architecture
 - Crash resilience through rollbacks
 - Type-safe error handling 
-- In-memory pager implementation for fast unit testing
 - Full table support
-- Multi Threaded Transaction support
-- Read optimized through shared lock-free cache
+- Multi threaded transaction support
+- Read optimized through shared LRU cache
