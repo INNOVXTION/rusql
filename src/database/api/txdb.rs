@@ -18,7 +18,7 @@ pub struct TXDB {
 }
 
 pub struct TXBuffer {
-    pub write_map: HashMap<Pointer, Rc<RefCell<Node>>>,
+    pub write_map: HashMap<Pointer, Rc<Node>>,
     pub dealloc_q: VecDeque<Pointer>,
     pub nappend: u32,
 }
@@ -66,7 +66,7 @@ impl TXDB {
                 );
                 debug!("{:-<10}", "-");
                 for e in self.tx_buf.as_ref().unwrap().borrow().write_map.iter() {
-                    debug!("{:<10}, {:<10}", e.0, e.1.borrow().get_type())
+                    debug!("{:<10}, {:<10}", e.0, e.1.get_type())
                 }
                 debug!("{:-<10}", "-");
             }
@@ -75,7 +75,7 @@ impl TXDB {
 }
 
 impl Pager for TXDB {
-    fn page_read(&self, ptr: Pointer, flag: NodeFlag) -> Rc<RefCell<Node>> {
+    fn page_read(&self, ptr: Pointer, flag: NodeFlag) -> Rc<Node> {
         // read own buffer first
         if let Some(b) = self.tx_buf.as_ref()
             && let Some(n) = b.borrow().write_map.get(&ptr)
@@ -91,7 +91,7 @@ impl Pager for TXDB {
 
         // check internal dealloc buffer
         if let Some(ptr) = buf.dealloc_q.pop_front() {
-            let res = buf.write_map.insert(ptr, Rc::new(RefCell::new(node)));
+            let res = buf.write_map.insert(ptr, Rc::new(node));
             return ptr;
         }
 
@@ -99,7 +99,7 @@ impl Pager for TXDB {
         let page = self.db_link.pager.alloc(&node, version, buf.nappend);
 
         // store node in TX buffer
-        if let None = buf.write_map.insert(page.ptr, Rc::new(RefCell::new(node)))
+        if let None = buf.write_map.insert(page.ptr, Rc::new(node))
             && let PageOrigin::Append = page.origin
         {
             // if the page didnt exist and the new page came from an append

@@ -173,8 +173,8 @@ idx 1 in root, index 1 in Node 2 and index 2 in Leaf 2
 #[derive(Debug)]
 pub(crate) struct Cursor<'a, P: Pager> {
     tree: &'a BTree<P>,
-    path: Vec<Rc<RefCell<Node>>>, // from root to leaf
-    pos: Vec<u16>,                // indices
+    path: Vec<Rc<Node>>, // from root to leaf
+    pos: Vec<u16>,       // indices
     empty: bool,
 }
 
@@ -193,8 +193,8 @@ impl<'a, P: Pager> Cursor<'a, P> {
         let node = &self.path[self.path.len() - 1];
         let idx = self.pos[self.path.len() - 1];
 
-        let key = node.borrow().as_tn().get_key(idx).unwrap();
-        let val = node.borrow().as_tn().get_val(idx).unwrap();
+        let key = node.as_tn().get_key(idx).unwrap();
+        let val = node.as_tn().get_val(idx).unwrap();
         (key, val)
     }
 
@@ -209,7 +209,7 @@ impl<'a, P: Pager> Cursor<'a, P> {
     }
 
     fn iter_next(&mut self, level: usize) {
-        if self.pos[level] + 1 < self.path[level].borrow().as_tn().get_nkeys() {
+        if self.pos[level] + 1 < self.path[level].as_tn().get_nkeys() {
             // move within node
             self.pos[level] += 1;
         } else if level > 0 {
@@ -223,9 +223,7 @@ impl<'a, P: Pager> Cursor<'a, P> {
         if level + 1 < self.pos.len() {
             // we are in a non leaf node and need to retrieve the next sibling
             let node = &self.path[level];
-            let kid = self
-                .tree
-                .decode(node.borrow().as_tn().get_ptr(self.pos[level]));
+            let kid = self.tree.decode(node.as_tn().get_ptr(self.pos[level]));
 
             self.path[level + 1] = kid;
             self.pos[level + 1] = 0;
@@ -262,11 +260,9 @@ impl<'a, P: Pager> Cursor<'a, P> {
         if level + 1 < self.pos.len() {
             // we are in a non leaf node and need to retrieve the next sibling
             let node = &self.path[level];
-            let kid = self
-                .tree
-                .decode(node.borrow().as_tn().get_ptr(self.pos[level]));
+            let kid = self.tree.decode(node.as_tn().get_ptr(self.pos[level]));
 
-            self.pos[level + 1] = kid.borrow().as_tn().get_nkeys() - 1;
+            self.pos[level + 1] = kid.as_tn().get_nkeys() - 1;
             self.path[level + 1] = kid;
         }
     }
@@ -280,24 +276,21 @@ fn seek<'a, P: Pager>(tree: &'a BTree<P>, key: &Key, flag: Compare) -> Option<Cu
 
     while let Some(p) = ptr {
         let node = tree.decode(p);
-        let n_ref = node.borrow();
 
-        ptr = match n_ref.as_tn().get_type() {
+        ptr = match node.as_tn().get_type() {
             NodeType::Node => {
-                let idx = node_lookup(n_ref.as_tn(), &key, &Compare::LE)?; // navigating nodes
-                let ptr = n_ref.as_tn().get_ptr(idx);
+                let idx = node_lookup(node.as_tn(), &key, &Compare::LE)?; // navigating nodes
+                let ptr = node.as_tn().get_ptr(idx);
 
-                drop(n_ref);
                 cursor.path.push(node);
                 cursor.pos.push(idx);
 
                 Some(ptr)
             }
             NodeType::Leaf => {
-                let idx = node_lookup(n_ref.as_tn(), &key, &flag)?;
+                let idx = node_lookup(node.as_tn(), &key, &flag)?;
                 debug!(idx, "seek idx after lookup");
 
-                drop(n_ref);
                 cursor.path.push(node);
                 cursor.pos.push(idx);
 

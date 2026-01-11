@@ -89,8 +89,8 @@ impl MemoryPager {
 }
 
 impl Pager for MemoryPager {
-    fn page_read(&self, ptr: Pointer, flag: super::diskpager::NodeFlag) -> Rc<RefCell<Node>> {
-        Rc::new(RefCell::new(
+    fn page_read(&self, ptr: Pointer, flag: super::diskpager::NodeFlag) -> Rc<Node> {
+        Rc::new(
             self.pages
                 .borrow_mut()
                 .get(&ptr)
@@ -99,7 +99,7 @@ impl Pager for MemoryPager {
                     panic!("page decode error")
                 })
                 .clone(),
-        ))
+        )
     }
 
     fn page_alloc(&self, node: Node, version: u64) -> Pointer {

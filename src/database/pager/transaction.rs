@@ -140,13 +140,15 @@ impl DiskPager {
         let mut count = 0;
 
         for pair in tx_buf.write_map.iter() {
-            let nref = pair.1.borrow();
-
-            debug!("writing TX buffer {:<10} at {:<5}", nref.get_type(), pair.0);
+            debug!(
+                "writing TX buffer {:<10} at {:<5}",
+                pair.1.get_type(),
+                pair.0
+            );
             assert!(pair.0.get() != 0); // never write to the meta page
 
             let offset = pair.0.get() * PAGE_SIZE as u64;
-            let io_slice = rustix::io::IoSlice::new(&nref[..PAGE_SIZE]);
+            let io_slice = rustix::io::IoSlice::new(&pair.1[..PAGE_SIZE]);
             bytes_written +=
                 rustix::io::pwrite(&self.database, &io_slice, offset).map_err(|e| {
                     error!(?e, "page writing error!");
@@ -160,10 +162,10 @@ impl DiskPager {
             self.freelist.borrow_mut().append(*ptr, tx.version)?;
         }
 
-        let mut disk_buf = self.buf_fl.write();
+        let mut fl_buf = self.buf_fl.write();
 
         // freelist write
-        for pair in disk_buf.to_dirty_iter() {
+        for pair in fl_buf.to_dirty_iter() {
             debug!(
                 "writing pager buffer {:<10} at {:<5}",
                 pair.1.get_type(),
@@ -197,9 +199,9 @@ impl DiskPager {
         // adjust buffer
 
         self.npages
-            .set(npages + disk_buf.nappend + tx_buf.nappend as u64);
-        disk_buf.nappend = 0;
-        disk_buf.clear();
+            .set(npages + fl_buf.nappend + tx_buf.nappend as u64);
+        fl_buf.nappend = 0;
+        fl_buf.clear();
 
         Ok(())
     }

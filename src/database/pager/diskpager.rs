@@ -55,8 +55,8 @@ impl std::fmt::Display for NodeFlag {
 pub(crate) struct DiskPager {
     path: &'static str,
     pub database: OwnedFd,
-    pub buf_shared: RwLock<LRU<Pointer, Rc<RefCell<Node>>>>, // read only pages
     pub mmap: RefCell<Mmap>,
+    pub buf_shared: RwLock<LRU<Pointer, Rc<Node>>>, // shared read only buffer
     pub npages: Cell<u64>,
 
     pub failed: Cell<bool>,
@@ -64,7 +64,7 @@ pub(crate) struct DiskPager {
     pub tree: Cell<Option<Pointer>>, // root pointer
 
     pub freelist: Rc<RefCell<dyn GC>>,
-    pub buf_fl: RwLock<DiskBuffer>, // read only pages
+    pub buf_fl: RwLock<DiskBuffer>, // freelist exclusive read-write buffer
 
     pub version: RefCell<u64>,
     pub ongoing: RefCell<OngoingTX>,
@@ -81,7 +81,7 @@ pub(crate) struct DiskPager {
 /// internal callback API
 pub(crate) trait Pager {
     // tree callbacks
-    fn page_read(&self, ptr: Pointer, flag: NodeFlag) -> Rc<RefCell<Node>>; //tree decode
+    fn page_read(&self, ptr: Pointer, flag: NodeFlag) -> Rc<Node>; //tree decode
     fn page_alloc(&self, node: Node, version: u64) -> Pointer; //tree encode
     fn dealloc(&self, ptr: Pointer); // tree dealloc/del
 }
@@ -322,7 +322,7 @@ impl DiskPager {
         }
     }
 
-    pub fn read(&self, ptr: Pointer, flag: NodeFlag) -> Rc<RefCell<Node>> {
+    pub fn read(&self, ptr: Pointer, flag: NodeFlag) -> Rc<Node> {
         // check buffer first
         debug!(node=?flag, %ptr, "page read");
         if let Some(n) = self.buf_shared.write().get(ptr) {
@@ -333,7 +333,7 @@ impl DiskPager {
 
             debug!("reading from disk...");
 
-            let n = Rc::new(RefCell::new(self.decode(ptr, flag)));
+            let n = Rc::new(self.decode(ptr, flag));
 
             buf.insert(ptr, n.clone());
             n

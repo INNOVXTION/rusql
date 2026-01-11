@@ -107,7 +107,7 @@ where
     }
 }
 
-pub fn debug_print(lru: &LRU<Pointer, Rc<RefCell<crate::database::types::Node>>>) {
+pub fn debug_print(lru: &LRU<Pointer, Rc<crate::database::types::Node>>) {
     #[cfg(test)]
     {
         if let Ok("debug") = std::env::var("RUSQL_LOG_PAGER").as_deref() {
@@ -116,7 +116,7 @@ pub fn debug_print(lru: &LRU<Pointer, Rc<RefCell<crate::database::types::Node>>>
             debug!(buf_len = lru.len, "current LRU buffer:");
             debug!("{:-<10}", "-");
             for e in lru.iter() {
-                debug!("{:<10}, {:<10},", e.0, e.1.borrow().get_type())
+                debug!("{:<10}, {:<10},", e.0, e.1.get_type())
             }
             debug!("{:-<10}", "-");
         }
