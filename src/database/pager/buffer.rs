@@ -6,7 +6,7 @@ use std::{
 
 use tracing::debug;
 
-use crate::database::types::{DISK_BUFFER_SIZE, Node, Pointer};
+use crate::database::types::{Node, Pointer};
 
 // TODO: LRU cache
 /// Globally shared buffer, mainly used for read only operations, can also contain dirty freelist nodes
@@ -14,15 +14,12 @@ use crate::database::types::{DISK_BUFFER_SIZE, Node, Pointer};
 pub(crate) struct DiskBuffer {
     pub hmap: HashMap<Pointer, BufferEntry>,
     pub nappend: u64, // number of pages to be appended
-    pub npages: u64,  // database size in number of pages
-    limit: usize,
 }
 
 #[derive(Debug)]
 pub(crate) struct BufferEntry {
     pub node: Rc<RefCell<Node>>,
-    pub dirty: bool,  // does it need to be written? Only relevant for free list
-    pub version: u64, // version from which it has been added
+    pub dirty: bool, // does it need to be written? Only relevant for free list
 }
 
 impl DiskBuffer {
@@ -30,8 +27,6 @@ impl DiskBuffer {
         Self {
             hmap: HashMap::new(),
             nappend: 0,
-            npages: 0,
-            limit: DISK_BUFFER_SIZE,
         }
     }
     pub fn get(&self, ptr: Pointer) -> Option<Rc<RefCell<Node>>> {
@@ -67,19 +62,18 @@ impl DiskBuffer {
         }
     }
 
-    pub fn insert_clean(&mut self, ptr: Pointer, node: Node, version: u64) {
+    pub fn insert_clean(&mut self, ptr: Pointer, node: Node) {
         self.hmap.insert(
             ptr,
             BufferEntry {
                 node: Rc::new(RefCell::new(node)),
                 dirty: false,
                 // retired: false,
-                version,
             },
         );
     }
 
-    pub fn insert_dirty(&mut self, ptr: Pointer, node: Node, version: u64) -> Option<()> {
+    pub fn insert_dirty(&mut self, ptr: Pointer, node: Node) -> Option<()> {
         self.hmap
             .insert(
                 ptr,
@@ -87,7 +81,6 @@ impl DiskBuffer {
                     node: Rc::new(RefCell::new(node)),
                     dirty: true,
                     // retired: false,
-                    version,
                 },
             )
             .map(|_| ())
@@ -101,7 +94,7 @@ impl DiskBuffer {
         #[cfg(test)]
         {
             if let Ok("debug") = std::env::var("RUSQL_LOG_PAGER").as_deref() {
-                debug!(buf_len = self.hmap.len(), "current pager buffer:");
+                debug!(buf_len = self.hmap.len(), "current fl buffer:");
                 debug!("{:-<10}", "-");
                 for e in self.hmap.iter() {
                     let n = e.1.node.borrow();
@@ -168,7 +161,7 @@ mod buffer_tests {
         let node = create_test_node();
         let ptr = Pointer::from(1u64);
 
-        buf.insert_clean(ptr, node, 0);
+        buf.insert_clean(ptr, node);
 
         assert!(buf.get(ptr).is_some());
         assert_eq!(buf.hmap.len(), 1);
@@ -181,7 +174,7 @@ mod buffer_tests {
         let node = create_test_node();
         let ptr = Pointer::from(1u64);
 
-        let result = buf.insert_dirty(ptr, node, 0);
+        let result = buf.insert_dirty(ptr, node);
 
         assert!(result.is_none()); // dirty pointer didnt exists
         assert!(buf.get(ptr).is_some());
@@ -206,8 +199,8 @@ mod buffer_tests {
         let clean_ptr = Pointer::from(1u64);
         let dirty_ptr = Pointer::from(2u64);
 
-        buf.insert_clean(clean_ptr, clean_node, 0);
-        buf.insert_dirty(dirty_ptr, dirty_node, 0);
+        buf.insert_clean(clean_ptr, clean_node);
+        buf.insert_dirty(dirty_ptr, dirty_node);
 
         // get_clean should only return dirty pages
         assert!(buf.get_clean(clean_ptr).is_none());
@@ -221,7 +214,7 @@ mod buffer_tests {
         for i in 1..=10 {
             let node = create_test_node();
             let ptr = Pointer::from(i as u64);
-            buf.insert_dirty(ptr, node, 0);
+            buf.insert_dirty(ptr, node);
         }
 
         assert_eq!(buf.hmap.len(), 10);
@@ -241,8 +234,8 @@ mod buffer_tests {
         let clean_ptr = Pointer::from(1u64);
         let dirty_ptr = Pointer::from(2u64);
 
-        buf.insert_clean(clean_ptr, clean_node, 0);
-        buf.insert_dirty(dirty_ptr, dirty_node, 0);
+        buf.insert_clean(clean_ptr, clean_node);
+        buf.insert_dirty(dirty_ptr, dirty_node);
 
         assert!(!buf.hmap[&clean_ptr].dirty);
         assert!(buf.hmap[&dirty_ptr].dirty);
@@ -301,7 +294,7 @@ mod buffer_tests {
         let node = create_test_node();
         let ptr = Pointer::from(1u64);
 
-        buf.insert_dirty(ptr, node, 0);
+        buf.insert_dirty(ptr, node);
         assert!(buf.hmap[&ptr].dirty);
 
         buf.clear();
@@ -313,9 +306,9 @@ mod buffer_tests {
     fn buffer_to_dirty_iter_only_returns_dirty() {
         let mut buf = DiskBuffer::new();
 
-        buf.insert_clean(Pointer::from(1u64), create_test_node(), 0);
-        buf.insert_dirty(Pointer::from(2u64), create_test_node(), 0);
-        buf.insert_dirty(Pointer::from(3u64), create_test_node(), 0);
+        buf.insert_clean(Pointer::from(1u64), create_test_node());
+        buf.insert_dirty(Pointer::from(2u64), create_test_node());
+        buf.insert_dirty(Pointer::from(3u64), create_test_node());
 
         let dirty_count = buf.to_dirty_iter().count();
         assert_eq!(dirty_count, 2);
@@ -328,7 +321,7 @@ mod buffer_tests {
         let node = create_test_node();
         let ptr = Pointer::from(1u64);
 
-        buf.insert_clean(ptr, node, 0);
+        buf.insert_clean(ptr, node);
         assert!(buf.get(ptr).is_some());
 
         buf.delete(ptr);
@@ -374,31 +367,12 @@ mod buffer_tests {
         let node1 = create_test_node();
         let node2 = create_test_node();
 
-        buf.insert_dirty(ptr, node1, 0);
-        let result = buf.insert_dirty(ptr, node2, 0);
+        buf.insert_dirty(ptr, node1);
+        let result = buf.insert_dirty(ptr, node2);
 
         // insert_dirty should return Some(_) on overwrite
         assert!(result.is_some());
         assert_eq!(buf.hmap.len(), 1);
-    }
-
-    #[test]
-    fn buffer_nappend_and_npages_tracking() {
-        let mut buf = DiskBuffer {
-            hmap: HashMap::new(),
-            nappend: 5,
-            npages: 10,
-            limit: 0,
-        };
-
-        assert_eq!(buf.nappend, 5);
-        assert_eq!(buf.npages, 10);
-
-        buf.nappend = 0;
-        buf.npages = 15;
-
-        assert_eq!(buf.nappend, 0);
-        assert_eq!(buf.npages, 15);
     }
 
     #[test]
@@ -408,7 +382,7 @@ mod buffer_tests {
         // Insert many pages
         for i in 0..1000 {
             let ptr = Pointer::from(i as u64);
-            buf.insert_dirty(ptr, create_test_node(), 0);
+            buf.insert_dirty(ptr, create_test_node());
         }
 
         assert_eq!(buf.hmap.len(), 1000);
@@ -427,9 +401,9 @@ mod buffer_tests {
             let node = create_test_node();
             let ptr = Pointer::from(i as u64);
             if i % 2 == 0 {
-                buf.insert_dirty(ptr, node, 0);
+                buf.insert_dirty(ptr, node);
             } else {
-                buf.insert_clean(ptr, node, 0);
+                buf.insert_clean(ptr, node);
             }
         }
 

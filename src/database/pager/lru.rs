@@ -1,9 +1,10 @@
-use std::{collections::HashMap, ptr::null_mut};
+use std::{cell::RefCell, collections::HashMap, fmt::Display, ptr::null_mut, rc::Rc};
+
+use crate::database::types::Pointer;
 
 pub(crate) struct LRU<K, V>
 where
     K: Eq + std::hash::Hash + Copy,
-    V: Sized,
 {
     map: HashMap<K, Box<Node<K, V>>>,
     ll: LinkedList<K, V>,
@@ -13,19 +14,18 @@ where
 
 impl<K, V> LRU<K, V>
 where
-    K: Eq + std::hash::Hash + Copy,
-    V: Sized,
+    K: Eq + std::hash::Hash + Copy + Display,
 {
     pub fn new(cap: usize) -> Self {
         LRU {
-            map: HashMap::with_capacity(cap),
+            map: HashMap::new(),
             ll: LinkedList::new(),
             len: 0,
             cap,
         }
     }
 
-    pub fn put(&mut self, key: K, val: V) {
+    pub fn insert(&mut self, key: K, val: V) {
         // Check if key already exists
         if let Some(existing) = self.map.get_mut(&key) {
             existing.val = val;
@@ -85,6 +85,12 @@ where
         }
     }
 
+    pub fn clear(&mut self) {
+        self.map.clear();
+        self.ll = LinkedList::new();
+        self.len = 0;
+    }
+
     fn evict_lru(&mut self) {
         let old = self
             .ll
@@ -101,10 +107,25 @@ where
     }
 }
 
+pub fn debug_print(lru: &LRU<Pointer, Rc<RefCell<crate::database::types::Node>>>) {
+    #[cfg(test)]
+    {
+        if let Ok("debug") = std::env::var("RUSQL_LOG_PAGER").as_deref() {
+            use tracing::debug;
+
+            debug!(buf_len = lru.len, "current LRU buffer:");
+            debug!("{:-<10}", "-");
+            for e in lru.iter() {
+                debug!("{:<10}, {:<10},", e.0, e.1.borrow().get_type())
+            }
+            debug!("{:-<10}", "-");
+        }
+    }
+}
+
 struct LinkedList<K, V>
 where
     K: Eq + std::hash::Hash + Copy,
-    V: Sized,
 {
     head: *mut Node<K, V>,
     tail: *mut Node<K, V>,
@@ -121,7 +142,6 @@ struct Node<K, V> {
 impl<K, V> LinkedList<K, V>
 where
     K: Eq + std::hash::Hash + Copy,
-    V: Sized,
 {
     fn new() -> Self {
         LinkedList {
@@ -215,7 +235,6 @@ where
 pub(crate) struct LRUIter<'a, K, V>
 where
     K: Eq + std::hash::Hash + Copy,
-    V: Sized,
 {
     lru: &'a LRU<K, V>,
     ptr: *mut Node<K, V>,
@@ -254,7 +273,7 @@ mod lru {
     #[test]
     fn test_put_single_item() {
         let mut cache = LRU::new(3);
-        cache.put(1, 100);
+        cache.insert(1, 100);
         assert_eq!(cache.len, 1);
 
         assert_eq!(*cache.get(1).unwrap(), 100);
@@ -263,9 +282,9 @@ mod lru {
     #[test]
     fn test_put_multiple_items() {
         let mut cache = LRU::new(3);
-        cache.put(1, 100);
-        cache.put(2, 200);
-        cache.put(3, 300);
+        cache.insert(1, 100);
+        cache.insert(2, 200);
+        cache.insert(3, 300);
 
         assert_eq!(cache.len, 3);
         assert_eq!(*cache.get(1).unwrap(), 100);
@@ -276,10 +295,10 @@ mod lru {
     #[test]
     fn test_put_exceeds_capacity() {
         let mut cache = LRU::new(3);
-        cache.put(1, 100);
-        cache.put(2, 200);
-        cache.put(3, 300);
-        cache.put(4, 400);
+        cache.insert(1, 100);
+        cache.insert(2, 200);
+        cache.insert(3, 300);
+        cache.insert(4, 400);
 
         assert_eq!(cache.len, 3);
         assert!(cache.get(1).is_none()); // 1 should be evicted
@@ -291,22 +310,22 @@ mod lru {
     #[test]
     fn test_get_nonexistent_key() {
         let mut cache = LRU::new(3);
-        cache.put(1, 100);
+        cache.insert(1, 100);
         assert!(cache.get(999).is_none());
     }
 
     #[test]
     fn test_get_updates_recency() {
         let mut cache = LRU::new(3);
-        cache.put(1, 100);
-        cache.put(2, 200);
-        cache.put(3, 300);
+        cache.insert(1, 100);
+        cache.insert(2, 200);
+        cache.insert(3, 300);
 
         // Access key 1, making it most recently used
         cache.get(1);
 
         // Add key 4, which should evict key 2 (least recently used)
-        cache.put(4, 400);
+        cache.insert(4, 400);
 
         assert_eq!(*cache.get(1).unwrap(), 100);
         assert!(cache.get(2).is_none()); // 2 should be evicted
@@ -317,14 +336,14 @@ mod lru {
     #[test]
     fn test_eviction_order() {
         let mut cache = LRU::new(2);
-        cache.put(1, 100);
-        cache.put(2, 200);
-        cache.put(3, 300); // Should evict 1
+        cache.insert(1, 100);
+        cache.insert(2, 200);
+        cache.insert(3, 300); // Should evict 1
 
         assert!(cache.get(1).is_none());
         assert_eq!(*cache.get(2).unwrap(), 200); // This moves 2 to MRU
 
-        cache.put(4, 400); // Should evict 3 (not 2, since we just accessed 2)
+        cache.insert(4, 400); // Should evict 3 (not 2, since we just accessed 2)
         assert!(cache.get(3).is_none()); // 3 is evicted
         assert_eq!(*cache.get(2).unwrap(), 200); // 2 still exists
         assert_eq!(*cache.get(4).unwrap(), 400);
@@ -333,8 +352,8 @@ mod lru {
     #[test]
     fn test_remove_existing_key() {
         let mut cache = LRU::new(3);
-        cache.put(1, 100);
-        cache.put(2, 200);
+        cache.insert(1, 100);
+        cache.insert(2, 200);
 
         let removed = cache.remove(1);
         assert_eq!(removed, Some(100));
@@ -345,7 +364,7 @@ mod lru {
     #[test]
     fn test_remove_nonexistent_key() {
         let mut cache = LRU::new(3);
-        cache.put(1, 100);
+        cache.insert(1, 100);
 
         let removed = cache.remove(999);
         assert!(removed.is_none());
@@ -355,9 +374,9 @@ mod lru {
     #[test]
     fn test_remove_from_middle() {
         let mut cache = LRU::new(3);
-        cache.put(1, 100);
-        cache.put(2, 200);
-        cache.put(3, 300);
+        cache.insert(1, 100);
+        cache.insert(2, 200);
+        cache.insert(3, 300);
 
         assert_eq!(cache.remove(2), Some(200)); // Remove middle element
         assert_eq!(cache.len, 2);
@@ -369,9 +388,9 @@ mod lru {
     #[test]
     fn test_remove_head() {
         let mut cache = LRU::new(3);
-        cache.put(1, 100);
-        cache.put(2, 200);
-        cache.put(3, 300);
+        cache.insert(1, 100);
+        cache.insert(2, 200);
+        cache.insert(3, 300);
 
         assert_eq!(cache.remove(3), Some(300)); // Remove head (most recent)
         assert_eq!(cache.len, 2);
@@ -383,9 +402,9 @@ mod lru {
     #[test]
     fn test_remove_tail() {
         let mut cache = LRU::new(3);
-        cache.put(1, 100);
-        cache.put(2, 200);
-        cache.put(3, 300);
+        cache.insert(1, 100);
+        cache.insert(2, 200);
+        cache.insert(3, 300);
 
         assert_eq!(cache.remove(1), Some(100)); // Remove tail (least recent)
         assert_eq!(cache.len, 2);
@@ -397,7 +416,7 @@ mod lru {
     #[test]
     fn test_remove_only_element() {
         let mut cache = LRU::new(3);
-        cache.put(1, 100);
+        cache.insert(1, 100);
 
         assert_eq!(cache.remove(1), Some(100));
         assert_eq!(cache.len, 0);
@@ -407,10 +426,10 @@ mod lru {
     #[test]
     fn test_capacity_one() {
         let mut cache = LRU::new(1);
-        cache.put(1, 100);
+        cache.insert(1, 100);
         assert_eq!(*cache.get(1).unwrap(), 100);
 
-        cache.put(2, 200);
+        cache.insert(2, 200);
         assert!(cache.get(1).is_none());
         assert_eq!(*cache.get(2).unwrap(), 200);
     }
@@ -418,9 +437,9 @@ mod lru {
     #[test]
     fn test_repeated_access_pattern() {
         let mut cache = LRU::new(3);
-        cache.put(1, 100);
-        cache.put(2, 200);
-        cache.put(3, 300);
+        cache.insert(1, 100);
+        cache.insert(2, 200);
+        cache.insert(3, 300);
 
         // Access pattern: 1, 1, 2, 1
         cache.get(1);
@@ -429,7 +448,7 @@ mod lru {
         cache.get(1);
 
         // Key 3 is least recently used, should be evicted
-        cache.put(4, 400);
+        cache.insert(4, 400);
 
         assert_eq!(*cache.get(1).unwrap(), 100);
         assert_eq!(*cache.get(2).unwrap(), 200);
@@ -440,15 +459,15 @@ mod lru {
     #[test]
     fn test_alternating_access() {
         let mut cache = LRU::new(2);
-        cache.put(1, 100);
-        cache.put(2, 200);
+        cache.insert(1, 100);
+        cache.insert(2, 200);
 
         cache.get(1);
-        cache.put(3, 300); // Evicts 2
+        cache.insert(3, 300); // Evicts 2
         assert!(cache.get(2).is_none());
 
         cache.get(1);
-        cache.put(4, 400); // Evicts 3
+        cache.insert(4, 400); // Evicts 3
         assert!(cache.get(3).is_none());
 
         assert_eq!(*cache.get(1).unwrap(), 100);
@@ -458,9 +477,9 @@ mod lru {
     #[test]
     fn test_fill_and_drain() {
         let mut cache = LRU::new(3);
-        cache.put(1, 100);
-        cache.put(2, 200);
-        cache.put(3, 300);
+        cache.insert(1, 100);
+        cache.insert(2, 200);
+        cache.insert(3, 300);
 
         cache.remove(1);
         cache.remove(2);
@@ -469,8 +488,8 @@ mod lru {
         assert_eq!(cache.len, 0);
 
         // Refill after draining
-        cache.put(4, 400);
-        cache.put(5, 500);
+        cache.insert(4, 400);
+        cache.insert(5, 500);
 
         assert_eq!(cache.len, 2);
         assert_eq!(*cache.get(4).unwrap(), 400);
@@ -483,7 +502,7 @@ mod lru {
 
         // Add 10 items to a cache of size 5
         for i in 0..10 {
-            cache.put(i, i * 100);
+            cache.insert(i, i * 100);
         }
 
         assert_eq!(cache.len, 5);
@@ -501,15 +520,15 @@ mod lru {
     #[test]
     fn test_update_value_via_get() {
         let mut cache = LRU::new(3);
-        cache.put(1, 100);
-        cache.put(2, 200);
-        cache.put(3, 300);
+        cache.insert(1, 100);
+        cache.insert(2, 200);
+        cache.insert(3, 300);
 
         // Get and verify value
         assert_eq!(*cache.get(1).unwrap(), 100);
 
         // After accessing 1, add new item
-        cache.put(4, 400);
+        cache.insert(4, 400);
 
         // Key 2 should be evicted (not 1, which was just accessed)
         assert!(cache.get(2).is_none());
@@ -519,24 +538,24 @@ mod lru {
     #[test]
     fn test_string_keys() {
         let mut cache: LRU<&str, i32> = LRU::new(3);
-        cache.put("one", 1);
-        cache.put("two", 2);
-        cache.put("three", 3);
+        cache.insert("one", 1);
+        cache.insert("two", 2);
+        cache.insert("three", 3);
 
         assert_eq!(*cache.get("one").unwrap(), 1);
         assert_eq!(*cache.get("two").unwrap(), 2);
         assert_eq!(*cache.get("three").unwrap(), 3);
 
-        cache.put("four", 4);
+        cache.insert("four", 4);
         assert!(cache.get("one").is_none());
     }
 
     #[test]
     fn test_linked_list_integrity_after_operations() {
         let mut cache = LRU::new(3);
-        cache.put(1, 100);
-        cache.put(2, 200);
-        cache.put(3, 300);
+        cache.insert(1, 100);
+        cache.insert(2, 200);
+        cache.insert(3, 300);
 
         // Verify linked list length matches cache length
         assert_eq!(cache.ll.len, 3);
@@ -544,22 +563,22 @@ mod lru {
         cache.remove(2);
         assert_eq!(cache.ll.len, 2);
 
-        cache.put(4, 400);
+        cache.insert(4, 400);
         assert_eq!(cache.ll.len, 3);
 
-        cache.put(5, 500); // Eviction
+        cache.insert(5, 500); // Eviction
         assert_eq!(cache.ll.len, 3);
     }
 
     #[test]
     fn test_overwrite_existing_key() {
         let mut cache = LRU::new(3);
-        cache.put(1, 100);
-        cache.put(2, 200);
-        cache.put(3, 300);
+        cache.insert(1, 100);
+        cache.insert(2, 200);
+        cache.insert(3, 300);
 
         // Overwrite key 1 with new value
-        cache.put(1, 999);
+        cache.insert(1, 999);
 
         assert_eq!(cache.len, 3);
         assert_eq!(*cache.get(1).unwrap(), 999);
@@ -575,7 +594,7 @@ mod lru {
     #[test]
     fn test_iter_single_item() {
         let mut cache = LRU::new(3);
-        cache.put(1, 100);
+        cache.insert(1, 100);
 
         let items: Vec<_> = cache.iter().collect();
         assert_eq!(items.len(), 1);
@@ -585,9 +604,9 @@ mod lru {
     #[test]
     fn test_iter_multiple_items() {
         let mut cache = LRU::new(3);
-        cache.put(1, 100);
-        cache.put(2, 200);
-        cache.put(3, 300);
+        cache.insert(1, 100);
+        cache.insert(2, 200);
+        cache.insert(3, 300);
 
         let items: Vec<_> = cache.iter().collect();
         assert_eq!(items.len(), 3);
@@ -600,9 +619,9 @@ mod lru {
     #[test]
     fn test_iter_order_matches_recency() {
         let mut cache = LRU::new(3);
-        cache.put(1, 100);
-        cache.put(2, 200);
-        cache.put(3, 300);
+        cache.insert(1, 100);
+        cache.insert(2, 200);
+        cache.insert(3, 300);
 
         // Access 1, making it most recent
         cache.get(1);
@@ -617,9 +636,9 @@ mod lru {
     #[test]
     fn test_iter_after_eviction() {
         let mut cache = LRU::new(2);
-        cache.put(1, 100);
-        cache.put(2, 200);
-        cache.put(3, 300); // Evicts 1
+        cache.insert(1, 100);
+        cache.insert(2, 200);
+        cache.insert(3, 300); // Evicts 1
 
         let items: Vec<_> = cache.iter().collect();
         assert_eq!(items.len(), 2);
@@ -630,9 +649,9 @@ mod lru {
     #[test]
     fn test_iter_after_removal() {
         let mut cache = LRU::new(3);
-        cache.put(1, 100);
-        cache.put(2, 200);
-        cache.put(3, 300);
+        cache.insert(1, 100);
+        cache.insert(2, 200);
+        cache.insert(3, 300);
 
         cache.remove(2);
 
@@ -645,12 +664,12 @@ mod lru {
     #[test]
     fn test_iter_after_update() {
         let mut cache = LRU::new(3);
-        cache.put(1, 100);
-        cache.put(2, 200);
-        cache.put(3, 300);
+        cache.insert(1, 100);
+        cache.insert(2, 200);
+        cache.insert(3, 300);
 
         // Update value of key 1
-        cache.put(1, 999);
+        cache.insert(1, 999);
 
         let items: Vec<_> = cache.iter().collect();
         // Key 1 should now be most recent with updated value
@@ -663,9 +682,9 @@ mod lru {
     #[test]
     fn test_iter_does_not_modify_cache() {
         let mut cache = LRU::new(3);
-        cache.put(1, 100);
-        cache.put(2, 200);
-        cache.put(3, 300);
+        cache.insert(1, 100);
+        cache.insert(2, 200);
+        cache.insert(3, 300);
 
         // Iterate twice and verify order is the same
         let items1: Vec<_> = cache.iter().collect();
@@ -678,10 +697,10 @@ mod lru {
     #[test]
     fn test_iter_with_complex_access_pattern() {
         let mut cache = LRU::new(4);
-        cache.put(1, 100);
-        cache.put(2, 200);
-        cache.put(3, 300);
-        cache.put(4, 400);
+        cache.insert(1, 100);
+        cache.insert(2, 200);
+        cache.insert(3, 300);
+        cache.insert(4, 400);
 
         // Access pattern: 2, 1, 3
         cache.get(2);
@@ -699,8 +718,8 @@ mod lru {
     #[test]
     fn test_iter_multiple_times() {
         let mut cache = LRU::new(3);
-        cache.put(1, 100);
-        cache.put(2, 200);
+        cache.insert(1, 100);
+        cache.insert(2, 200);
 
         let _items1: Vec<_> = cache.iter().collect();
         let _items2: Vec<_> = cache.iter().collect();
@@ -715,9 +734,9 @@ mod lru {
     #[test]
     fn test_iter_partial_consumption() {
         let mut cache = LRU::new(3);
-        cache.put(1, 100);
-        cache.put(2, 200);
-        cache.put(3, 300);
+        cache.insert(1, 100);
+        cache.insert(2, 200);
+        cache.insert(3, 300);
 
         let mut iter = cache.iter();
         assert_eq!(iter.next(), Some((&1, &100)));
@@ -732,9 +751,9 @@ mod lru {
     #[test]
     fn test_iter_with_string_keys() {
         let mut cache: LRU<&str, i32> = LRU::new(3);
-        cache.put("apple", 1);
-        cache.put("banana", 2);
-        cache.put("cherry", 3);
+        cache.insert("apple", 1);
+        cache.insert("banana", 2);
+        cache.insert("cherry", 3);
 
         let items: Vec<_> = cache.iter().collect();
         assert_eq!(items.len(), 3);
@@ -747,7 +766,7 @@ mod lru {
     fn test_iter_find_key() {
         let mut cache = LRU::new(5);
         for i in 0..5 {
-            cache.put(i, i * 100);
+            cache.insert(i, i * 100);
         }
 
         let found = cache.iter().find(|(k, _)| **k == 3);
@@ -757,10 +776,10 @@ mod lru {
     #[test]
     fn test_iter_filter_values() {
         let mut cache = LRU::new(5);
-        cache.put(1, 100);
-        cache.put(2, 250);
-        cache.put(3, 300);
-        cache.put(4, 150);
+        cache.insert(1, 100);
+        cache.insert(2, 250);
+        cache.insert(3, 300);
+        cache.insert(4, 150);
 
         let high_values: Vec<_> = cache.iter().filter(|(_, v)| **v >= 200).collect();
 
@@ -770,9 +789,9 @@ mod lru {
     #[test]
     fn test_iter_map_values() {
         let mut cache = LRU::new(3);
-        cache.put(1, 100);
-        cache.put(2, 200);
-        cache.put(3, 300);
+        cache.insert(1, 100);
+        cache.insert(2, 200);
+        cache.insert(3, 300);
 
         let doubled: Vec<_> = cache.iter().map(|(k, v)| (*k, *v * 2)).collect();
 
@@ -785,7 +804,7 @@ mod lru {
     fn test_iter_count() {
         let mut cache = LRU::new(10);
         for i in 0..7 {
-            cache.put(i, i);
+            cache.insert(i, i);
         }
 
         assert_eq!(cache.iter().count(), 7);
@@ -794,8 +813,8 @@ mod lru {
     #[test]
     fn test_iter_after_capacity_one() {
         let mut cache = LRU::new(1);
-        cache.put(1, 100);
-        cache.put(2, 200); // Evicts 1
+        cache.insert(1, 100);
+        cache.insert(2, 200); // Evicts 1
 
         let items: Vec<_> = cache.iter().collect();
         assert_eq!(items.len(), 1);

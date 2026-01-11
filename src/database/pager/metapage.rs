@@ -83,7 +83,7 @@ impl DerefMut for MetaPage {
 /// returns metapage object of current pager state
 pub fn metapage_save(pager: &DiskPager) -> MetaPage {
     let flc = pager.freelist.borrow().get_config();
-    let npages = pager.buffer.read().npages;
+    let npages = pager.npages.get();
     let mut data = MetaPage::new();
 
     debug!(
@@ -124,7 +124,7 @@ pub fn metapage_load(pager: &DiskPager, meta: &MetaPage) {
     };
 
     *pager.version.borrow_mut() = meta.read_ptr(MpField::Version).get();
-    pager.buffer.write().npages = meta.read_ptr(MpField::Npages).get();
+    pager.npages.set(meta.read_ptr(MpField::Npages).get());
 
     let flc = FLConfig {
         head_page: Some(meta.read_ptr(MpField::HeadPage)),
@@ -146,7 +146,7 @@ pub fn metapage_read(pager: &DiskPager, file_size: u64) {
     if file_size == 0 {
         // empty file
         debug!("root read: empty file...");
-        pager.buffer.write().npages = 2; // reserved for meta page and one free list node
+        pager.npages.set(2); // reserved for meta page and one free list node
         let flc = FLConfig {
             head_page: Some(Pointer::from(1u64)),
             head_seq: 0,
@@ -165,7 +165,7 @@ pub fn metapage_read(pager: &DiskPager, file_size: u64) {
     meta.copy_from_slice(&pager.mmap.borrow().chunks[0].to_slice()[..METAPAGE_SIZE]);
     metapage_load(pager, &meta);
 
-    assert!(pager.buffer.read().npages != 0);
+    assert!(pager.npages.get() != 0);
 }
 
 /// writes meta page to disk

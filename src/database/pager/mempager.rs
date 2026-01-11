@@ -127,6 +127,18 @@ impl Pager for MemoryPager {
 }
 
 impl GCCallbacks for MemoryPager {
+    fn page_read(&self, ptr: Pointer, flag: super::diskpager::NodeFlag) -> Rc<RefCell<Node>> {
+        Rc::new(RefCell::new(
+            self.pages
+                .borrow_mut()
+                .get(&ptr)
+                .unwrap_or_else(|| {
+                    error!("couldnt retrieve page at ptr {}", ptr);
+                    panic!("page decode error")
+                })
+                .clone(),
+        ))
+    }
     // not needed for in memory pager
     fn encode(&self, node: Node) -> Pointer {
         if !node.fits_page() {

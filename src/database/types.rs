@@ -28,7 +28,7 @@ pub const PTR_SIZE: usize = 8;
 pub const VER_SIZE: usize = std::mem::size_of::<u64>();
 pub const FREE_PAGE: u64 = 0; // sentinel value for pages that are free to be reused, unreachable from any committed root
 
-pub const DISK_BUFFER_SIZE: usize = 10;
+pub const LRU_BUFFER_SIZE: usize = 10;
 pub const HISTORY_BUFFER_SIZE: usize = 10;
 
 pub const U16_SIZE: usize = 2;

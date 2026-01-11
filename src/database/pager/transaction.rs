@@ -90,7 +90,7 @@ impl DiskPager {
             metapage_load(self, recov_page);
 
             // discard buffer
-            self.buffer.write().hmap.clear();
+            self.buf_shared.write().clear();
             self.failed.set(true);
 
             return Err(e);
@@ -120,7 +120,7 @@ impl DiskPager {
 
         let tx_buf = tx.db.tx_buf.as_ref().unwrap().borrow();
         let nwrites = tx_buf.write_map.len();
-        let npages = self.buffer.read().npages;
+        let npages = self.npages.get();
 
         // extend the mmap if needed
         let new_size = (npages as usize + nwrites) * PAGE_SIZE; // amount of pages in bytes
@@ -160,7 +160,7 @@ impl DiskPager {
             self.freelist.borrow_mut().append(*ptr, tx.version)?;
         }
 
-        let mut disk_buf = self.buffer.write();
+        let mut disk_buf = self.buf_fl.write();
 
         // freelist write
         for pair in disk_buf.to_dirty_iter() {
@@ -196,7 +196,8 @@ impl DiskPager {
 
         // adjust buffer
 
-        disk_buf.npages += disk_buf.nappend + tx_buf.nappend as u64;
+        self.npages
+            .set(npages + disk_buf.nappend + tx_buf.nappend as u64);
         disk_buf.nappend = 0;
         disk_buf.clear();
 

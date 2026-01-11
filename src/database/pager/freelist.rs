@@ -13,7 +13,7 @@ use crate::database::{
 };
 use tracing::debug;
 
-pub(crate) struct FreeList<P: Pager + GCCallbacks> {
+pub(crate) struct FreeList<P: GCCallbacks> {
     pub pager: Weak<P>,
 
     head_page: Option<Pointer>,
@@ -50,8 +50,6 @@ pub(crate) struct FLConfig {
 }
 
 pub(crate) trait GC {
-    type Codec: Pager;
-
     fn get(&mut self) -> Option<Pointer>;
     fn append(&mut self, ptr: Pointer, version: u64) -> Result<(), FLError>;
 
@@ -64,8 +62,7 @@ pub(crate) trait GC {
     fn set_cur_ver(&mut self, version: u64);
 }
 
-impl<P: Pager + GCCallbacks> GC for FreeList<P> {
-    type Codec = P;
+impl<P: GCCallbacks> GC for FreeList<P> {
     /// removes a page from the head, decrement head seq
     fn get(&mut self) -> Option<Pointer> {
         match self.pop_head() {
@@ -210,7 +207,7 @@ impl<P: Pager + GCCallbacks> GC for FreeList<P> {
     }
 }
 
-impl<P: Pager + GCCallbacks> FreeList<P> {
+impl<P: GCCallbacks> FreeList<P> {
     // callbacks
 
     /// reads page, gets page, removes from buffer if available
@@ -305,13 +302,10 @@ impl<P: Pager + GCCallbacks> FreeList<P> {
 
     /// sets next ptr for free list node
     fn update_set_next(&self, node: Pointer, ptr: Pointer) {
-        // SAFETY: see callback at the top
-        unsafe {
-            let r = self.update(node);
-            let mut r_mut = r.borrow_mut();
-            let node_ptr = r_mut.as_fl_mut();
-            node_ptr.set_next(ptr);
-        }
+        let r = self.update(node);
+        let mut r_mut = r.borrow_mut();
+        let node_ptr = r_mut.as_fl_mut();
+        node_ptr.set_next(ptr);
     }
 
     fn is_empty(&self) -> bool {
