@@ -76,12 +76,13 @@ pub fn debug_print_tree(node: &TreeNode, idx: u16) {
     #[cfg(test)]
     {
         if let Ok("debug") = std::env::var("RUSQL_LOG_TREE").as_deref() {
-            debug!(idx, "looking through {:?}...", node.get_type());
+            debug!("found idx = {} in {:?}...", idx, node.get_type());
             debug!("---------");
             for i in 0..node.get_nkeys() {
                 debug!(
                     idx = i,
                     key = node.get_key(i).unwrap().to_string(),
+                    val = node.get_val(i).unwrap().to_string(),
                     "keys: "
                 );
             }

@@ -109,6 +109,11 @@ impl DiskBuffer {
             }
         }
     }
+
+    pub fn erase(&mut self) {
+        self.hmap.clear();
+        self.nappend = 0;
+    }
 }
 
 #[derive(Debug)]

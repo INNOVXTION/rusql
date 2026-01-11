@@ -5,6 +5,7 @@ mod errors;
 mod helper;
 mod pager;
 mod tables;
+mod transactions;
 pub(crate) mod types;
 
 // example of reexport

@@ -10,7 +10,6 @@ use tracing::{debug, error, info, instrument, warn};
 
 use crate::create_file_sync;
 use crate::database::BTree;
-use crate::database::api::tx::TX;
 use crate::database::errors::FLError;
 use crate::database::helper::as_page;
 use crate::database::pager::buffer::{DiskBuffer, OngoingTX};
@@ -20,6 +19,7 @@ use crate::database::pager::metapage::*;
 use crate::database::pager::mmap::*;
 use crate::database::pager::transaction::TXHistory;
 use crate::database::tables::{Key, Record, Value};
+use crate::database::transactions::tx::TX;
 use crate::database::{
     btree::{SetFlag, Tree, TreeNode},
     errors::{Error, PagerError},
@@ -190,7 +190,7 @@ impl DiskPager {
             rollback: RefCell::new(MetaPage::new()),
             history: RefCell::new(TXHistory {
                 history: HashMap::new(),
-                limit: 0,
+                cap: 0,
             }),
             lock: ReentrantMutex::new(()),
         });
@@ -323,26 +323,25 @@ impl DiskPager {
     }
 
     pub fn read(&self, ptr: Pointer, flag: NodeFlag) -> Rc<Node> {
-        // check buffer first
         debug!(node=?flag, %ptr, "page read");
-        if let Some(n) = self.buf_shared.write().get(ptr) {
+        let mut buf_shr = self.buf_shared.write();
+
+        // check buffer first
+        if let Some(n) = buf_shr.get(ptr) {
             debug!("page found in buffer!");
             n.clone()
         } else {
-            let mut buf = self.buf_shared.write();
-
             debug!("reading from disk...");
 
             let n = Rc::new(self.decode(ptr, flag));
 
-            buf.insert(ptr, n.clone());
+            buf_shr.insert(ptr, n.clone());
             n
         }
     }
 
     pub fn alloc(&self, node: &Node, version: u64, nappend: u32) -> AllocatedPage {
-        let _lock = self.lock.lock();
-        let buf = self.buf_shared.read();
+        assert!(node.fits_page());
 
         let max_ver = match self.ongoing.borrow_mut().get_oldest_version() {
             Some(n) => n,
@@ -356,7 +355,6 @@ impl DiskPager {
             debug!("allocating from buffer");
 
             assert_ne!(ptr.0, 0);
-            debug_print(&buf);
 
             let page = AllocatedPage {
                 ptr,
@@ -367,19 +365,16 @@ impl DiskPager {
             page
         } else {
             debug!("allocating from append");
-            let ptr = Pointer(self.npages.get() + nappend as u64);
-            assert_ne!(ptr.0, 0);
 
-            // empty db has n_pages = 1 (meta page)
-            assert!(node.fits_page());
+            let ptr = Pointer(self.npages.get() + nappend as u64);
+
+            assert_ne!(ptr.0, 0);
 
             debug!(
                 "encode: adding {:?} at page: {} to buffer",
                 node.get_type(),
                 ptr.0
             );
-
-            debug_print(&buf);
 
             let page = AllocatedPage {
                 ptr,

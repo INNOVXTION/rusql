@@ -18,7 +18,7 @@ use crate::database::types::DataCell;
 // [ 4B  ][    2B    ][1B TYPE][8B INT][1B TYPE][4B STRLEN][nB STR]|
 
 /// owned object of encoded data used for tree operations
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct Key(Rc<[u8]>);
 
 impl Key {
@@ -83,6 +83,18 @@ impl Key {
     /// turns key back into Cells, the TID is lost in conversion
     fn decode(self) -> Vec<DataCell> {
         self.into_iter().collect()
+    }
+
+    /// deep copy with a new allocation
+    pub fn clone_deep(&self) -> Self {
+        Key(Rc::from(&self.0[..]))
+    }
+}
+
+impl Clone for Key {
+    /// copies the underlying RC
+    fn clone(&self) -> Self {
+        Key(self.0.clone())
     }
 }
 
@@ -497,15 +509,12 @@ fn key_cmp(mut key_a: &[u8], mut key_b: &[u8]) -> Ordering {
 /// returns ordering based on empty slice
 fn len_cmp(a: &[u8], b: &[u8]) -> Option<Ordering> {
     if a.is_empty() && b.is_empty() {
-        debug!("both keys empty");
         return Some(Ordering::Equal);
     }
     if a.is_empty() {
-        debug!("key a empty");
         return Some(Ordering::Less);
     }
     if b.is_empty() {
-        debug!("key b empty");
         return Some(Ordering::Greater);
     }
     None
@@ -527,8 +536,8 @@ impl std::fmt::Display for Value {
 
 #[cfg(test)]
 mod test {
-    use crate::database::api::{kvdb::KVDB, tx::TXKind};
     use crate::database::pager::transaction::Transaction;
+    use crate::database::transactions::{kvdb::KVDB, tx::TXKind};
     use crate::database::{pager::mempage_tree, tables::Record};
     use std::sync::Arc;
 

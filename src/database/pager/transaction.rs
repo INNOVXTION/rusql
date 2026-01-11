@@ -9,22 +9,22 @@ use tracing::{debug, error, info, instrument, warn};
 
 use super::metapage::*;
 use crate::database::BTree;
-use crate::database::api::kvdb::KVDB;
-use crate::database::api::tx::{TX, TXKind, Touched};
-use crate::database::api::txdb::{TXDB, TXWrite};
 use crate::database::btree::Tree;
-use crate::database::errors::{Error, PagerError, Result};
+use crate::database::errors::{Error, PagerError, Result, TXError};
 use crate::database::pager::metapage::*;
 use crate::database::pager::mmap::mmap_extend;
 use crate::database::pager::{DiskPager, Pager};
 use crate::database::tables::{Record, Value};
+use crate::database::transactions::keyrange::{KeyRange, Touched};
+use crate::database::transactions::kvdb::KVDB;
+use crate::database::transactions::tx::{TX, TXKind};
+use crate::database::transactions::txdb::{TXDB, TXWrite};
 use crate::database::types::PAGE_SIZE;
 use crate::database::{btree::ScanMode, tables::Key, types::Pointer};
 
-// TODO: LRU cache
 pub struct TXHistory {
-    pub history: HashMap<u64, Touched>,
-    pub limit: usize,
+    pub history: HashMap<u64, Vec<Touched>>,
+    pub cap: usize,
 }
 
 pub trait Transaction {
@@ -51,7 +51,7 @@ impl Transaction for DiskPager {
             version,
             kind,
             rollback: metapage_save(self),
-            key_range: None,
+            key_range: KeyRange::new(),
         }
     }
 
@@ -60,12 +60,23 @@ impl Transaction for DiskPager {
     fn commit(&self, tx: TX) -> Result<()> {
         let _guard = self.lock.lock();
 
+        if tx.kind == TXKind::Read {
+            // passing read TX through
+            self.ongoing.borrow_mut().pop(tx.version);
+            return Ok(());
+        }
+
+        if tx.db.tx_buf.as_ref().unwrap().borrow().write_map.len() == 0 {
+            // write TX without any writes
+            self.ongoing.borrow_mut().pop(tx.version);
+            return Ok(());
+        }
+
+        if self.check_conflic(&tx) {
+            return Err(TXError::CommitError("Write conflict detected".to_string()).into());
+        }
         self.commit_start(tx)
     }
-}
-
-fn check_conflict(a: &Touched, b: &Touched) -> bool {
-    todo!()
 }
 
 impl DiskPager {
@@ -91,10 +102,16 @@ impl DiskPager {
 
             // discard buffer
             self.buf_shared.write().clear();
+            self.buf_fl.write().erase();
+
             self.failed.set(true);
 
             return Err(e);
         }
+
+        self.ongoing.borrow_mut().pop(tx.version);
+        self.add_history(tx);
+
         Ok(())
     }
 
@@ -121,6 +138,9 @@ impl DiskPager {
         let tx_buf = tx.db.tx_buf.as_ref().unwrap().borrow();
         let nwrites = tx_buf.write_map.len();
         let npages = self.npages.get();
+
+        assert!(npages != 0);
+        assert!(nwrites != 0);
 
         // extend the mmap if needed
         let new_size = (npages as usize + nwrites) * PAGE_SIZE; // amount of pages in bytes
@@ -149,11 +169,13 @@ impl DiskPager {
 
             let offset = pair.0.get() * PAGE_SIZE as u64;
             let io_slice = rustix::io::IoSlice::new(&pair.1[..PAGE_SIZE]);
+
             bytes_written +=
                 rustix::io::pwrite(&self.database, &io_slice, offset).map_err(|e| {
                     error!(?e, "page writing error!");
                     PagerError::WriteFileError(e)
                 })?;
+
             count += 1;
         }
 
@@ -175,11 +197,13 @@ impl DiskPager {
 
             let offset = pair.0.get() * PAGE_SIZE as u64;
             let io_slice = rustix::io::IoSlice::new(&pair.1[..PAGE_SIZE]);
+
             bytes_written +=
                 rustix::io::pwrite(&self.database, &io_slice, offset).map_err(|e| {
                     error!(?e, "page writing error!");
                     PagerError::WriteFileError(e)
                 })?;
+
             count += 1;
         }
 
@@ -190,19 +214,42 @@ impl DiskPager {
             );
         };
 
-        // flip over root and version
+        // flip over pager
         self.tree.set(tx.tree.get_root());
-        self.version.replace(tx.version);
+        self.version.replace(tx.version + 1);
         self.freelist.borrow_mut().set_cur_ver(tx.version);
         self.ongoing.borrow_mut().pop(tx.version);
-
-        // adjust buffer
-
         self.npages
             .set(npages + fl_buf.nappend + tx_buf.nappend as u64);
+
+        // adjust buffer
         fl_buf.nappend = 0;
         fl_buf.clear();
 
         Ok(())
+    }
+
+    fn add_history(&self, tx: TX) {
+        self.history
+            .borrow_mut()
+            .history
+            .insert(tx.version, tx.key_range.recorded);
+    }
+
+    fn check_conflic(&self, tx: &TX) -> bool {
+        if *self.version.borrow() == tx.version {
+            // no new write was published in the meantime
+            return false;
+        }
+
+        // check the history
+        let borrow = self.history.borrow();
+        let hist = borrow.history.get(&tx.version);
+
+        if let Some(touched) = hist {
+            Touched::conflict(&tx.key_range.recorded[..], &touched[..])
+        } else {
+            false
+        }
     }
 }
