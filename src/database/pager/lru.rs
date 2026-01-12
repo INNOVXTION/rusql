@@ -1,4 +1,4 @@
-use std::{cell::RefCell, collections::HashMap, fmt::Display, ptr::null_mut, rc::Rc};
+use std::{collections::HashMap, fmt::Display, ptr::null_mut, sync::Arc};
 
 use crate::database::types::Pointer;
 
@@ -107,7 +107,7 @@ where
     }
 }
 
-pub fn debug_print(lru: &LRU<Pointer, Rc<crate::database::types::Node>>) {
+pub fn debug_print(lru: &LRU<Pointer, Arc<crate::database::types::Node>>) {
     #[cfg(test)]
     {
         if let Ok("debug") = std::env::var("RUSQL_LOG_PAGER").as_deref() {
@@ -257,6 +257,19 @@ where
             res
         }
     }
+}
+
+unsafe impl<K, V> Send for LRU<K, V>
+where
+    K: Eq + std::hash::Hash + Copy + Send + Sync,
+    V: Send + Sync,
+{
+}
+unsafe impl<K, V> Sync for LRU<K, V>
+where
+    K: Eq + std::hash::Hash + Copy + Send + Sync,
+    V: Send + Sync,
+{
 }
 
 #[cfg(test)]

@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::sync::Arc;
 
 use tracing::{debug, error, info, instrument};
 
@@ -21,7 +21,7 @@ use crate::database::{
 
 /// Transaction struct, on a per thread basis
 pub struct TX {
-    pub db: Rc<TXDB>,      // resources
+    pub db: Arc<TXDB>,     // resources
     pub tree: BTree<TXDB>, // snapshot
 
     pub version: u64,
@@ -61,7 +61,7 @@ impl TX {
 impl TX {
     /// wrapper function for read_table()
     #[instrument(name = "get table", skip_all)]
-    fn get_table(&mut self, name: &str) -> Option<Rc<Table>> {
+    fn get_table(&mut self, name: &str) -> Option<Arc<Table>> {
         info!(name, "getting table");
         self.db.db_link.read_table(name, &self.tree)
     }
@@ -1344,4 +1344,84 @@ mod pager_test {
         cleanup_file(path);
         Ok(())
     }
+}
+
+#[cfg(test)]
+mod tx_test {
+    use std::sync::Arc;
+
+    use crate::database::{
+        helper::cleanup_file,
+        pager::transaction::Transaction,
+        tables::{TypeCol, tables::TableBuilder},
+        transactions::kvdb::KVDB,
+    };
+
+    use super::*;
+    use std::thread;
+    use test_log::test;
+
+    // #[test]
+    // fn same_key_write() -> Result<()> {
+    //     let path = "test-files/records_insert_search.rdb";
+    //     cleanup_file(path);
+    //     let db = Arc::new(KVDB::new(path));
+    //     let mut tx = db.begin(&db, TXKind::Write);
+
+    //     let table = TableBuilder::new()
+    //         .id(3)
+    //         .name("mytable")
+    //         .add_col("name", TypeCol::BYTES)
+    //         .add_col("age", TypeCol::INTEGER)
+    //         .add_col("id", TypeCol::INTEGER)
+    //         .pkey(1)
+    //         .build(&mut tx)?;
+
+    //     tx.insert_table(&table)?;
+
+    //     db.commit(tx)?;
+
+    //     thread::spawn(move || {
+    //         let db = db.clone();
+    //         let mut tx = db.begin(&db, TXKind::Write);
+    //         let mut entries = vec![];
+    //         entries.push(Record::new().add("Alice").add(20).add(1));
+    //         entries.push(Record::new().add("Bob").add(15).add(2));
+    //         entries.push(Record::new().add("Charlie").add(25).add(3));
+
+    //         for entry in entries {
+    //             tx.insert_rec(entry, &table, SetFlag::UPSERT);
+    //         }
+
+    //         db.commit(tx);
+    //     });
+
+    //     let mut entries = vec![];
+    //     entries.push(Record::new().add("Alice").add(20).add(1));
+    //     entries.push(Record::new().add("Bob").add(15).add(2));
+    //     entries.push(Record::new().add("Charlie").add(25).add(3));
+
+    //     for entry in entries {
+    //         tx.insert_rec(entry, &table, SetFlag::UPSERT)?;
+    //     }
+
+    //     // let q1 = Query::with_key(&table).add("name", "Alice").encode()?;
+    //     // let q2 = Query::with_key(&table).add("name", "Bob").encode()?;
+    //     // let q3 = Query::with_key(&table).add("name", "Charlie").encode()?;
+
+    //     // let q1_res = tx.tree_get(q1).unwrap().decode();
+    //     // assert_eq!(q1_res[0], DataCell::Int(20));
+    //     // assert_eq!(q1_res[1], DataCell::Int(1));
+
+    //     // let q2_res = tx.tree_get(q2).unwrap().decode();
+    //     // assert_eq!(q2_res[0], DataCell::Int(15));
+    //     // assert_eq!(q2_res[1], DataCell::Int(2));
+
+    //     // let q3_res = tx.tree_get(q3).unwrap().decode();
+    //     // assert_eq!(q3_res[0], DataCell::Int(25));
+    //     // assert_eq!(q3_res[1], DataCell::Int(3));
+
+    //     cleanup_file(path);
+    //     Ok(())
+    // }
 }

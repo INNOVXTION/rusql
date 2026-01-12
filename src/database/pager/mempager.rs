@@ -1,7 +1,7 @@
 /*
  * in memory pager used for testing BTree implementations, does not support a freelist currently
  */
-use std::{cell::RefCell, collections::HashMap, rc::Rc};
+use std::{cell::RefCell, collections::HashMap, sync::Arc};
 
 use tracing::{debug, error};
 
@@ -25,7 +25,7 @@ pub(crate) trait KVEngine {
 
 // wrapper
 pub(crate) struct MemPager {
-    pub(crate) pager: Rc<MemoryPager>,
+    pub(crate) pager: Arc<MemoryPager>,
 }
 
 impl KVEngine for MemPager {
@@ -63,7 +63,7 @@ pub struct MemoryPager {
 #[allow(unused)]
 pub fn mempage_tree() -> MemPager {
     MemPager {
-        pager: Rc::new_cyclic(|w| MemoryPager {
+        pager: Arc::new_cyclic(|w| MemoryPager {
             freelist: RefCell::new(Vec::from_iter((1..=100).rev())),
             pages: RefCell::new(HashMap::<Pointer, Node>::new()),
             tree: Box::new(RefCell::new(BTree::<MemoryPager>::new(w.clone()))),
@@ -89,8 +89,8 @@ impl MemoryPager {
 }
 
 impl Pager for MemoryPager {
-    fn page_read(&self, ptr: Pointer, flag: super::diskpager::NodeFlag) -> Rc<Node> {
-        Rc::new(
+    fn page_read(&self, ptr: Pointer, flag: super::diskpager::NodeFlag) -> Arc<Node> {
+        Arc::new(
             self.pages
                 .borrow_mut()
                 .get(&ptr)
@@ -126,36 +126,36 @@ impl Pager for MemoryPager {
     }
 }
 
-impl GCCallbacks for MemoryPager {
-    fn page_read(&self, ptr: Pointer, flag: super::diskpager::NodeFlag) -> Rc<RefCell<Node>> {
-        Rc::new(RefCell::new(
-            self.pages
-                .borrow_mut()
-                .get(&ptr)
-                .unwrap_or_else(|| {
-                    error!("couldnt retrieve page at ptr {}", ptr);
-                    panic!("page decode error")
-                })
-                .clone(),
-        ))
-    }
-    // not needed for in memory pager
-    fn encode(&self, node: Node) -> Pointer {
-        if !node.fits_page() {
-            panic!("trying to encode node exceeding page size");
-        }
-        let free_page = self
-            .freelist
-            .borrow_mut()
-            .pop()
-            .expect("no free page available");
-        debug!("encoding node at ptr {}", free_page);
-        self.pages.borrow_mut().insert(free_page.into(), node);
-        Pointer(free_page)
-    }
+// impl GCCallbacks for MemoryPager {
+//     fn page_read(&self, ptr: Pointer, flag: super::diskpager::NodeFlag) -> Arc<Node> {
+//         Arc::new(
+//             self.pages
+//                 .borrow_mut()
+//                 .get(&ptr)
+//                 .unwrap_or_else(|| {
+//                     error!("couldnt retrieve page at ptr {}", ptr);
+//                     panic!("page decode error")
+//                 })
+//                 .clone(),
+//         )
+//     }
+//     // not needed for in memory pager
+//     fn encode(&self, node: Node) -> Pointer {
+//         if !node.fits_page() {
+//             panic!("trying to encode node exceeding page size");
+//         }
+//         let free_page = self
+//             .freelist
+//             .borrow_mut()
+//             .pop()
+//             .expect("no free page available");
+//         debug!("encoding node at ptr {}", free_page);
+//         self.pages.borrow_mut().insert(free_page.into(), node);
+//         Pointer(free_page)
+//     }
 
-    // not needed for in memory pager
-    fn update(&self, ptr: Pointer) -> Rc<RefCell<Node>> {
-        unreachable!()
-    }
-}
+//     // not needed for in memory pager
+//     fn update(&self, ptr: Pointer) -> Arc<RefCell<Node>> {
+//         unreachable!()
+//     }
+// }

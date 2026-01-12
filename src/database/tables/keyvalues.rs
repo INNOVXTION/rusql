@@ -1,7 +1,7 @@
 use std::cell;
 use std::cmp::min;
 use std::path::Prefix;
-use std::rc::Rc;
+use std::sync::Arc;
 use std::{cmp::Ordering, fmt::Write};
 
 use tracing::debug;
@@ -19,12 +19,12 @@ use crate::database::types::DataCell;
 
 /// owned object of encoded data used for tree operations
 #[derive(Debug)]
-pub(crate) struct Key(Rc<[u8]>);
+pub(crate) struct Key(Arc<[u8]>);
 
 impl Key {
     /// sentinal empty key with value "0 0" 6 Bytes
     pub fn new_empty() -> Self {
-        Key(Rc::from([0u8; 6]))
+        Key(Arc::from([0u8; 6]))
     }
 
     /// checks if key is the empty key, for len of the actual key use the len() method
@@ -55,7 +55,7 @@ impl Key {
 
     /// its up to the caller to ensure the data is properly encoded
     pub fn from_encoded_slice(data: &[u8]) -> Self {
-        Key(Rc::from(data))
+        Key(Arc::from(data))
     }
 
     pub fn as_slice(&self) -> &[u8] {
@@ -73,7 +73,7 @@ impl Key {
         buf.extend_from_slice(&0u16.to_le_bytes());
         buf.extend_from_slice(&data.encode());
 
-        Key(Rc::from(buf))
+        Key(Arc::from(buf))
     }
 
     pub fn len(&self) -> usize {
@@ -87,12 +87,12 @@ impl Key {
 
     /// deep copy with a new allocation
     pub fn clone_deep(&self) -> Self {
-        Key(Rc::from(&self.0[..]))
+        Key(Arc::from(&self.0[..]))
     }
 }
 
 impl Clone for Key {
-    /// copies the underlying RC
+    /// copies the underlying Arc
     fn clone(&self) -> Self {
         Key(self.0.clone())
     }
@@ -265,7 +265,7 @@ impl<'a> Iterator for KeyIterRef<'a> {
 }
 
 #[derive(Debug)]
-pub(crate) struct Value(Rc<[u8]>);
+pub(crate) struct Value(Arc<[u8]>);
 
 impl Value {
     pub fn decode(self) -> Vec<DataCell> {
@@ -274,7 +274,7 @@ impl Value {
 
     /// assumes proper encoding
     pub fn from_encoded_slice(data: &[u8]) -> Self {
-        Value(Rc::from(data))
+        Value(Arc::from(data))
     }
 
     pub fn iter(&self) -> ValueIterRef<'_> {
@@ -539,7 +539,6 @@ mod test {
     use crate::database::pager::transaction::Transaction;
     use crate::database::transactions::{kvdb::KVDB, tx::TXKind};
     use crate::database::{pager::mempage_tree, tables::Record};
-    use std::sync::Arc;
 
     use super::super::tables::TableBuilder;
     use super::*;

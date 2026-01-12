@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::{Rc, Weak};
-use std::sync::Arc;
+use std::sync::atomic::Ordering::Relaxed as R;
+use std::sync::{Arc, Weak};
 
 use parking_lot::RwLock;
 use rustix::fs::fsync;
@@ -11,6 +11,7 @@ use super::metapage::*;
 use crate::database::BTree;
 use crate::database::btree::Tree;
 use crate::database::errors::{Error, PagerError, Result, TXError};
+use crate::database::pager::freelist::GC;
 use crate::database::pager::metapage::*;
 use crate::database::pager::mmap::mmap_extend;
 use crate::database::pager::{DiskPager, Pager};
@@ -37,15 +38,16 @@ impl Transaction for DiskPager {
     fn begin(&self, db: &Arc<KVDB>, kind: TXKind) -> TX {
         let _guard = self.lock.lock();
 
-        let version = *self.version.borrow();
-        let txdb = Rc::new(TXDB::new(db, kind));
-        let weak = Rc::downgrade(&txdb);
-        self.ongoing.borrow_mut().push(version);
+        let version = self.version.load(R);
+        let txdb = Arc::new(TXDB::new(db, kind));
+        let weak = Arc::downgrade(&txdb);
+
+        self.ongoing.write().push(version);
 
         TX {
             db: txdb,
             tree: BTree {
-                root_ptr: self.tree.get(),
+                root_ptr: *self.tree.read(),
                 pager: weak,
             },
             version,
@@ -59,23 +61,35 @@ impl Transaction for DiskPager {
 
     fn commit(&self, tx: TX) -> Result<()> {
         let _guard = self.lock.lock();
+        let mut ongoing = self.ongoing.write();
 
+        // is the TX read only?
         if tx.kind == TXKind::Read {
-            // passing read TX through
-            self.ongoing.borrow_mut().pop(tx.version);
+            ongoing.pop(tx.version);
             return Ok(());
         }
 
+        // did the TX write anything?
         if tx.db.tx_buf.as_ref().unwrap().borrow().write_map.len() == 0 {
-            // write TX without any writes
-            self.ongoing.borrow_mut().pop(tx.version);
+            ongoing.pop(tx.version);
             return Ok(());
         }
 
-        if self.check_conflic(&tx) {
-            return Err(TXError::CommitError("Write conflict detected".to_string()).into());
+        // was there a new version published in the meantime?
+        if self.version.load(R) == tx.version {
+            drop(ongoing);
+            return self.commit_start(tx);
         }
-        self.commit_start(tx)
+
+        // do the writes of the conflicting TX collide with our writes?
+        if self.check_conflict(&tx) {
+            ongoing.pop(tx.version);
+            Err(TXError::CommitError("Write conflict detected".to_string()).into())
+        } else {
+            // TODO: retry on new version
+            drop(ongoing);
+            self.commit_start(tx)
+        }
     }
 }
 
@@ -85,12 +99,12 @@ impl DiskPager {
         let recov_page = &tx.rollback;
 
         // making sure the meta page is a known good state after a potential write error
-        if self.failed.get() {
+        if self.failed.load(R) {
             debug!("failed update detected, restoring meta page...");
 
             metapage_write(self, recov_page).expect("meta page recovery write error");
             fsync(&self.database).expect("fsync metapage for restoration failed");
-            self.failed.set(false);
+            self.failed.store(false, R);
         };
 
         // in case the file writing fails, we revert back to the old meta page
@@ -104,13 +118,16 @@ impl DiskPager {
             self.buf_shared.write().clear();
             self.buf_fl.write().erase();
 
-            self.failed.set(true);
+            self.failed.store(true, R);
 
             return Err(e);
         }
 
-        self.ongoing.borrow_mut().pop(tx.version);
-        self.add_history(tx);
+        self.ongoing.write().pop(tx.version);
+        self.history
+            .write()
+            .history
+            .insert(tx.version, tx.key_range.recorded);
 
         Ok(())
     }
@@ -118,7 +135,7 @@ impl DiskPager {
     /// write sequence
     fn commit_prog(&self, tx: &TX) -> Result<()> {
         // updating free list for next update
-        self.freelist.borrow_mut().set_max_seq();
+        self.freelist.write().set_max_seq();
 
         // flush buffer to disk
         self.commit_write(&tx)?;
@@ -135,9 +152,10 @@ impl DiskPager {
     fn commit_write(&self, tx: &TX) -> Result<()> {
         debug!("writing page...");
 
+        let mut fl_guard = self.freelist.write();
         let tx_buf = tx.db.tx_buf.as_ref().unwrap().borrow();
         let nwrites = tx_buf.write_map.len();
-        let npages = self.npages.get();
+        let npages = self.npages.load(R);
 
         assert!(npages != 0);
         assert!(nwrites != 0);
@@ -181,7 +199,7 @@ impl DiskPager {
 
         // adding dealloced pages back to the freelist
         for ptr in tx_buf.dealloc_q.iter() {
-            self.freelist.borrow_mut().append(*ptr, tx.version)?;
+            fl_guard.append(*ptr, tx.version)?;
         }
 
         let mut fl_buf = self.buf_fl.write();
@@ -215,12 +233,12 @@ impl DiskPager {
         };
 
         // flip over pager
-        self.tree.set(tx.tree.get_root());
-        self.version.replace(tx.version + 1);
-        self.freelist.borrow_mut().set_cur_ver(tx.version);
-        self.ongoing.borrow_mut().pop(tx.version);
+        *self.tree.write() = tx.tree.get_root();
+        self.version.store(tx.version + 1, R);
+        fl_guard.set_cur_ver(tx.version);
+        self.ongoing.write().pop(tx.version);
         self.npages
-            .set(npages + fl_buf.nappend + tx_buf.nappend as u64);
+            .store(npages + fl_buf.nappend + tx_buf.nappend as u64, R);
 
         // adjust buffer
         fl_buf.nappend = 0;
@@ -229,21 +247,10 @@ impl DiskPager {
         Ok(())
     }
 
-    fn add_history(&self, tx: TX) {
-        self.history
-            .borrow_mut()
-            .history
-            .insert(tx.version, tx.key_range.recorded);
-    }
-
-    fn check_conflic(&self, tx: &TX) -> bool {
-        if *self.version.borrow() == tx.version {
-            // no new write was published in the meantime
-            return false;
-        }
-
+    /// checks if a TX write conflicts with history write
+    fn check_conflict(&self, tx: &TX) -> bool {
         // check the history
-        let borrow = self.history.borrow();
+        let borrow = self.history.read();
         let hist = borrow.history.get(&tx.version);
 
         if let Some(touched) = hist {

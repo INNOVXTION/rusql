@@ -2,7 +2,7 @@
  * helper functions for encoding/decoding of strings and integer
  */
 
-use std::rc::Rc;
+use std::sync::Arc;
 
 use tracing::debug;
 
@@ -26,7 +26,7 @@ pub(crate) const TID_LEN: usize = std::mem::size_of::<u32>();
 pub(crate) const PREFIX_LEN: usize = std::mem::size_of::<u16>();
 
 pub(crate) trait Codec {
-    fn encode(&self) -> Rc<[u8]>;
+    fn encode(&self) -> Arc<[u8]>;
     fn decode(data: &[u8]) -> Self;
 }
 
@@ -34,13 +34,13 @@ impl Codec for String {
     /// output layout:
     ///
     /// [1B u8] [4B u32] [nB UTF8]
-    fn encode(&self) -> Rc<[u8]> {
+    fn encode(&self) -> Arc<[u8]> {
         let len = self.len();
-        let buf = Rc::<[u8]>::new_zeroed_slice(TYPE_LEN + len + STR_PRE_LEN);
+        let buf = Arc::<[u8]>::new_zeroed_slice(TYPE_LEN + len + STR_PRE_LEN);
 
         // SAFETY: array of u8 set to 0 qualifies as initialized
         let mut buf = unsafe { buf.assume_init() };
-        let buf_ref = Rc::get_mut(&mut buf).unwrap();
+        let buf_ref = Arc::get_mut(&mut buf).unwrap();
 
         buf_ref[0] = TypeCol::BYTES as u8;
         buf_ref[TYPE_LEN..TYPE_LEN + STR_PRE_LEN].copy_from_slice(&(len as u32).to_le_bytes());
@@ -75,13 +75,13 @@ impl Codec for i64 {
     /// output layout:
     ///
     /// (1B Type)(8B i64 le Int)
-    fn encode(&self) -> Rc<[u8]> {
+    fn encode(&self) -> Arc<[u8]> {
         let mut buf = [0u8; TYPE_LEN + INT_LEN];
 
         buf[0] = TypeCol::INTEGER as u8;
         buf[TYPE_LEN..].copy_from_slice(&self.to_le_bytes());
 
-        let out = Rc::new(buf);
+        let out = Arc::new(buf);
         debug_assert_eq!(out.len(), TYPE_LEN + INT_LEN);
         out
     }

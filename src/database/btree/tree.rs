@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::fmt::Debug;
-use std::rc::Rc;
-use std::rc::Weak;
+use std::sync::Arc;
+use std::sync::Weak;
 
 use tracing::debug;
 use tracing::info;
@@ -178,10 +178,10 @@ impl<P: Pager> Tree for BTree<P> {
         Ok(())
     }
 
-    #[instrument(name = "tree search", skip_all)]
+    #[instrument(name = "tree seaArch", skip_all)]
     fn get(&self, key: Key) -> Option<Value> {
-        info!("searching: {key}",);
-        self.tree_search(self.decode(self.root_ptr?).as_tn(), key)
+        info!("seaArching: {key}",);
+        self.tree_seaArch(self.decode(self.root_ptr?).as_tn(), key)
     }
 
     fn get_root(&self) -> Option<Pointer> {
@@ -208,7 +208,7 @@ impl<P: Pager> BTree<P> {
         }
     }
     // callbacks
-    pub fn decode(&self, ptr: Pointer) -> Rc<Node> {
+    pub fn decode(&self, ptr: Pointer) -> Arc<Node> {
         let strong = self.pager.upgrade().expect("tree callback decode failed");
         strong.page_read(ptr, NodeFlag::Tree)
     }
@@ -393,7 +393,7 @@ impl<P: Pager> BTree<P> {
         }
     }
 
-    fn tree_search(&self, node: &TreeNode, key: Key) -> Option<Value> {
+    fn tree_seaArch(&self, node: &TreeNode, key: Key) -> Option<Value> {
         let idx = node.lookupidx(&key);
         let key_s = key.to_string();
 
@@ -413,7 +413,7 @@ impl<P: Pager> BTree<P> {
                 debug_print_tree(&node, idx);
 
                 let kptr = node.get_ptr(idx);
-                BTree::tree_search(self, self.decode(kptr).as_tn(), key)
+                BTree::tree_seaArch(self, self.decode(kptr).as_tn(), key)
             }
         }
     }

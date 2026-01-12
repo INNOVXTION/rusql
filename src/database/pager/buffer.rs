@@ -1,15 +1,15 @@
 use std::{
     cell::RefCell,
     collections::{BTreeMap, HashMap},
-    rc::Rc,
+    sync::Arc,
 };
 
+use parking_lot::Mutex;
 use tracing::debug;
 
 use crate::database::types::{Node, Pointer};
 
-// TODO: LRU cache
-/// Globally shared buffer, mainly used for read only operations, can also contain dirty freelist nodes
+/// Globally shared buffer, used by the freelist
 #[derive(Debug)]
 pub(crate) struct DiskBuffer {
     pub hmap: HashMap<Pointer, BufferEntry>,
@@ -18,7 +18,7 @@ pub(crate) struct DiskBuffer {
 
 #[derive(Debug)]
 pub(crate) struct BufferEntry {
-    pub node: Rc<RefCell<Node>>,
+    pub node: Node,
     pub dirty: bool, // does it need to be written? Only relevant for free list
 }
 
@@ -29,23 +29,28 @@ impl DiskBuffer {
             nappend: 0,
         }
     }
-    pub fn get(&self, ptr: Pointer) -> Option<Rc<RefCell<Node>>> {
-        self.hmap.get(&ptr).map(|n| n.node.clone())
+
+    pub fn get(&self, ptr: Pointer) -> Option<&Node> {
+        self.hmap.get(&ptr).map(|n| &n.node)
     }
 
-    pub fn get_clean(&self, ptr: Pointer) -> Option<Rc<RefCell<Node>>> {
+    pub fn get_mut(&mut self, ptr: Pointer) -> Option<&mut Node> {
+        self.hmap.get_mut(&ptr).map(|n| &mut n.node)
+    }
+
+    pub fn get_clean(&self, ptr: Pointer) -> Option<Node> {
         self.hmap
             .get(&ptr)
             .and_then(|n| if !n.dirty { None } else { Some(n.node.clone()) })
     }
 
     /// retrieves all dirty pages in the buffer
-    pub fn to_dirty_iter(&self) -> impl Iterator<Item = (Pointer, std::cell::Ref<'_, Node>)> {
+    pub fn to_dirty_iter(&self) -> impl Iterator<Item = (Pointer, &Node)> {
         self.hmap
             .iter()
             .filter_map(|e| {
                 if e.1.dirty {
-                    Some((*e.0, e.1.node.borrow()))
+                    Some((*e.0, &e.1.node))
                 } else {
                     None
                 }
@@ -66,7 +71,7 @@ impl DiskBuffer {
         self.hmap.insert(
             ptr,
             BufferEntry {
-                node: Rc::new(RefCell::new(node)),
+                node,
                 dirty: false,
                 // retired: false,
             },
@@ -78,7 +83,7 @@ impl DiskBuffer {
             .insert(
                 ptr,
                 BufferEntry {
-                    node: Rc::new(RefCell::new(node)),
+                    node,
                     dirty: true,
                     // retired: false,
                 },
@@ -97,7 +102,7 @@ impl DiskBuffer {
                 debug!(buf_len = self.hmap.len(), "current fl buffer:");
                 debug!("{:-<10}", "-");
                 for e in self.hmap.iter() {
-                    let n = e.1.node.borrow();
+                    let n = &e.1.node;
                     debug!(
                         "{:<10}, {:<10}, dirty = {:<10}",
                         e.0,

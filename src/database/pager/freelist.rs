@@ -1,10 +1,11 @@
-use std::cell::RefCell;
+use parking_lot::{Mutex, RwLockWriteGuard};
 use std::fmt::Debug;
 use std::ops::{Deref, DerefMut};
-use std::rc::{Rc, Weak};
+use std::sync::{Arc, Weak};
 
 use crate::database::codec::{NumDecode, NumEncode};
 use crate::database::pager::diskpager::{GCCallbacks, NodeFlag, Pager};
+use crate::database::pager::{DiskBuffer, DiskPager};
 use crate::database::types::{FREE_PAGE, Node, VER_SIZE};
 use crate::database::{
     btree::TreeNode,
@@ -13,8 +14,8 @@ use crate::database::{
 };
 use tracing::debug;
 
-pub(crate) struct FreeList<P: GCCallbacks> {
-    pub pager: Weak<P>,
+pub(crate) struct FreeList {
+    pub pager: Weak<DiskPager>,
 
     head_page: Option<Pointer>,
     head_seq: usize,
@@ -62,7 +63,7 @@ pub(crate) trait GC {
     fn set_cur_ver(&mut self, version: u64);
 }
 
-impl<P: GCCallbacks> GC for FreeList<P> {
+impl GC for FreeList {
     /// removes a page from the head, decrement head seq
     fn get(&mut self) -> Option<Pointer> {
         match self.pop_head() {
@@ -161,11 +162,11 @@ impl<P: GCCallbacks> GC for FreeList<P> {
                 break;
             }
 
-            list.push(node.borrow().as_fl().get_ptr(seq_to_idx(head)).0);
+            list.push(node.as_fl().get_ptr(seq_to_idx(head)).0);
             head += 1;
 
             if seq_to_idx(head) == 0 {
-                head_page = node.borrow().as_fl().get_next();
+                head_page = node.as_fl().get_next();
                 node = self.decode(head_page);
                 head = 0;
             }
@@ -207,11 +208,11 @@ impl<P: GCCallbacks> GC for FreeList<P> {
     }
 }
 
-impl<P: GCCallbacks> FreeList<P> {
+impl FreeList {
     // callbacks
 
     /// reads page, gets page, removes from buffer if available
-    fn decode(&self, ptr: Pointer) -> Rc<RefCell<Node>> {
+    fn decode(&self, ptr: Pointer) -> Arc<Node> {
         let strong = self.pager.upgrade().unwrap();
         strong.page_read(ptr, NodeFlag::Freelist)
     }
@@ -222,14 +223,14 @@ impl<P: GCCallbacks> FreeList<P> {
         strong.encode(Node::Freelist(node))
     }
 
-    /// returns ptr to node inside the allocation buffer
-    fn update(&self, ptr: Pointer) -> Rc<RefCell<Node>> {
-        let strong = self.pager.upgrade().unwrap();
-        strong.update(ptr)
-    }
+    // /// returns ptr to node inside the allocation buffer
+    // fn update(&self, ptr: Pointer) -> Rc<RefCell<Node>> {
+    //     let strong = self.pager.upgrade().unwrap();
+    //     strong.update(ptr)
+    // }
 
     /// new uninitialized
-    pub fn new(pager: Weak<P>) -> Self {
+    pub fn new(pager: Weak<DiskPager>) -> Self {
         FreeList {
             head_page: None,
             head_seq: 0,
@@ -277,34 +278,95 @@ impl<P: GCCallbacks> FreeList<P> {
     }
 
     /// gets pointer from idx
-    fn update_get_ptr(&self, node: Pointer, idx: u16) -> (Pointer, u64) {
-        let r = self.update(node);
-        let mut r_mut = r.borrow_mut();
-        let node_ptr = r_mut.as_fl_mut();
+    fn update_get_ptr(&self, ptr: Pointer, idx: u16) -> (Pointer, u64) {
+        let strong = self.pager.upgrade().unwrap();
+        let mut buf = strong.update(ptr);
+
+        // checking buffer,...
+        let entry = match buf.get(ptr) {
+            Some(n) => {
+                debug!("updating {} in buffer", ptr);
+                n
+            }
+            None => {
+                // decoding page from disk and loading it into buffer
+                debug!(%ptr, "reading free list from disk...");
+                buf.insert_dirty(ptr, strong.decode(ptr, NodeFlag::Freelist));
+                buf.get(ptr).expect("we just inserted it")
+            }
+        };
+
+        let node_ptr = entry.as_fl();
         node_ptr.get_ptr(idx)
     }
 
     /// sets ptr at idx for free list node
     fn update_set_ptr(&self, node: Pointer, ptr: Pointer, version: u64, idx: u16) {
-        let r = self.update(node);
-        let mut r_mut = r.borrow_mut();
-        let node_ptr = r_mut.as_fl_mut();
+        let strong = self.pager.upgrade().unwrap();
+        let mut buf = strong.update(ptr);
+
+        // checking buffer,...
+        let entry = match buf.get_mut(ptr) {
+            Some(n) => {
+                debug!("updating {} in buffer", ptr);
+                n
+            }
+            None => {
+                // decoding page from disk and loading it into buffer
+                debug!(%ptr, "reading free list from disk...");
+                buf.insert_dirty(ptr, strong.decode(ptr, NodeFlag::Freelist));
+                buf.get_mut(ptr).expect("we just inserted it")
+            }
+        };
+
+        let node_ptr = entry.as_fl_mut();
         node_ptr.set_ptr(idx, ptr, version);
+        buf.debug_print();
     }
 
     /// gets next ptr from free list node
-    fn update_get_next(&self, node: Pointer) -> Pointer {
-        let r = self.update(node);
-        let mut r_mut = r.borrow_mut();
-        let node_ptr = r_mut.as_fl_mut();
+    fn update_get_next(&self, ptr: Pointer) -> Pointer {
+        let strong = self.pager.upgrade().unwrap();
+        let mut buf = strong.update(ptr);
+
+        // checking buffer,...
+        let entry = match buf.get(ptr) {
+            Some(n) => {
+                debug!("updating {} in buffer", ptr);
+                n
+            }
+            None => {
+                // decoding page from disk and loading it into buffer
+                debug!(%ptr, "reading free list from disk...");
+                buf.insert_dirty(ptr, strong.decode(ptr, NodeFlag::Freelist));
+                buf.get(ptr).expect("we just inserted it")
+            }
+        };
+
+        let node_ptr = entry.as_fl();
         node_ptr.get_next()
     }
 
     /// sets next ptr for free list node
     fn update_set_next(&self, node: Pointer, ptr: Pointer) {
-        let r = self.update(node);
-        let mut r_mut = r.borrow_mut();
-        let node_ptr = r_mut.as_fl_mut();
+        let strong = self.pager.upgrade().unwrap();
+        let mut buf = strong.update(ptr);
+
+        // checking buffer,...
+        let entry = match buf.get_mut(ptr) {
+            Some(n) => {
+                debug!("updating {} in buffer", ptr);
+                n
+            }
+            None => {
+                // decoding page from disk and loading it into buffer
+                debug!(%ptr, "reading free list from disk...");
+                buf.insert_dirty(ptr, strong.decode(ptr, NodeFlag::Freelist));
+                buf.get_mut(ptr).expect("we just inserted it")
+            }
+        };
+
+        let node_ptr = entry.as_fl_mut();
         node_ptr.set_next(ptr);
     }
 
@@ -398,7 +460,7 @@ impl DerefMut for FLNode {
     }
 }
 
-impl<P: Pager + GCCallbacks> Debug for FreeList<P> {
+impl Debug for FreeList {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FreeList")
             .field("head page", &self.head_page)

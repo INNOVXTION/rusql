@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::sync::Arc;
 
 use tracing::{debug, instrument};
 
@@ -173,8 +173,8 @@ idx 1 in root, index 1 in Node 2 and index 2 in Leaf 2
 #[derive(Debug)]
 pub(crate) struct Cursor<'a, P: Pager> {
     tree: &'a BTree<P>,
-    path: Vec<Rc<Node>>, // from root to leaf
-    pos: Vec<u16>,       // indices
+    path: Vec<Arc<Node>>, // from root to leaf
+    pos: Vec<u16>,        // indices
     empty: bool,
 }
 

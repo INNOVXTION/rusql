@@ -2,9 +2,11 @@ use std::cell::{Cell, Ref, RefCell};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::os::fd::OwnedFd;
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use parking_lot::ReentrantMutex;
-use parking_lot::{Mutex, RwLock};
+use parking_lot::{Mutex, RawRwLock, RwLock, RwLockWriteGuard};
+use parking_lot::{MutexGuard, ReentrantMutex};
 use rustix::fs::{fstat, fsync, ftruncate};
 use tracing::{debug, error, info, instrument, warn};
 
@@ -55,56 +57,53 @@ impl std::fmt::Display for NodeFlag {
 pub(crate) struct DiskPager {
     path: &'static str,
     pub database: OwnedFd,
-    pub mmap: RefCell<Mmap>,
-    pub buf_shared: RwLock<LRU<Pointer, Rc<Node>>>, // shared read only buffer
-    pub npages: Cell<u64>,
-
-    pub failed: Cell<bool>,
-
-    pub tree: Cell<Option<Pointer>>, // root pointer
-
-    pub freelist: Rc<RefCell<dyn GC>>,
+    pub mmap: RwLock<Mmap>,
+    pub buf_shared: RwLock<LRU<Pointer, Arc<Node>>>, // shared read only buffer
+    pub freelist: RwLock<FreeList>,
     pub buf_fl: RwLock<DiskBuffer>, // freelist exclusive read-write buffer
 
-    pub version: RefCell<u64>,
-    pub ongoing: RefCell<OngoingTX>,
+    pub npages: AtomicU64,
+    pub failed: AtomicBool,
+    pub tree: RwLock<Option<Pointer>>, // root pointer
 
-    pub history: RefCell<TXHistory>,
-    pub rollback: RefCell<MetaPage>,
+    pub version: AtomicU64,
+    pub ongoing: RwLock<OngoingTX>,
+    pub history: RwLock<TXHistory>,
 
-    pub lock: ReentrantMutex<()>,
-    // WIP
-    // clean factor
-    // counter after deletion for cleanup
+    pub lock: ReentrantMutex<()>, // used to block new tx being created and current tx being committed
+
+                                  // WIP
+                                  // clean factor
+                                  // counter after deletion for cleanup
 }
 
 /// internal callback API
 pub(crate) trait Pager {
     // tree callbacks
-    fn page_read(&self, ptr: Pointer, flag: NodeFlag) -> Rc<Node>; //tree decode
+    fn page_read(&self, ptr: Pointer, flag: NodeFlag) -> Arc<Node>; //tree decode
     fn page_alloc(&self, node: Node, version: u64) -> Pointer; //tree encode
     fn dealloc(&self, ptr: Pointer); // tree dealloc/del
 }
 
 pub(crate) trait GCCallbacks {
     // FL callbacks
-    fn page_read(&self, ptr: Pointer, flag: NodeFlag) -> Rc<RefCell<Node>>; //tree decode
+    fn page_read(&self, ptr: Pointer, flag: NodeFlag) -> Arc<Node>; //tree decode
     fn encode(&self, node: Node) -> Pointer; // FL encode
-    fn update(&self, ptr: Pointer) -> Rc<RefCell<Node>>; // FL update
+    fn update(&self, ptr: Pointer) -> RwLockWriteGuard<'_, DiskBuffer>; // FL update
 }
 
 impl GCCallbacks for DiskPager {
     /// decodes a page, checks buffer before reading disk
     ///
     /// `BTree.get`, reads a page possibly from buffer or disk
-    fn page_read(&self, ptr: Pointer, flag: NodeFlag) -> Rc<RefCell<Node>> {
+    fn page_read(&self, ptr: Pointer, flag: NodeFlag) -> Arc<Node> {
         let buf_ref = self.buf_fl.read();
 
         // check buffer first
         debug!(node=?flag, %ptr, "page read");
         if let Some(n) = buf_ref.get(ptr) {
             debug!("page found in buffer!");
-            n.clone()
+            Arc::new(n.clone())
         } else {
             debug!("reading from disk...");
             drop(buf_ref);
@@ -112,7 +111,7 @@ impl GCCallbacks for DiskPager {
             let n = self.decode(ptr, flag);
 
             buf_ref.insert_clean(ptr, n);
-            buf_ref.get(ptr).expect("we just inserted it")
+            Arc::new(buf_ref.get(ptr).expect("we just inserted it").clone())
         }
     }
     /// adds pages to buffer to be encoded to disk later (append)
@@ -122,7 +121,7 @@ impl GCCallbacks for DiskPager {
     /// pageAppend
     fn encode(&self, node: Node) -> Pointer {
         let mut buf = self.buf_fl.write();
-        let ptr = Pointer(self.npages.get() + buf.nappend);
+        let ptr = Pointer(self.npages.load(Ordering::Relaxed) + buf.nappend);
 
         // empty db has n_pages = 1 (meta page)
         assert!(node.fits_page());
@@ -144,51 +143,55 @@ impl GCCallbacks for DiskPager {
     /// callback for free list
     ///
     /// checks buffer for allocated page and returns pointer
-    fn update(&self, ptr: Pointer) -> Rc<RefCell<Node>> {
-        let mut buf = self.buf_fl.write();
+    fn update(&self, ptr: Pointer) -> RwLockWriteGuard<'_, DiskBuffer> {
+        self.buf_fl.write()
 
-        // checking buffer,...
-        let entry = match buf.get(ptr) {
-            Some(n) => {
-                debug!("updating {} in buffer", ptr);
-                n
-            }
-            None => {
-                // decoding page from disk and loading it into buffer
-                debug!(%ptr, "reading free list from disk...");
-                buf.insert_dirty(ptr, self.decode(ptr, NodeFlag::Freelist));
-                buf.get(ptr).expect("we just inserted it")
-            }
-        };
-        buf.debug_print();
-        entry
+        // // checking buffer,...
+        // let entry = match buf.get(ptr) {
+        //     Some(n) => {
+        //         debug!("updating {} in buffer", ptr);
+        //         n
+        //     }
+        //     None => {
+        //         // decoding page from disk and loading it into buffer
+        //         debug!(%ptr, "reading free list from disk...");
+        //         buf.insert_dirty(ptr, self.decode(ptr, NodeFlag::Freelist));
+        //         buf.get(ptr).expect("we just inserted it")
+        //     }
+        // };
+        // buf.debug_print();
+        // entry
     }
+}
+
+struct FLUpdate<'a> {
+    node: &'a mut Node,
+    guard: MutexGuard<'a, DiskBuffer>,
 }
 
 impl DiskPager {
     /// initializes pager
     ///
     /// opens file, and sets up callbacks for the tree
-    pub fn open(path: &'static str) -> Result<Rc<Self>, Error> {
-        let mut pager = Rc::new_cyclic(|w| DiskPager {
+    pub fn open(path: &'static str) -> Result<Arc<Self>, Error> {
+        let mut pager = Arc::new_cyclic(|w| DiskPager {
             path,
             database: create_file_sync(path).expect("file open error"),
-            failed: Cell::new(false),
+            failed: false.into(),
             buf_shared: RwLock::new(LRU::new(LRU_BUFFER_SIZE)),
-            mmap: RefCell::new(Mmap {
+            mmap: RwLock::new(Mmap {
                 total: 0,
                 chunks: vec![],
             }),
-            npages: Cell::new(0),
-            tree: Cell::new(None),
-            freelist: Rc::new(RefCell::new(FreeList::<Self>::new(w.clone()))),
+            npages: 0.into(),
+            tree: RwLock::new(None),
+            freelist: RwLock::new(FreeList::new(w.clone())),
             buf_fl: RwLock::new(DiskBuffer::new()),
-            version: RefCell::new(1),
-            ongoing: RefCell::new(OngoingTX {
+            version: 1.into(),
+            ongoing: RwLock::new(OngoingTX {
                 map: BTreeMap::new(),
             }),
-            rollback: RefCell::new(MetaPage::new()),
-            history: RefCell::new(TXHistory {
+            history: RwLock::new(TXHistory {
                 history: HashMap::new(),
                 cap: 0,
             }),
@@ -210,9 +213,9 @@ impl DiskPager {
         {
             debug!(
                 "\npager initialized:\nmmap.total {}\nn_pages {}\nchunks.len {}",
-                pager.mmap.borrow().total,
-                pager.npages.get(),
-                pager.mmap.borrow().chunks.len(),
+                pager.mmap.read().total,
+                pager.npages.load(Ordering::Relaxed),
+                pager.mmap.read().chunks.len(),
             );
         }
 
@@ -222,8 +225,8 @@ impl DiskPager {
     /// decodes a page from the mmap
     ///
     /// kv.pageRead, db.pageRead -> pagereadfile
-    fn decode(&self, ptr: Pointer, node_type: NodeFlag) -> Node {
-        let mmap_ref = self.mmap.borrow();
+    pub fn decode(&self, ptr: Pointer, node_type: NodeFlag) -> Node {
+        let mmap_ref = self.mmap.read();
 
         #[cfg(test)]
         {
@@ -241,6 +244,7 @@ impl DiskPager {
             if ptr.0 < end as u64 {
                 let offset: usize = PAGE_SIZE * (ptr.0 as usize - start);
 
+                // TODO chane to Arc directly
                 let mut node = match node_type {
                     NodeFlag::Tree => Node::Tree(TreeNode::new()),
                     NodeFlag::Freelist => Node::Freelist(FLNode::new()),
@@ -259,13 +263,13 @@ impl DiskPager {
 
     /// triggers truncation logic once the freelist exceeds TRUNC_THRESHOLD entries
     pub fn cleanup_check(&self) -> Result<(), Error> {
-        let list: Vec<Pointer> =
-            self.freelist
-                .borrow()
-                .peek_ptr()
-                .ok_or(FLError::TruncateError(
-                    "could not retrieve pointer from FL".to_string(),
-                ))?;
+        let list: Vec<Pointer> = self
+            .freelist
+            .read()
+            .peek_ptr()
+            .ok_or(FLError::TruncateError(
+                "could not retrieve pointer from FL".to_string(),
+            ))?;
 
         if list.len() > TRUNC_THRESHOLD {
             self.truncate(list)
@@ -280,7 +284,7 @@ impl DiskPager {
     pub fn truncate(&self, list: Vec<Pointer>) -> Result<(), Error> {
         let _guard = self.lock.lock();
 
-        let npages = self.npages.get();
+        let npages = self.npages.load(Ordering::Relaxed);
         if npages <= 2 {
             return Err(
                 FLError::TruncateError("cant truncate from empty database".to_string()).into(),
@@ -293,7 +297,7 @@ impl DiskPager {
                     // removing items from freelist
                     let ptr = self
                         .freelist
-                        .borrow_mut()
+                        .write()
                         .get()
                         .ok_or(FLError::PopError("couldnt pop from freelist".to_string()))?;
 
@@ -309,7 +313,7 @@ impl DiskPager {
                 }
                 let new_npage = npages - count;
 
-                self.npages.set(new_npage);
+                self.npages.store(new_npage, Ordering::SeqCst);
                 metapage_write(self, &metapage_save(self))?;
                 fsync(&self.database)?;
 
@@ -322,7 +326,7 @@ impl DiskPager {
         }
     }
 
-    pub fn read(&self, ptr: Pointer, flag: NodeFlag) -> Rc<Node> {
+    pub fn read(&self, ptr: Pointer, flag: NodeFlag) -> Arc<Node> {
         debug!(node=?flag, %ptr, "page read");
         let mut buf_shr = self.buf_shared.write();
 
@@ -333,7 +337,7 @@ impl DiskPager {
         } else {
             debug!("reading from disk...");
 
-            let n = Rc::new(self.decode(ptr, flag));
+            let n = Arc::new(self.decode(ptr, flag));
 
             buf_shr.insert(ptr, n.clone());
             n
@@ -343,11 +347,11 @@ impl DiskPager {
     pub fn alloc(&self, node: &Node, version: u64, nappend: u32) -> AllocatedPage {
         assert!(node.fits_page());
 
-        let max_ver = match self.ongoing.borrow_mut().get_oldest_version() {
+        let max_ver = match self.ongoing.write().get_oldest_version() {
             Some(n) => n,
-            None => *self.version.borrow(),
+            None => self.version.load(Ordering::Relaxed),
         };
-        let mut fl_ref = self.freelist.borrow_mut();
+        let mut fl_ref = self.freelist.write();
         fl_ref.set_max_ver(max_ver);
 
         // check freelist first
@@ -366,7 +370,7 @@ impl DiskPager {
         } else {
             debug!("allocating from append");
 
-            let ptr = Pointer(self.npages.get() + nappend as u64);
+            let ptr = Pointer(self.npages.load(Ordering::Relaxed) + nappend as u64);
 
             assert_ne!(ptr.0, 0);
 

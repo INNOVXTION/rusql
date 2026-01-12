@@ -1,13 +1,17 @@
 use std::{
     ops::{Deref, DerefMut},
     str::FromStr,
+    sync::atomic::Ordering,
 };
 
 use tracing::debug;
 
 use crate::database::{
     errors::PagerError,
-    pager::{DiskPager, freelist::FLConfig},
+    pager::{
+        DiskPager,
+        freelist::{FLConfig, GC},
+    },
     types::{PTR_SIZE, Pointer},
 };
 
@@ -82,25 +86,25 @@ impl DerefMut for MetaPage {
 
 /// returns metapage object of current pager state
 pub fn metapage_save(pager: &DiskPager) -> MetaPage {
-    let flc = pager.freelist.borrow().get_config();
-    let npages = pager.npages.get();
+    let flc = pager.freelist.read().get_config();
+    let npages = pager.npages.load(Ordering::Relaxed);
     let mut data = MetaPage::new();
 
     debug!(
         sig = DB_SIG,
-        root_ptr = ?pager.tree.get(),
+        root_ptr = ?pager.tree.read(),
         npages = npages,
         fl_head_ptr = ?flc.head_page,
         fl_head_seq = flc.head_seq,
         fl_tail_ptr = ?flc.tail_page,
         fl_tail_seq = flc.tail_seq,
-        version = *pager.version.borrow(),
+        version = pager.version.load(Ordering::Relaxed),
         "saving meta page:"
     );
 
     use MpField as M;
     data.set_sig(DB_SIG);
-    data.set_ptr(M::RootPtr, pager.tree.get());
+    data.set_ptr(M::RootPtr, *pager.tree.read());
     data.set_ptr(M::Npages, Some(npages.into()));
 
     data.set_ptr(M::HeadPage, flc.head_page);
@@ -108,7 +112,10 @@ pub fn metapage_save(pager: &DiskPager) -> MetaPage {
     data.set_ptr(M::TailPage, flc.tail_page);
     data.set_ptr(M::TailSeq, Some(flc.tail_seq.into()));
 
-    data.set_ptr(M::Version, Some(Pointer::from(*pager.version.borrow())));
+    data.set_ptr(
+        M::Version,
+        Some(Pointer::from(pager.version.load(Ordering::Relaxed))),
+    );
     data
 }
 
@@ -117,14 +124,20 @@ pub fn metapage_save(pager: &DiskPager) -> MetaPage {
 /// panics when called without initialized mmap
 pub fn metapage_load(pager: &DiskPager, meta: &MetaPage) {
     debug!("loading metapage");
+    let mut t = pager.tree.write();
 
     match meta.read_ptr(MpField::RootPtr) {
-        Pointer(0) => pager.tree.set(None),
-        n => pager.tree.set(Some(n)),
+        Pointer(0) => *t = None,
+        n => *t = Some(n),
     };
 
-    *pager.version.borrow_mut() = meta.read_ptr(MpField::Version).get();
-    pager.npages.set(meta.read_ptr(MpField::Npages).get());
+    pager
+        .version
+        .store(meta.read_ptr(MpField::Version).get(), Ordering::Relaxed);
+
+    pager
+        .npages
+        .store(meta.read_ptr(MpField::Npages).get(), Ordering::Relaxed);
 
     let flc = FLConfig {
         head_page: Some(meta.read_ptr(MpField::HeadPage)),
@@ -137,7 +150,7 @@ pub fn metapage_load(pager: &DiskPager, meta: &MetaPage) {
         cur_ver: meta.read_ptr(MpField::Version).get(),
     };
 
-    pager.freelist.borrow_mut().set_config(&flc);
+    pager.freelist.write().set_config(&flc);
 }
 
 /// loads meta page from disk,
@@ -146,7 +159,7 @@ pub fn metapage_read(pager: &DiskPager, file_size: u64) {
     if file_size == 0 {
         // empty file
         debug!("root read: empty file...");
-        pager.npages.set(2); // reserved for meta page and one free list node
+        pager.npages.store(2, Ordering::Relaxed); // reserved for meta page and one free list node
         let flc = FLConfig {
             head_page: Some(Pointer::from(1u64)),
             head_seq: 0,
@@ -156,16 +169,16 @@ pub fn metapage_read(pager: &DiskPager, file_size: u64) {
             max_ver: 1,
             cur_ver: 1,
         };
-        pager.freelist.borrow_mut().set_config(&flc);
+        pager.freelist.write().set_config(&flc);
         return;
     }
     debug!("root read: loading meta page");
 
     let mut meta = MetaPage::new();
-    meta.copy_from_slice(&pager.mmap.borrow().chunks[0].to_slice()[..METAPAGE_SIZE]);
+    meta.copy_from_slice(&pager.mmap.read().chunks[0].to_slice()[..METAPAGE_SIZE]);
     metapage_load(pager, &meta);
 
-    assert!(pager.npages.get() != 0);
+    assert!(pager.npages.load(Ordering::Relaxed) != 0);
 }
 
 /// writes meta page to disk

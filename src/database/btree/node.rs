@@ -1,6 +1,6 @@
 use std::cell::RefCell;
 use std::ops::{Deref, DerefMut};
-use std::rc::Rc;
+use std::sync::Arc;
 
 use super::super::codec::*;
 use super::tree::SetFlag;
@@ -45,8 +45,8 @@ pub(crate) enum NodeType {
 }
 /// which sibling we need to merge with
 pub(crate) enum MergeDirection {
-    Left(Rc<Node>),
-    Right(Rc<Node>),
+    Left(Arc<Node>),
+    Right(Arc<Node>),
 }
 #[derive(Debug)]
 pub(crate) struct TreeNode(pub Box<[u8; NODE_SIZE]>);

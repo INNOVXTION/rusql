@@ -83,7 +83,7 @@ fn mmap_new(fd: &OwnedFd, offset: u64, length: usize) -> Result<Chunk, PagerErro
 
 /// checks for sufficient space, exponentially extends the mmap
 pub fn mmap_extend(db: &DiskPager, size: usize) -> Result<(), PagerError> {
-    let mmap_ref = db.mmap.borrow();
+    let mut mmap_ref = db.mmap.write();
 
     // do we need to extend?
     if size <= mmap_ref.total {
@@ -101,10 +101,8 @@ pub fn mmap_extend(db: &DiskPager, size: usize) -> Result<(), PagerError> {
         error!("error when extending mmap, size: {size}");
         e
     })?;
-    drop(mmap_ref);
 
     // updating values
-    let mut mmap_ref = db.mmap.borrow_mut();
     mmap_ref.total += alloc;
     mmap_ref.chunks.push(chunk);
 

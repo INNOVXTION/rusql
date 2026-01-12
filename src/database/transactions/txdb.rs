@@ -18,14 +18,14 @@ pub struct TXDB {
 }
 
 pub struct TXBuffer {
-    pub write_map: HashMap<Pointer, Rc<Node>>,
+    pub write_map: HashMap<Pointer, Arc<Node>>,
     pub dealloc_q: VecDeque<Pointer>,
     pub nappend: u32,
 }
 
 #[derive(Debug)]
 pub enum TXWrite {
-    Write(Rc<RefCell<Node>>),
+    Write(Arc<Node>),
     Retire,
 }
 
@@ -75,7 +75,7 @@ impl TXDB {
 }
 
 impl Pager for TXDB {
-    fn page_read(&self, ptr: Pointer, flag: NodeFlag) -> Rc<Node> {
+    fn page_read(&self, ptr: Pointer, flag: NodeFlag) -> Arc<Node> {
         // read own buffer first
         if let Some(b) = self.tx_buf.as_ref()
             && let Some(n) = b.borrow().write_map.get(&ptr)
@@ -91,11 +91,12 @@ impl Pager for TXDB {
 
         // check internal dealloc buffer
         if let Some(ptr) = buf.dealloc_q.pop_front() {
+            let res = buf.write_map.insert(ptr, Arc::new(node));
+
             #[cfg(test)]
             {
+                debug!(%ptr, "getting from buffer");
                 if let Ok("debug") = std::env::var("RUSQL_LOG_TX").as_deref() {
-                    debug!(%ptr, "getting from buffer");
-                    let res = buf.write_map.insert(ptr, Rc::new(node));
                     if res.is_some() {
                         debug!(%ptr, "pager overwritten in buffer");
                     }
@@ -111,7 +112,7 @@ impl Pager for TXDB {
         let page = self.db_link.pager.alloc(&node, version, buf.nappend);
 
         // store node in TX buffer
-        if let None = buf.write_map.insert(page.ptr, Rc::new(node))
+        if let None = buf.write_map.insert(page.ptr, Arc::new(node))
             && let PageOrigin::Append = page.origin
         {
             // if the page didnt exist and the new page came from an append

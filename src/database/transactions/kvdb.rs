@@ -1,25 +1,17 @@
-use parking_lot::{Mutex, MutexGuard, RawMutex, RwLock};
-use std::cell::RefCell;
+use parking_lot::Mutex;
 use std::collections::HashMap;
-use std::iter::Scan;
-use std::rc::Rc;
 use std::sync::Arc;
+use tracing::debug;
 use tracing::instrument;
-use tracing::{debug, error, info};
 
 use crate::database::BTree;
-use crate::database::btree::{SetResponse, Tree};
-use crate::database::pager::metapage::metapage_save;
+use crate::database::btree::Tree;
 use crate::database::pager::transaction::Transaction;
-use crate::database::pager::{DiskPager, MetaPage, Pager};
+use crate::database::pager::{DiskPager, Pager};
 use crate::database::transactions::tx::{TX, TXKind};
 use crate::database::{
-    btree::{Compare, ScanMode, SetFlag},
-    codec::*,
-    errors::{Error, Result, TableError},
-    pager::KVEngine,
-    tables::{keyvalues::*, records::*, tables::*},
-    types::DataCell,
+    errors::Result,
+    tables::{records::*, tables::*},
 };
 /*
  * |--------------KEY---------------|----Value-----|
@@ -28,9 +20,9 @@ use crate::database::{
 */
 
 pub(crate) struct KVDB {
-    pub pager: Rc<DiskPager>,
+    pub pager: Arc<DiskPager>,
     pub t_def: TDefTable,
-    pub t_buf: Mutex<HashMap<String, Rc<Table>>>, // read only buffer, table name as key
+    pub t_buf: Mutex<HashMap<String, Arc<Table>>>, // read only buffer, table name as key
 }
 
 // pass through functions
@@ -58,13 +50,13 @@ impl KVDB {
         }
     }
 
-    pub fn get_meta<P: Pager>(&self, tree: &BTree<P>) -> Rc<Table> {
+    pub fn get_meta<P: Pager>(&self, tree: &BTree<P>) -> Arc<Table> {
         self.read_table(META_TABLE_NAME, tree)
             .expect("this always returns the table")
     }
 
     /// gets the schema for a table name, schema is stored inside buffer
-    pub fn read_table<P: Pager>(&self, name: &str, tree: &BTree<P>) -> Option<Rc<Table>> {
+    pub fn read_table<P: Pager>(&self, name: &str, tree: &BTree<P>) -> Option<Arc<Table>> {
         let mut buf = self.t_buf.lock();
 
         // check buffer
@@ -73,7 +65,7 @@ impl KVDB {
         }
 
         if name == META_TABLE_NAME {
-            return Some(Rc::new(MetaTable::new().as_table()));
+            return Some(Arc::new(MetaTable::new().as_table()));
         }
 
         // retrieve from tree
@@ -84,7 +76,7 @@ impl KVDB {
 
         if let Some(t) = tree.get(key) {
             debug!("returning table from tree");
-            buf.insert(name.to_string(), Rc::new(Table::decode(t).ok()?));
+            buf.insert(name.to_string(), Arc::new(Table::decode(t).ok()?));
             Some(buf.get(&name.to_string())?.clone())
         } else {
             debug!("table not found");
