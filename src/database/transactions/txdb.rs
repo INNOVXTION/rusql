@@ -116,11 +116,17 @@ impl Pager for TXDB {
             && let PageOrigin::Append = page.origin
         {
             // if the page didnt exist and the new page came from an append
-            buf.nappend += 1
+            buf.nappend += 1;
         }
 
-        drop(buf);
-        self.debug_print();
+        #[cfg(test)]
+        {
+            debug!(%page.ptr, "appending from disk");
+            if let Ok("debug") = std::env::var("RUSQL_LOG_TX").as_deref() {
+                drop(buf);
+                self.debug_print();
+            }
+        };
 
         page.ptr
     }

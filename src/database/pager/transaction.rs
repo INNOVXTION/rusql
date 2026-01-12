@@ -1,4 +1,3 @@
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::atomic::Ordering::Relaxed as R;
 use std::sync::{Arc, Weak};
@@ -249,14 +248,23 @@ impl DiskPager {
 
     /// checks if a TX write conflicts with history write
     fn check_conflict(&self, tx: &TX) -> bool {
+        #[cfg(test)]
+        {
+            if let Ok("debug") = std::env::var("RUSQL_LOG_TX").as_deref() {
+                tx.key_range.print();
+            }
+        }
         // check the history
         let borrow = self.history.read();
         let hist = borrow.history.get(&tx.version);
 
-        if let Some(touched) = hist {
-            Touched::conflict(&tx.key_range.recorded[..], &touched[..])
-        } else {
-            false
+        if let Some(touched) = hist
+            && let true = Touched::conflict(&tx.key_range.recorded[..], &touched[..])
+        {
+            warn!("write conflict detected");
+            return true;
         }
+        debug!("no conflict detected");
+        false
     }
 }

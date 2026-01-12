@@ -1,3 +1,5 @@
+use tracing::debug;
+
 use crate::database::{btree::Compare, tables::Key};
 
 /// struct to record modified keys
@@ -14,6 +16,15 @@ pub struct KeyRange {
 pub enum Touched {
     Single(Key),
     Range { from: Key, to: Key },
+}
+
+impl std::fmt::Display for Touched {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Touched::Single(key) => write!(f, "Single: {key}"),
+            Touched::Range { from, to } => write!(f, "Range, from: {from} to: {to}"),
+        }
+    }
 }
 
 impl Touched {
@@ -61,6 +72,7 @@ impl KeyRange {
     }
 
     pub fn add(&mut self, key: &Key) {
+        debug!(key=%key, "adding:");
         if self.listen {
             if self.first.is_none() {
                 self.first = Some(key.clone());
@@ -87,8 +99,10 @@ impl KeyRange {
 
         // single key capture
         if self.last.is_none() && self.first.is_some() {
-            self.recorded
-                .push(Touched::Single(self.first.take().unwrap().clone()));
+            let key = Touched::Single(self.first.take().unwrap().clone());
+            debug!(key=%key, "captured:");
+
+            self.recorded.push(key);
             self.listen = false;
             return;
         }
@@ -103,6 +117,7 @@ impl KeyRange {
             std::cmp::Ordering::Equal => Touched::Single(lo),
         };
 
+        debug!(key=%range, "captured:");
         self.recorded.push(range);
         self.listen = false;
     }
@@ -123,8 +138,10 @@ impl KeyRange {
 
         // single key capture
         if self.last.is_none() && self.first.is_some() {
-            self.recorded
-                .push(Touched::Single(self.first.take().unwrap().clone()));
+            let key = Touched::Single(self.first.take().unwrap().clone());
+            debug!(key=%key, "captured:");
+
+            self.recorded.push(key);
             self.first = None;
             self.last = None;
             return;
@@ -139,7 +156,14 @@ impl KeyRange {
             std::cmp::Ordering::Greater => Touched::Range { from: hi, to: lo },
             std::cmp::Ordering::Equal => Touched::Single(lo),
         };
-
+        debug!(key=%range, "captured:");
         self.recorded.push(range);
+    }
+
+    pub fn print(&self) {
+        debug!(len = self.recorded.len(), "recorded keys:");
+        for e in self.recorded.iter() {
+            debug!(%e);
+        }
     }
 }

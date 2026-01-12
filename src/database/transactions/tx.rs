@@ -243,15 +243,16 @@ impl TX {
         if res.is_ok() {
             updated += 1;
         }
+
+        if iter.peek().is_none() {
+            // there are no secondary keys, we are done
+            self.key_range.capture_and_stop();
+            return Ok(());
+        }
+
         match res {
             // update found (UPSERT or UPDATE)
             Ok(res) if res.updated => {
-                if iter.peek().is_none() {
-                    // there are no secondary keys, we are done
-                    self.key_range.capture_and_stop();
-                    return Ok(());
-                }
-
                 old_pk = res.old.expect("update successful");
                 updated += 1;
 
@@ -1358,70 +1359,81 @@ mod tx_test {
     };
 
     use super::*;
+    use parking_lot::Mutex;
     use std::thread;
     use test_log::test;
 
-    // #[test]
-    // fn same_key_write() -> Result<()> {
-    //     let path = "test-files/records_insert_search.rdb";
-    //     cleanup_file(path);
-    //     let db = Arc::new(KVDB::new(path));
-    //     let mut tx = db.begin(&db, TXKind::Write);
+    #[test]
+    fn same_key_write() -> Result<()> {
+        let path = "test-files/records_insert_search.rdb";
+        cleanup_file(path);
+        let db = Arc::new(KVDB::new(path));
+        let mut tx = db.begin(&db, TXKind::Write);
 
-    //     let table = TableBuilder::new()
-    //         .id(3)
-    //         .name("mytable")
-    //         .add_col("name", TypeCol::BYTES)
-    //         .add_col("age", TypeCol::INTEGER)
-    //         .add_col("id", TypeCol::INTEGER)
-    //         .pkey(1)
-    //         .build(&mut tx)?;
+        let table = TableBuilder::new()
+            .id(3)
+            .name("mytable")
+            .add_col("name", TypeCol::BYTES)
+            .add_col("age", TypeCol::INTEGER)
+            .add_col("id", TypeCol::INTEGER)
+            .pkey(1)
+            .build(&mut tx)?;
 
-    //     tx.insert_table(&table)?;
+        tx.insert_table(&table)?;
 
-    //     db.commit(tx)?;
+        db.commit(tx)?;
 
-    //     thread::spawn(move || {
-    //         let db = db.clone();
-    //         let mut tx = db.begin(&db, TXKind::Write);
-    //         let mut entries = vec![];
-    //         entries.push(Record::new().add("Alice").add(20).add(1));
-    //         entries.push(Record::new().add("Bob").add(15).add(2));
-    //         entries.push(Record::new().add("Charlie").add(25).add(3));
+        let res = Mutex::new(vec![]);
 
-    //         for entry in entries {
-    //             tx.insert_rec(entry, &table, SetFlag::UPSERT);
-    //         }
+        thread::scope(|s| {
+            for i in 0..3 {
+                s.spawn(|| {
+                    let db = db.clone();
 
-    //         db.commit(tx);
-    //     });
+                    let mut tx = db.begin(&db, TXKind::Write);
+                    let mut entries = vec![];
 
-    //     let mut entries = vec![];
-    //     entries.push(Record::new().add("Alice").add(20).add(1));
-    //     entries.push(Record::new().add("Bob").add(15).add(2));
-    //     entries.push(Record::new().add("Charlie").add(25).add(3));
+                    entries.push(Record::new().add("Alice").add(20).add(1));
+                    entries.push(Record::new().add("Bob").add(15).add(2));
+                    entries.push(Record::new().add("Charlie").add(25).add(3));
 
-    //     for entry in entries {
-    //         tx.insert_rec(entry, &table, SetFlag::UPSERT)?;
-    //     }
+                    for entry in entries {
+                        let _ = tx.insert_rec(entry, &table, SetFlag::UPSERT);
+                    }
 
-    //     // let q1 = Query::with_key(&table).add("name", "Alice").encode()?;
-    //     // let q2 = Query::with_key(&table).add("name", "Bob").encode()?;
-    //     // let q3 = Query::with_key(&table).add("name", "Charlie").encode()?;
+                    res.lock().push(db.commit(tx));
+                });
+            }
+        });
 
-    //     // let q1_res = tx.tree_get(q1).unwrap().decode();
-    //     // assert_eq!(q1_res[0], DataCell::Int(20));
-    //     // assert_eq!(q1_res[1], DataCell::Int(1));
+        assert!(res.lock().iter().any(|r| r.is_err()));
 
-    //     // let q2_res = tx.tree_get(q2).unwrap().decode();
-    //     // assert_eq!(q2_res[0], DataCell::Int(15));
-    //     // assert_eq!(q2_res[1], DataCell::Int(2));
+        // let mut entries = vec![];
+        // entries.push(Record::new().add("Alice").add(20).add(1));
+        // entries.push(Record::new().add("Bob").add(15).add(2));
+        // entries.push(Record::new().add("Charlie").add(25).add(3));
 
-    //     // let q3_res = tx.tree_get(q3).unwrap().decode();
-    //     // assert_eq!(q3_res[0], DataCell::Int(25));
-    //     // assert_eq!(q3_res[1], DataCell::Int(3));
+        // for entry in entries {
+        //     tx.insert_rec(entry, &table, SetFlag::UPSERT)?;
+        // }
 
-    //     cleanup_file(path);
-    //     Ok(())
-    // }
+        // let q1 = Query::with_key(&table).add("name", "Alice").encode()?;
+        // let q2 = Query::with_key(&table).add("name", "Bob").encode()?;
+        // let q3 = Query::with_key(&table).add("name", "Charlie").encode()?;
+
+        // let q1_res = tx.tree_get(q1).unwrap().decode();
+        // assert_eq!(q1_res[0], DataCell::Int(20));
+        // assert_eq!(q1_res[1], DataCell::Int(1));
+
+        // let q2_res = tx.tree_get(q2).unwrap().decode();
+        // assert_eq!(q2_res[0], DataCell::Int(15));
+        // assert_eq!(q2_res[1], DataCell::Int(2));
+
+        // let q3_res = tx.tree_get(q3).unwrap().decode();
+        // assert_eq!(q3_res[0], DataCell::Int(25));
+        // assert_eq!(q3_res[1], DataCell::Int(3));
+
+        cleanup_file(path);
+        Ok(())
+    }
 }
