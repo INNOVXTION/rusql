@@ -78,8 +78,14 @@ impl Record {
                     // constructing Value
                     val_cells = (n_cols..self.data.len()).map(|i| &self.data[i]).collect();
 
+                    #[cfg(test)]
+                    {
+                        if let Ok("debug") = std::env::var("RUSQL_LOG_RECORDS").as_deref() {
+                            debug!(?pkey_cells, ?val_cells);
+                        }
+                    }
+
                     // chaining together
-                    debug!(?pkey_cells, ?val_cells);
                     let data_iter = pkey_cells
                         .iter()
                         .map(|c| *c)
@@ -108,8 +114,14 @@ impl Record {
                         })
                         .collect();
 
+                    #[cfg(test)]
+                    {
+                        if let Ok("debug") = std::env::var("RUSQL_LOG_RECORDS").as_deref() {
+                            debug!(?key_cells, ?val_cells);
+                        }
+                    }
+
                     // chaining together
-                    debug!(?key_cells, ?val_cells);
                     let data_iter = key_cells.iter().map(|c| *c).chain(
                         pkey_cells
                             .iter()

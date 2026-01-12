@@ -1349,7 +1349,7 @@ mod pager_test {
 
 #[cfg(test)]
 mod tx_test {
-    use std::sync::Arc;
+    use std::sync::{Arc, Barrier};
 
     use crate::database::{
         helper::cleanup_file,
@@ -1362,6 +1362,7 @@ mod tx_test {
     use parking_lot::Mutex;
     use std::thread;
     use test_log::test;
+    use tracing::{Level, span};
 
     #[test]
     fn same_key_write() -> Result<()> {
@@ -1384,11 +1385,20 @@ mod tx_test {
         db.commit(tx)?;
 
         let res = Mutex::new(vec![]);
+        let n = 1000;
+        let barrier = Arc::new(Barrier::new(n));
 
         thread::scope(|s| {
-            for i in 0..3 {
-                s.spawn(|| {
+            let mut handles = vec![];
+            for i in 0..n {
+                handles.push(s.spawn(|| {
                     let db = db.clone();
+
+                    let id = thread::current().id();
+                    let span = span!(Level::DEBUG, "thread ", ?id);
+                    let _guard = span.enter();
+
+                    barrier.wait();
 
                     let mut tx = db.begin(&db, TXKind::Write);
                     let mut entries = vec![];
@@ -1400,38 +1410,25 @@ mod tx_test {
                     for entry in entries {
                         let _ = tx.insert_rec(entry, &table, SetFlag::UPSERT);
                     }
+                    let tx_version = tx.version;
+                    let r = db.commit(tx);
+                    res.lock().push(r);
+                }));
+            }
 
-                    res.lock().push(db.commit(tx));
-                });
+            for h in handles {
+                h.join().expect("thread panicked");
             }
         });
 
+        // should provoke write conflicts
         assert!(res.lock().iter().any(|r| r.is_err()));
+        // assert_eq!(res.lock().iter().filter(|r| r.is_ok()).count(), 1);
 
-        // let mut entries = vec![];
-        // entries.push(Record::new().add("Alice").add(20).add(1));
-        // entries.push(Record::new().add("Bob").add(15).add(2));
-        // entries.push(Record::new().add("Charlie").add(25).add(3));
-
-        // for entry in entries {
-        //     tx.insert_rec(entry, &table, SetFlag::UPSERT)?;
-        // }
-
-        // let q1 = Query::with_key(&table).add("name", "Alice").encode()?;
-        // let q2 = Query::with_key(&table).add("name", "Bob").encode()?;
-        // let q3 = Query::with_key(&table).add("name", "Charlie").encode()?;
-
-        // let q1_res = tx.tree_get(q1).unwrap().decode();
-        // assert_eq!(q1_res[0], DataCell::Int(20));
-        // assert_eq!(q1_res[1], DataCell::Int(1));
-
-        // let q2_res = tx.tree_get(q2).unwrap().decode();
-        // assert_eq!(q2_res[0], DataCell::Int(15));
-        // assert_eq!(q2_res[1], DataCell::Int(2));
-
-        // let q3_res = tx.tree_get(q3).unwrap().decode();
-        // assert_eq!(q3_res[0], DataCell::Int(25));
-        // assert_eq!(q3_res[1], DataCell::Int(3));
+        println!(
+            "faulty TX: {}",
+            res.lock().iter().filter(|r| r.is_err()).count()
+        );
 
         cleanup_file(path);
         Ok(())

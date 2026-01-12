@@ -163,7 +163,7 @@ impl KeyRange {
     pub fn print(&self) {
         debug!(len = self.recorded.len(), "recorded keys:");
         for e in self.recorded.iter() {
-            debug!(%e);
+            debug!(touched=%e);
         }
     }
 }

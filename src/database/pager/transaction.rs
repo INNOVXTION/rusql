@@ -35,18 +35,21 @@ pub trait Transaction {
 
 impl Transaction for DiskPager {
     fn begin(&self, db: &Arc<KVDB>, kind: TXKind) -> TX {
-        let _guard = self.lock.lock();
+        // let _guard = self.lock.lock();
 
         let version = self.version.load(R);
         let txdb = Arc::new(TXDB::new(db, kind));
         let weak = Arc::downgrade(&txdb);
+        let root_ptr = *self.tree.read();
 
         self.ongoing.write().push(version);
+
+        info!("new TX for version: {version}");
 
         TX {
             db: txdb,
             tree: BTree {
-                root_ptr: *self.tree.read(),
+                root_ptr,
                 pager: weak,
             },
             version,
@@ -59,34 +62,33 @@ impl Transaction for DiskPager {
     fn abort(&self, tx: TX) {}
 
     fn commit(&self, tx: TX) -> Result<()> {
-        let _guard = self.lock.lock();
-        let mut ongoing = self.ongoing.write();
-
+        debug!(tx.version, "committing: ");
         // is the TX read only?
         if tx.kind == TXKind::Read {
-            ongoing.pop(tx.version);
+            self.ongoing.write().pop(tx.version);
             return Ok(());
         }
 
         // did the TX write anything?
         if tx.db.tx_buf.as_ref().unwrap().borrow().write_map.len() == 0 {
-            ongoing.pop(tx.version);
+            self.ongoing.write().pop(tx.version);
             return Ok(());
         }
 
+        let _guard = self.lock.lock();
+        warn!("got global lock");
+
         // was there a new version published in the meantime?
         if self.version.load(R) == tx.version {
-            drop(ongoing);
             return self.commit_start(tx);
         }
 
         // do the writes of the conflicting TX collide with our writes?
         if self.check_conflict(&tx) {
-            ongoing.pop(tx.version);
+            self.ongoing.write().pop(tx.version);
             Err(TXError::CommitError("Write conflict detected".to_string()).into())
         } else {
             // TODO: retry on new version
-            drop(ongoing);
             self.commit_start(tx)
         }
     }
@@ -94,7 +96,11 @@ impl Transaction for DiskPager {
 
 impl DiskPager {
     fn commit_start(&self, tx: TX) -> Result<()> {
-        debug!("tree operations complete, publishing tx");
+        debug!(
+            tx_version = tx.version,
+            pager_version = self.version.load(R),
+            "tree operations complete, publishing tx"
+        );
         let recov_page = &tx.rollback;
 
         // making sure the meta page is a known good state after a potential write error
@@ -122,12 +128,16 @@ impl DiskPager {
             return Err(e);
         }
 
+        debug!("clearing ongoing");
         self.ongoing.write().pop(tx.version);
+
+        debug!("clearing history");
         self.history
             .write()
             .history
             .insert(tx.version, tx.key_range.recorded);
 
+        debug!("write successful! new version {}", self.version.load(R));
         Ok(())
     }
 
@@ -156,8 +166,11 @@ impl DiskPager {
         let nwrites = tx_buf.write_map.len();
         let npages = self.npages.load(R);
 
+        let pager_version = self.version.load(R);
+
         assert!(npages != 0);
         assert!(nwrites != 0);
+        assert_eq!(tx.version, pager_version);
 
         // extend the mmap if needed
         let new_size = (npages as usize + nwrites) * PAGE_SIZE; // amount of pages in bytes
@@ -201,9 +214,9 @@ impl DiskPager {
             fl_guard.append(*ptr, tx.version)?;
         }
 
+        // freelist write
         let mut fl_buf = self.buf_fl.write();
 
-        // freelist write
         for pair in fl_buf.to_dirty_iter() {
             debug!(
                 "writing pager buffer {:<10} at {:<5}",
@@ -231,11 +244,10 @@ impl DiskPager {
             );
         };
 
-        // flip over pager
+        // flipping over pager data
         *self.tree.write() = tx.tree.get_root();
         self.version.store(tx.version + 1, R);
         fl_guard.set_cur_ver(tx.version);
-        self.ongoing.write().pop(tx.version);
         self.npages
             .store(npages + fl_buf.nappend + tx_buf.nappend as u64, R);
 
@@ -243,6 +255,7 @@ impl DiskPager {
         fl_buf.nappend = 0;
         fl_buf.clear();
 
+        debug!("write done");
         Ok(())
     }
 
@@ -254,6 +267,9 @@ impl DiskPager {
                 tx.key_range.print();
             }
         }
+
+        assert!(!tx.key_range.recorded.is_empty());
+
         // check the history
         let borrow = self.history.read();
         let hist = borrow.history.get(&tx.version);
@@ -261,7 +277,11 @@ impl DiskPager {
         if let Some(touched) = hist
             && let true = Touched::conflict(&tx.key_range.recorded[..], &touched[..])
         {
-            warn!("write conflict detected");
+            warn!(
+                tx_version = tx.version,
+                pager_version = self.version.load(R),
+                "write conflict detected!"
+            );
             return true;
         }
         debug!("no conflict detected");
