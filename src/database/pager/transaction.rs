@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::atomic::Ordering;
 use std::sync::atomic::Ordering::Relaxed as R;
 use std::sync::{Arc, Weak};
 
@@ -37,7 +38,7 @@ impl Transaction for DiskPager {
     fn begin(&self, db: &Arc<KVDB>, kind: TXKind) -> TX {
         // let _guard = self.lock.lock();
 
-        let version = self.version.load(R);
+        let version = self.version.load(Ordering::Acquire);
         let txdb = Arc::new(TXDB::new(db, kind));
         let weak = Arc::downgrade(&txdb);
         let root_ptr = *self.tree.read();
@@ -76,10 +77,9 @@ impl Transaction for DiskPager {
         }
 
         let _guard = self.lock.lock();
-        warn!("got global lock");
 
         // was there a new version published in the meantime?
-        if self.version.load(R) == tx.version {
+        if self.version.load(Ordering::Acquire) == tx.version {
             return self.commit_start(tx);
         }
 
@@ -98,7 +98,7 @@ impl DiskPager {
     fn commit_start(&self, tx: TX) -> Result<()> {
         debug!(
             tx_version = tx.version,
-            pager_version = self.version.load(R),
+            pager_version = self.version.load(Ordering::Acquire),
             "tree operations complete, publishing tx"
         );
         let recov_page = &tx.rollback;
@@ -128,16 +128,13 @@ impl DiskPager {
             return Err(e);
         }
 
-        debug!("clearing ongoing");
         self.ongoing.write().pop(tx.version);
-
-        debug!("clearing history");
         self.history
             .write()
             .history
             .insert(tx.version, tx.key_range.recorded);
 
-        debug!("write successful! new version {}", self.version.load(R));
+        info!("write successful! new version {}", self.version.load(R));
         Ok(())
     }
 
@@ -166,7 +163,7 @@ impl DiskPager {
         let nwrites = tx_buf.write_map.len();
         let npages = self.npages.load(R);
 
-        let pager_version = self.version.load(R);
+        let pager_version = self.version.load(Ordering::Acquire);
 
         assert!(npages != 0);
         assert!(nwrites != 0);
@@ -246,7 +243,7 @@ impl DiskPager {
 
         // flipping over pager data
         *self.tree.write() = tx.tree.get_root();
-        self.version.store(tx.version + 1, R);
+        self.version.store(tx.version + 1, Ordering::Release);
         fl_guard.set_cur_ver(tx.version);
         self.npages
             .store(npages + fl_buf.nappend + tx_buf.nappend as u64, R);
@@ -279,7 +276,7 @@ impl DiskPager {
         {
             warn!(
                 tx_version = tx.version,
-                pager_version = self.version.load(R),
+                pager_version = self.version.load(Ordering::Acquire),
                 "write conflict detected!"
             );
             return true;

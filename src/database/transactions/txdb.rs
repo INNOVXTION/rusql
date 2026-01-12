@@ -78,10 +78,10 @@ impl Pager for TXDB {
     fn page_read(&self, ptr: Pointer, flag: NodeFlag) -> Arc<Node> {
         // read own buffer first
         if let Some(b) = self.tx_buf.as_ref()
-            && let Some(n) = b.borrow().write_map.get(&ptr)
+            && let Some(n) = b.borrow_mut().write_map.remove(&ptr)
         {
             debug!("page found in TX buffer!");
-            return n.clone();
+            return n;
         }
         self.db_link.pager.read(ptr, flag)
     }
@@ -89,24 +89,24 @@ impl Pager for TXDB {
     fn page_alloc(&self, node: Node, version: u64) -> Pointer {
         let mut buf = self.tx_buf.as_ref().unwrap().borrow_mut();
 
-        // check internal dealloc buffer
-        if let Some(ptr) = buf.dealloc_q.pop_front() {
-            let res = buf.write_map.insert(ptr, Arc::new(node));
+        // // check internal dealloc buffer
+        // if let Some(ptr) = buf.dealloc_q.pop_front() {
+        //     let res = buf.write_map.insert(ptr, Arc::new(node));
 
-            #[cfg(test)]
-            {
-                debug!(%ptr, "getting from buffer");
-                if let Ok("debug") = std::env::var("RUSQL_LOG_TX").as_deref() {
-                    if res.is_some() {
-                        debug!(%ptr, "pager overwritten in buffer");
-                    }
-                    drop(buf);
-                    self.debug_print();
-                }
-            }
+        //     #[cfg(test)]
+        //     {
+        //         debug!(%ptr, "getting from buffer");
+        //         if let Ok("debug") = std::env::var("RUSQL_LOG_TX").as_deref() {
+        //             if res.is_some() {
+        //                 debug!(%ptr, "pager overwritten in buffer");
+        //             }
+        //             drop(buf);
+        //             self.debug_print();
+        //         }
+        //     }
 
-            return ptr;
-        }
+        //     return ptr;
+        // }
 
         // request pointer from pager
         let page = self.db_link.pager.alloc(&node, version, buf.nappend);

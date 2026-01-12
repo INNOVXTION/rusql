@@ -301,21 +301,21 @@ impl FreeList {
     }
 
     /// sets ptr at idx for free list node
-    fn update_set_ptr(&self, node: Pointer, ptr: Pointer, version: u64, idx: u16) {
+    fn update_set_ptr(&self, fl: Pointer, ptr: Pointer, version: u64, idx: u16) {
         let strong = self.pager.upgrade().unwrap();
         let mut buf = strong.update(ptr);
 
         // checking buffer,...
-        let entry = match buf.get_mut(ptr) {
+        let entry = match buf.get_mut(fl) {
             Some(n) => {
-                debug!("updating {} in buffer", ptr);
+                debug!("updating {} in buffer", fl);
                 n
             }
             None => {
                 // decoding page from disk and loading it into buffer
-                debug!(%ptr, "reading free list from disk...");
-                buf.insert_dirty(ptr, strong.decode(ptr, NodeFlag::Freelist));
-                buf.get_mut(ptr).expect("we just inserted it")
+                debug!(%fl, "reading free list from disk...");
+                buf.insert_dirty(fl, strong.decode(fl, NodeFlag::Freelist));
+                buf.get_mut(fl).expect("we just inserted it")
             }
         };
 
@@ -348,21 +348,21 @@ impl FreeList {
     }
 
     /// sets next ptr for free list node
-    fn update_set_next(&self, node: Pointer, ptr: Pointer) {
+    fn update_set_next(&self, fl: Pointer, ptr: Pointer) {
         let strong = self.pager.upgrade().unwrap();
         let mut buf = strong.update(ptr);
 
         // checking buffer,...
-        let entry = match buf.get_mut(ptr) {
+        let entry = match buf.get_mut(fl) {
             Some(n) => {
-                debug!("updating {} in buffer", ptr);
+                debug!("updating {} in buffer", fl);
                 n
             }
             None => {
                 // decoding page from disk and loading it into buffer
-                debug!(%ptr, "reading free list from disk...");
-                buf.insert_dirty(ptr, strong.decode(ptr, NodeFlag::Freelist));
-                buf.get_mut(ptr).expect("we just inserted it")
+                debug!(%fl, "reading free list from disk...");
+                buf.insert_dirty(fl, strong.decode(fl, NodeFlag::Freelist));
+                buf.get_mut(fl).expect("we just inserted it")
             }
         };
 
@@ -423,7 +423,7 @@ impl FLNode {
     }
 
     fn set_ptr(&mut self, idx: u16, ptr: Pointer, version: u64) {
-        debug!(idx, ptr = ?ptr, "free list node: setting pointer");
+        debug!(idx, ptr = ?ptr, version = version, "setting pointer in fl node");
         let offset = FREE_LIST_NEXT + ((PTR_SIZE + VER_SIZE) * idx as usize);
 
         (&mut self[offset..])

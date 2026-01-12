@@ -178,10 +178,10 @@ impl<P: Pager> Tree for BTree<P> {
         Ok(())
     }
 
-    #[instrument(name = "tree seaArch", skip_all)]
+    #[instrument(name = "tree search", skip_all)]
     fn get(&self, key: Key) -> Option<Value> {
-        info!("seaArching: {key}",);
-        self.tree_seaArch(self.decode(self.root_ptr?).as_tn(), key)
+        info!("searching: {key}",);
+        self.tree_search(self.decode(self.root_ptr?).as_tn(), key)
     }
 
     fn get_root(&self) -> Option<Pointer> {
@@ -393,7 +393,7 @@ impl<P: Pager> BTree<P> {
         }
     }
 
-    fn tree_seaArch(&self, node: &TreeNode, key: Key) -> Option<Value> {
+    fn tree_search(&self, node: &TreeNode, key: Key) -> Option<Value> {
         let idx = node.lookupidx(&key);
         let key_s = key.to_string();
 
@@ -413,7 +413,7 @@ impl<P: Pager> BTree<P> {
                 debug_print_tree(&node, idx);
 
                 let kptr = node.get_ptr(idx);
-                BTree::tree_seaArch(self, self.decode(kptr).as_tn(), key)
+                BTree::tree_search(self, self.decode(kptr).as_tn(), key)
             }
         }
     }

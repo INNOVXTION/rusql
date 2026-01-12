@@ -15,7 +15,7 @@ use crate::database::{
             META_TABLE_NAME, MetaTable, Table,
         },
     },
-    transactions::{keyrange::KeyRange, txdb::TXDB},
+    transactions::{keyrange::KeyRange, kvdb::KVDB, txdb::TXDB},
     types::DataCell,
 };
 
@@ -1392,8 +1392,6 @@ mod tx_test {
             let mut handles = vec![];
             for i in 0..n {
                 handles.push(s.spawn(|| {
-                    let db = db.clone();
-
                     let id = thread::current().id();
                     let span = span!(Level::DEBUG, "thread ", ?id);
                     let _guard = span.enter();
@@ -1417,19 +1415,36 @@ mod tx_test {
             }
 
             for h in handles {
-                h.join().expect("thread panicked");
+                assert!(h.join().is_ok());
             }
         });
 
         // should provoke write conflicts
         assert!(res.lock().iter().any(|r| r.is_err()));
-        // assert_eq!(res.lock().iter().filter(|r| r.is_ok()).count(), 1);
+        // assert!(res.lock().iter().filter(|r| r.is_ok()).count() < 10);
 
-        println!(
-            "faulty TX: {}",
-            res.lock().iter().filter(|r| r.is_err()).count()
-        );
+        let tx = db.begin(&db, TXKind::Read);
 
+        let q1 = Query::with_key(&table).add("name", "Alice").encode()?;
+        let q2 = Query::with_key(&table).add("name", "Bob").encode()?;
+        let q3 = Query::with_key(&table).add("name", "Charlie").encode()?;
+
+        let q1_res = tx.tree_get(q1).unwrap().decode();
+        assert_eq!(q1_res[0], DataCell::Int(20));
+        assert_eq!(q1_res[1], DataCell::Int(1));
+
+        let q2_res = tx.tree_get(q2).unwrap().decode();
+        assert_eq!(q2_res[0], DataCell::Int(15));
+        assert_eq!(q2_res[1], DataCell::Int(2));
+
+        let q3_res = tx.tree_get(q3).unwrap().decode();
+        assert_eq!(q3_res[0], DataCell::Int(25));
+        assert_eq!(q3_res[1], DataCell::Int(3));
+
+        let ft = tx.full_table_scan(&table)?.collect_records();
+        assert_eq!(ft.len(), 3);
+
+        db.commit(tx)?;
         cleanup_file(path);
         Ok(())
     }
