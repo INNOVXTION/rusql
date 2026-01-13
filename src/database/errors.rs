@@ -11,54 +11,50 @@ use thiserror::Error;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+// #[error("{var}")]    ⟶   write!("{}", self.var)
+// #[error("{0}")]      ⟶   write!("{}", self.0)
+// #[error("{var:?}")]  ⟶   write!("{:?}", self.var)
+// #[error("{0:?}")]    ⟶   write!("{:?}", self.0)
+
 #[derive(Debug, Error)]
 pub enum Error {
+    // tree
+    #[error("Index error")]
     IndexError,
+    #[error("Error when splitting, {0}")]
     SplitError(String),
+    #[error("Error when merging, {0}")]
     MergeError(String),
+    #[error("Error when inserting, {0}")]
     InsertError(String),
+    #[error("Error when deleting, {0}")]
     DeleteError(String),
-    PagerSetError,
-    InvalidInput(&'static str),
+    #[error("Search Error, {0}")]
     SearchError(String),
 
+    // wrapper
+    #[error("Pager error, {0}")]
     PagerError(#[from] PagerError),
+    #[error("Freelist error, {0}")]
     FreeListError(#[from] FLError),
+    #[error("Table error, {0}")]
     TableError(#[from] TableError),
+    #[error("Scan error, {0}")]
     ScanError(#[from] ScanError),
+    #[error("Transaction error, {0}")]
     TransactionError(#[from] TXError),
 
+    // casting
+    #[error("Casting from String error, {0}")]
     StrCastError(#[from] Utf8Error),
-    IntCastError(#[from] Option<TryFromIntError>),
+    #[error("Int casting error, {0}")]
+    IntCastError(#[from] TryFromIntError),
 
+    // file I/O
+    #[error("File error: {0}")]
     FileError(#[from] io::Error),
+    #[error("Sys File Error: {0}")]
     SysFileError(#[from] rustix::io::Errno),
-}
-
-impl Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        use Error as E;
-        match self {
-            E::IndexError => write!(f, "Index error"),
-            E::FileError(e) => write!(f, "File error: {e}"),
-            E::IntCastError(Some(e)) => write!(f, "Type casting error, {e}"),
-            E::IntCastError(None) => write!(f, "Type casting error"),
-            E::StrCastError(e) => write!(f, "Casting from String error, {e}"),
-            E::SplitError(e) => write!(f, "Error when splitting, {e}"),
-            E::InsertError(e) => write!(f, "Error when inserting, {e}"),
-            E::MergeError(e) => write!(f, "Error when merging, {e}"),
-            E::DeleteError(e) => write!(f, "Error when deleting {e}"),
-            E::PagerError(e) => write!(f, "Error when calling pager {e}"),
-            E::PagerSetError => write!(f, "Attempting to set global pager again!"),
-            E::InvalidInput(e) => write!(f, "invalid input!, {e}"),
-            E::FreeListError(e) => write!(f, "Free List Error {e}"),
-            E::SearchError(e) => write!(f, "Search Error {e}"),
-            E::TableError(e) => write!(f, "Table Error {e}"),
-            E::SysFileError(e) => write!(f, "Errno {e}"),
-            E::ScanError(e) => write!(f, "Scan error {e}"),
-            E::TransactionError(e) => write!(f, "transaction error {e}"),
-        }
-    }
 }
 
 #[derive(Debug, Error)]
@@ -104,11 +100,6 @@ pub enum FLError {
     #[error("{0}")]
     PopError(String),
 }
-
-// #[error("{var}")]    ⟶   write!("{}", self.var)
-// #[error("{0}")]      ⟶   write!("{}", self.0)
-// #[error("{var:?}")]  ⟶   write!("{:?}", self.var)
-// #[error("{0:?}")]    ⟶   write!("{:?}", self.0)
 
 #[derive(Error, Debug)]
 pub(crate) enum TableError {

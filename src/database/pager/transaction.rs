@@ -269,9 +269,8 @@ impl DiskPager {
 
         // check the history
         let borrow = self.history.read();
-        let hist = borrow.history.get(&tx.version);
 
-        if let Some(touched) = hist
+        if let Some(touched) = borrow.history.get(&tx.version)
             && let true = Touched::conflict(&tx.key_range.recorded[..], &touched[..])
         {
             warn!(
