@@ -7,7 +7,10 @@ use std::{
 use parking_lot::Mutex;
 use tracing::debug;
 
-use crate::database::types::{Node, Pointer};
+use crate::database::{
+    pager::lru::LRU,
+    types::{LRU_BUFFER_SIZE, Node, Pointer},
+};
 
 /// Globally shared buffer, used by the freelist
 #[derive(Debug)]
@@ -119,6 +122,41 @@ impl DiskBuffer {
         self.hmap.clear();
         self.nappend = 0;
     }
+}
+
+pub(crate) struct SharedBuffer(LRU<Pointer, SharedBufferEntry>);
+
+impl SharedBuffer {
+    pub fn new() -> Self {
+        SharedBuffer(LRU::new(LRU_BUFFER_SIZE))
+    }
+
+    pub fn insert(&mut self, ptr: Pointer, node: Node, version: u64) {
+        self.0.insert(
+            ptr,
+            SharedBufferEntry {
+                node: Arc::new(node),
+                version,
+            },
+        );
+    }
+
+    pub fn get(&mut self, ptr: Pointer, version: u64) -> Option<Arc<Node>> {
+        if self.0.peek(&ptr)?.version == version {
+            Some(self.0.get(ptr).expect("we just checked").node.clone())
+        } else {
+            None
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.0.clear()
+    }
+}
+
+struct SharedBufferEntry {
+    pub node: Arc<Node>,
+    pub version: u64,
 }
 
 #[derive(Debug)]

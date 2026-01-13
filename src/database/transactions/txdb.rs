@@ -1,4 +1,5 @@
 use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::Ordering;
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 use parking_lot::{Mutex, RwLock};
@@ -15,6 +16,7 @@ use crate::database::{
 pub struct TXDB {
     pub db_link: Arc<KVDB>,                // shared resource
     pub tx_buf: Option<RefCell<TXBuffer>>, // isolated resource
+    pub version: u64,
 }
 
 pub struct TXBuffer {
@@ -44,6 +46,7 @@ impl TXDB {
             TXKind::Read => Self {
                 db_link: db.clone(),
                 tx_buf: None,
+                version: db.pager.version.load(Ordering::Acquire),
             },
             TXKind::Write => Self {
                 db_link: db.clone(),
@@ -52,6 +55,7 @@ impl TXDB {
                     dealloc_q: VecDeque::new(),
                     nappend: 0,
                 })),
+                version: db.pager.version.load(Ordering::Acquire),
             },
         }
     }
@@ -87,7 +91,7 @@ impl Pager for TXDB {
             debug!("page found in TX buffer!");
             return n;
         }
-        self.db_link.pager.read(ptr, flag)
+        self.db_link.pager.read(ptr, flag, self.version)
     }
 
     fn page_alloc(&self, node: Node, version: u64) -> Pointer {

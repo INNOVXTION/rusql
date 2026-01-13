@@ -1354,9 +1354,13 @@ mod concurrent_tx_tests {
     use crate::database::{
         btree::SetFlag,
         helper::cleanup_file,
-        pager::transaction::Transaction,
+        pager::transaction::{CommitStatus, Retry, Transaction},
         tables::{Query, Record, TypeCol, tables::TableBuilder},
-        transactions::{kvdb::KVDB, tx::TXKind},
+        transactions::{
+            kvdb::KVDB,
+            retry::{Backoff, RetryResult, RetryStatus, retry},
+            tx::TXKind,
+        },
         types::DataCell,
     };
     use parking_lot::Mutex;
@@ -1451,7 +1455,7 @@ mod concurrent_tx_tests {
     }
 
     #[test]
-    fn concurrent_insert_different_keys() -> Result<()> {
+    fn insert_different_keys() -> Result<()> {
         let path = "test-files/concurrent_insert_diff.rdb";
         cleanup_file(path);
         let db = Arc::new(KVDB::new(path));
@@ -1469,6 +1473,7 @@ mod concurrent_tx_tests {
         db.commit(tx)?;
 
         let n_threads = 10;
+        let retries = 3;
         let barrier = Arc::new(Barrier::new(n_threads));
         let results = Arc::new(Mutex::new(vec![]));
 
@@ -1486,17 +1491,28 @@ mod concurrent_tx_tests {
 
                     barrier.wait();
 
-                    let mut tx = db.begin(&db, TXKind::Write);
-                    let rec = Record::new().add(i as i64).add(format!("user_{}", i));
+                    let r = retry(&mut Backoff::default(), || {
+                        let mut tx = db.begin(&db, TXKind::Write);
+                        let rec = Record::new().add(i as i64).add(format!("user_{}", i));
 
-                    let r = tx.insert_rec(rec, &table, SetFlag::INSERT);
-                    let commit_result = if r.is_ok() {
-                        db.commit(tx)
-                    } else {
-                        Err(r.unwrap_err())
-                    };
+                        let r = tx.insert_rec(rec, &table, SetFlag::INSERT);
 
-                    results.lock().push(commit_result);
+                        let commit_result = db.commit(tx);
+                        if commit_result.can_retry() {
+                            debug!("retrying");
+                            RetryStatus::Continue
+                        } else {
+                            results.lock().push(commit_result);
+                            RetryStatus::Break
+                        }
+                    });
+
+                    if r == RetryResult::AttemptsExceeded {
+                        error!("retries exceeded");
+                        results
+                            .lock()
+                            .push(Err(Error::TransactionError(TXError::RetriesExceeded)));
+                    }
                 });
             }
         });
@@ -1509,7 +1525,9 @@ mod concurrent_tx_tests {
         let tx = db.begin(&db, TXKind::Read);
         for i in 0..n_threads {
             let q = Query::with_key(&table).add("id", i as i64).encode()?;
-            let res = tx.tree_get(q).unwrap().decode();
+            let res = tx.tree_get(q);
+            assert!(res.is_some());
+            let res = res.unwrap().decode();
             assert_eq!(res[0], DataCell::Str(format!("user_{}", i)));
         }
         db.commit(tx)?;
@@ -1519,7 +1537,7 @@ mod concurrent_tx_tests {
     }
 
     #[test]
-    fn concurrent_update_conflict() -> Result<()> {
+    fn update_conflict() -> Result<()> {
         let path = "test-files/concurrent_update.rdb";
         cleanup_file(path);
         let db = Arc::new(KVDB::new(path));
@@ -1588,7 +1606,7 @@ mod concurrent_tx_tests {
     }
 
     #[test]
-    fn concurrent_delete_same_record() -> Result<()> {
+    fn delete_same_record() -> Result<()> {
         let path = "test-files/concurrent_delete.rdb";
         cleanup_file(path);
         let db = Arc::new(KVDB::new(path));
@@ -1654,7 +1672,7 @@ mod concurrent_tx_tests {
     }
 
     #[test]
-    fn concurrent_read_write_isolation() -> Result<()> {
+    fn read_write_isolation() -> Result<()> {
         let path = "test-files/read_write_isolation.rdb";
         cleanup_file(path);
         let db = Arc::new(KVDB::new(path));
@@ -1733,7 +1751,7 @@ mod concurrent_tx_tests {
     }
 
     #[test]
-    fn concurrent_table_operations() -> Result<()> {
+    fn table_operations() -> Result<()> {
         let path = "test-files/concurrent_tables.rdb";
         cleanup_file(path);
         let db = Arc::new(KVDB::new(path));
@@ -1782,7 +1800,7 @@ mod concurrent_tx_tests {
     }
 
     #[test]
-    fn concurrent_mixed_operations() -> Result<()> {
+    fn mixed_operations() -> Result<()> {
         let path = "test-files/mixed_ops.rdb";
         cleanup_file(path);
         let db = Arc::new(KVDB::new(path));

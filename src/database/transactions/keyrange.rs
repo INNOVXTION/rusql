@@ -13,6 +13,7 @@ pub struct KeyRange {
     last: Option<Key>,
 }
 
+#[derive(Debug)]
 pub enum Touched {
     Single(Key),
     Range { from: Key, to: Key },

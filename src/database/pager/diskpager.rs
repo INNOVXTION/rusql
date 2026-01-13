@@ -14,7 +14,7 @@ use crate::create_file_sync;
 use crate::database::BTree;
 use crate::database::errors::FLError;
 use crate::database::helper::as_page;
-use crate::database::pager::buffer::{DiskBuffer, OngoingTX};
+use crate::database::pager::buffer::{DiskBuffer, OngoingTX, SharedBuffer};
 use crate::database::pager::freelist::{FLConfig, FLNode, FreeList, GC};
 use crate::database::pager::lru::{LRU, debug_print};
 use crate::database::pager::metapage::*;
@@ -58,7 +58,7 @@ pub(crate) struct DiskPager {
     path: &'static str,
     pub database: OwnedFd,
     pub mmap: RwLock<Mmap>,
-    pub buf_shared: RwLock<LRU<Pointer, Arc<Node>>>, // shared read only buffer
+    pub buf_shared: RwLock<SharedBuffer>, // shared read only buffer
     pub freelist: RwLock<FreeList>,
     pub buf_fl: RwLock<DiskBuffer>, // freelist exclusive read-write buffer
 
@@ -178,7 +178,7 @@ impl DiskPager {
             path,
             database: create_file_sync(path).expect("file open error"),
             failed: false.into(),
-            buf_shared: RwLock::new(LRU::new(LRU_BUFFER_SIZE)),
+            buf_shared: RwLock::new(SharedBuffer::new()),
             mmap: RwLock::new(Mmap {
                 total: 0,
                 chunks: vec![],
@@ -226,6 +226,7 @@ impl DiskPager {
     ///
     /// kv.pageRead, db.pageRead -> pagereadfile
     pub fn decode(&self, ptr: Pointer, node_type: NodeFlag) -> Node {
+        assert!(mmap_extend(self, ptr.0 as usize * PAGE_SIZE).is_ok());
         let mmap_ref = self.mmap.read();
 
         #[cfg(test)]
@@ -326,21 +327,21 @@ impl DiskPager {
         }
     }
 
-    pub fn read(&self, ptr: Pointer, flag: NodeFlag) -> Arc<Node> {
+    pub fn read(&self, ptr: Pointer, flag: NodeFlag, version: u64) -> Arc<Node> {
         debug!(node=?flag, %ptr, "page read");
         let mut buf_shr = self.buf_shared.write();
 
         // check buffer first
-        if let Some(n) = buf_shr.get(ptr) {
+        if let Some(n) = buf_shr.get(ptr, version) {
             debug!("page found in buffer!");
             n.clone()
         } else {
             debug!("reading from disk...");
 
-            let n = Arc::new(self.decode(ptr, flag));
+            let n = self.decode(ptr, flag);
 
-            buf_shr.insert(ptr, n.clone());
-            n
+            buf_shr.insert(ptr, n, version);
+            buf_shr.get(ptr, version).expect("we just added it")
         }
     }
 

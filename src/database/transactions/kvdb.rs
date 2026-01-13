@@ -6,11 +6,12 @@ use tracing::instrument;
 
 use crate::database::BTree;
 use crate::database::btree::Tree;
+use crate::database::pager::transaction::CommitStatus;
 use crate::database::pager::transaction::Transaction;
 use crate::database::pager::{DiskPager, Pager};
 use crate::database::transactions::tx::{TX, TXKind};
 use crate::database::{
-    errors::Result,
+    errors::{Error, Result},
     tables::{records::*, tables::*},
 };
 /*
@@ -36,7 +37,7 @@ impl Transaction for KVDB {
     }
 
     #[instrument(skip_all)]
-    fn commit(&self, tx: TX) -> Result<()> {
+    fn commit(&self, tx: TX) -> Result<CommitStatus> {
         self.pager.commit(tx)
     }
 }

@@ -5,7 +5,7 @@ use std::{
     str::Utf8Error,
 };
 
-use crate::database::tables::TypeCol;
+use crate::database::{tables::TypeCol, transactions::keyrange::Touched};
 
 use thiserror::Error;
 
@@ -190,10 +190,12 @@ pub(crate) enum TXError {
     KeyRangeError,
 
     // transaction trait errors
-    #[error("commit error: {0}")]
-    CommitError(String),
     #[error("abort error: {0}")]
     AbortError(String),
     #[error("initialize error {0}")]
     TxBeginError(String),
+    #[error("Commit error {0}")]
+    CommitError(String),
+    #[error("Retry limit reached")]
+    RetriesExceeded,
 }

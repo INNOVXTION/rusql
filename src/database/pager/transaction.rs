@@ -32,7 +32,7 @@ pub struct TXHistory {
 pub trait Transaction {
     fn begin(&self, db: &Arc<KVDB>, kind: TXKind) -> TX;
     fn abort(&self, tx: TX);
-    fn commit(&self, tx: TX) -> Result<()>;
+    fn commit(&self, tx: TX) -> Result<CommitStatus>;
 }
 
 impl Transaction for DiskPager {
@@ -63,34 +63,57 @@ impl Transaction for DiskPager {
 
     fn abort(&self, tx: TX) {}
 
-    fn commit(&self, tx: TX) -> Result<()> {
+    fn commit(&self, tx: TX) -> Result<CommitStatus> {
         debug!(tx.version, "committing: ");
         if tx.kind == TXKind::Read {
             self.ongoing.write().pop(tx.version);
-            return Ok(());
+            return Ok(CommitStatus::Success);
         }
 
         // did the TX write anything?
         if tx.db.tx_buf.as_ref().unwrap().borrow().write_map.len() == 0 {
             self.ongoing.write().pop(tx.version);
-            return Ok(());
+            return Ok(CommitStatus::Success);
         }
 
         let _guard = self.lock.lock();
         warn!("got the global lock");
 
         // was there a new version published in the meantime?
-        if self.version.load(Ordering::Acquire) == tx.version {
-            return self.commit_start(tx);
+        let version = self.version.load(Ordering::Acquire);
+        if version == tx.version {
+            return self.commit_start(tx).map(|_| CommitStatus::Success);
         }
 
         // do the writes of the conflicting TX collide with our writes?
         if self.check_conflict(&tx) {
             self.ongoing.write().pop(tx.version);
-            Err(TXError::CommitError("Write conflict detected".to_string()).into())
+            Err(TXError::CommitError("write conflict detected".to_string()).into())
         } else {
-            // TODO: retry on new version
-            self.commit_start(tx)
+            // retry on new version
+            Ok(CommitStatus::StaleVersion)
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub enum CommitStatus {
+    Success,
+    WriteConflict,
+    StaleVersion,
+    Failed,
+}
+
+pub trait Retry {
+    fn can_retry(&self) -> bool;
+}
+
+impl Retry for Result<CommitStatus> {
+    /// checks if the TX can be retried
+    fn can_retry(&self) -> bool {
+        match self {
+            Ok(s) if *s == CommitStatus::StaleVersion => true,
+            _ => false,
         }
     }
 }

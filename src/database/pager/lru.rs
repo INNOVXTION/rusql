@@ -91,6 +91,15 @@ where
         self.len = 0;
     }
 
+    pub fn exists(&self, key: &K) -> bool {
+        self.map.get(key).is_some()
+    }
+
+    /// doesnt update the order
+    pub fn peek(&self, key: &K) -> Option<&V> {
+        self.map.get(key).map(|e| &e.val)
+    }
+
     fn evict_lru(&mut self) {
         let old = self
             .ll
