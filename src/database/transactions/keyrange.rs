@@ -122,7 +122,7 @@ impl KeyRange {
         self.listen = false;
     }
 
-    /// records currently captured keys and starts a new liste
+    /// records currently captured keys and starts a new listen
     ///
     /// useful for repeated single modifications
     pub fn capture_and_listen(&mut self) {

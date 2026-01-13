@@ -59,14 +59,18 @@ impl TXDB {
         #[cfg(test)]
         {
             if let Ok("debug") = std::env::var("RUSQL_LOG_TX").as_deref() {
+                debug!("{:-<10}", "-");
                 debug!(
                     len = self.tx_buf.as_ref().unwrap().borrow().write_map.len(),
                     nappend = self.tx_buf.as_ref().unwrap().borrow().nappend,
                     "current TX buffer:"
                 );
-                debug!("{:-<10}", "-");
                 for e in self.tx_buf.as_ref().unwrap().borrow().write_map.iter() {
                     debug!("{:<10}, {:<10}", e.0, e.1.get_type())
+                }
+                debug!("dealloc queue:");
+                for e in self.tx_buf.as_ref().unwrap().borrow().dealloc_q.iter() {
+                    debug!("{e}")
                 }
                 debug!("{:-<10}", "-");
             }
@@ -88,25 +92,6 @@ impl Pager for TXDB {
 
     fn page_alloc(&self, node: Node, version: u64) -> Pointer {
         let mut buf = self.tx_buf.as_ref().unwrap().borrow_mut();
-
-        // // check internal dealloc buffer
-        // if let Some(ptr) = buf.dealloc_q.pop_front() {
-        //     let res = buf.write_map.insert(ptr, Arc::new(node));
-
-        //     #[cfg(test)]
-        //     {
-        //         debug!(%ptr, "getting from buffer");
-        //         if let Ok("debug") = std::env::var("RUSQL_LOG_TX").as_deref() {
-        //             if res.is_some() {
-        //                 debug!(%ptr, "pager overwritten in buffer");
-        //             }
-        //             drop(buf);
-        //             self.debug_print();
-        //         }
-        //     }
-
-        //     return ptr;
-        // }
 
         // request pointer from pager
         let page = self.db_link.pager.alloc(&node, version, buf.nappend);

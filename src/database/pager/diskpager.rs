@@ -70,11 +70,11 @@ pub(crate) struct DiskPager {
     pub ongoing: RwLock<OngoingTX>,
     pub history: RwLock<TXHistory>,
 
-    pub lock: ReentrantMutex<()>, // used to block new tx being created and current tx being committed
+    pub lock: Mutex<()>, // used to block new tx being created and current tx being committed
 
-                                  // WIP
-                                  // clean factor
-                                  // counter after deletion for cleanup
+                         // WIP
+                         // clean factor
+                         // counter after deletion for cleanup
 }
 
 /// internal callback API
@@ -195,7 +195,7 @@ impl DiskPager {
                 history: HashMap::new(),
                 cap: 0,
             }),
-            lock: ReentrantMutex::new(()),
+            lock: Mutex::new(()),
         });
 
         let fd_size = fstat(&pager.database)

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::process::Termination;
 use std::sync::atomic::Ordering;
 use std::sync::atomic::Ordering::Relaxed as R;
 use std::sync::{Arc, Weak};
@@ -64,7 +65,6 @@ impl Transaction for DiskPager {
 
     fn commit(&self, tx: TX) -> Result<()> {
         debug!(tx.version, "committing: ");
-        // is the TX read only?
         if tx.kind == TXKind::Read {
             self.ongoing.write().pop(tx.version);
             return Ok(());
@@ -77,6 +77,7 @@ impl Transaction for DiskPager {
         }
 
         let _guard = self.lock.lock();
+        warn!("got the global lock");
 
         // was there a new version published in the meantime?
         if self.version.load(Ordering::Acquire) == tx.version {
@@ -101,6 +102,7 @@ impl DiskPager {
             pager_version = self.version.load(Ordering::Acquire),
             "tree operations complete, publishing tx"
         );
+
         let recov_page = &tx.rollback;
 
         // making sure the meta page is a known good state after a potential write error
@@ -124,7 +126,6 @@ impl DiskPager {
             self.buf_fl.write().erase();
 
             self.failed.store(true, R);
-
             return Err(e);
         }
 
