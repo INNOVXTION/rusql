@@ -20,7 +20,7 @@ use crate::database::tables::{Record, Value};
 use crate::database::transactions::keyrange::{KeyRange, Touched};
 use crate::database::transactions::kvdb::KVDB;
 use crate::database::transactions::tx::{TX, TXKind};
-use crate::database::transactions::txdb::{TXDB, TXWrite};
+use crate::database::transactions::txdb::TXDB;
 use crate::database::types::PAGE_SIZE;
 use crate::database::{btree::ScanMode, tables::Key, types::Pointer};
 
@@ -77,7 +77,7 @@ impl Transaction for DiskPager {
         }
 
         let _guard = self.lock.lock();
-        warn!("got the global lock");
+        // warn!("got the global lock");
 
         // was there a new version published in the meantime?
         let version = self.version.load(Ordering::Acquire);
@@ -213,13 +213,13 @@ impl DiskPager {
         for pair in tx_buf.write_map.iter() {
             debug!(
                 "writing TX buffer {:<10} at {:<5}",
-                pair.1.get_type(),
+                pair.1.node.get_type(),
                 pair.0
             );
             assert!(pair.0.get() != 0); // never write to the meta page
 
             let offset = pair.0.get() * PAGE_SIZE as u64;
-            let io_slice = rustix::io::IoSlice::new(&pair.1[..PAGE_SIZE]);
+            let io_slice = rustix::io::IoSlice::new(&pair.1.node[..PAGE_SIZE]);
 
             bytes_written +=
                 rustix::io::pwrite(&self.database, &io_slice, offset).map_err(|e| {

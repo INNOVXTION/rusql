@@ -210,16 +210,19 @@ impl<P: Pager> BTree<P> {
     // callbacks
     pub fn decode(&self, ptr: Pointer) -> Arc<Node> {
         let strong = self.pager.upgrade().expect("tree callback decode failed");
+        debug!("requesting read: {ptr}");
         strong.page_read(ptr, NodeFlag::Tree)
     }
 
     pub fn encode(&self, node: TreeNode) -> Pointer {
         let strong = self.pager.upgrade().expect("tree callback encode failed");
+        debug!("requesting alloc");
         strong.page_alloc(Node::Tree(node), 0)
     }
 
     pub fn dealloc(&self, ptr: Pointer) {
         let strong = self.pager.upgrade().expect("tree callback dealloc failed");
+        debug!("requesting dealloc: {ptr}");
         strong.dealloc(ptr);
     }
 

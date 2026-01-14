@@ -20,24 +20,14 @@ pub struct TXDB {
 }
 
 pub struct TXBuffer {
-    pub write_map: HashMap<Pointer, Arc<Node>>,
+    pub write_map: HashMap<Pointer, TXBufWriteEntry>,
     pub dealloc_q: VecDeque<Pointer>,
     pub nappend: u32,
 }
 
-#[derive(Debug)]
-pub enum TXWrite {
-    Write(Arc<Node>),
-    Retire,
-}
-
-impl std::fmt::Display for TXWrite {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            TXWrite::Write(ref_cell) => write!(f, "write node"),
-            TXWrite::Retire => write!(f, "dealloc node"),
-        }
-    }
+pub struct TXBufWriteEntry {
+    pub node: Arc<Node>,
+    pub origin: PageOrigin,
 }
 
 impl TXDB {
@@ -70,11 +60,17 @@ impl TXDB {
                     "current TX buffer:"
                 );
                 for e in self.tx_buf.as_ref().unwrap().borrow().write_map.iter() {
-                    debug!("{:<10}, {:<10}", e.0, e.1.get_type())
+                    debug!(
+                        "- {:<10}, {:<10}, {:?}",
+                        e.0,
+                        e.1.node.get_type(),
+                        e.1.origin
+                    )
                 }
+                debug!("");
                 debug!("dealloc queue:");
                 for e in self.tx_buf.as_ref().unwrap().borrow().dealloc_q.iter() {
-                    debug!("{e}")
+                    debug!("- {e}")
                 }
                 debug!("{:-<10}", "-");
             }
@@ -86,10 +82,10 @@ impl Pager for TXDB {
     fn page_read(&self, ptr: Pointer, flag: NodeFlag) -> Arc<Node> {
         // read own buffer first
         if let Some(b) = self.tx_buf.as_ref()
-            && let Some(n) = b.borrow_mut().write_map.remove(&ptr)
+            && let Some(n) = b.borrow_mut().write_map.get(&ptr)
         {
             debug!("page found in TX buffer!");
-            return n;
+            return n.node.clone();
         }
         self.db_link.pager.read(ptr, flag, self.version)
     }
@@ -101,8 +97,13 @@ impl Pager for TXDB {
         let page = self.db_link.pager.alloc(&node, version, buf.nappend);
 
         // store node in TX buffer
-        if let None = buf.write_map.insert(page.ptr, Arc::new(node))
-            && let PageOrigin::Append = page.origin
+        if let None = buf.write_map.insert(
+            page.ptr,
+            TXBufWriteEntry {
+                node: Arc::new(node),
+                origin: page.origin,
+            },
+        ) && let PageOrigin::Append = page.origin
         {
             // if the page didnt exist and the new page came from an append
             buf.nappend += 1;
@@ -110,7 +111,6 @@ impl Pager for TXDB {
 
         #[cfg(test)]
         {
-            debug!(%page.ptr, "appending from disk");
             if let Ok("debug") = std::env::var("RUSQL_LOG_TX").as_deref() {
                 drop(buf);
                 self.debug_print();
@@ -123,7 +123,15 @@ impl Pager for TXDB {
     fn dealloc(&self, ptr: Pointer) {
         debug!(%ptr, "adding to dealloc q:");
         let mut buf = self.tx_buf.as_ref().unwrap().borrow_mut();
-        // marks page inside TX buffer as retired
+
+        // push to dealloc list
         buf.dealloc_q.push_back(ptr);
+
+        // sync write buffer
+        if let Some(entry) = buf.write_map.remove(&ptr)
+            && entry.origin == PageOrigin::Append
+        {
+            buf.nappend -= 1;
+        };
     }
 }

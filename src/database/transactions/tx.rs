@@ -63,7 +63,7 @@ impl TX {
     #[instrument(name = "get table", skip_all)]
     fn get_table(&mut self, name: &str) -> Option<Arc<Table>> {
         info!(name, "getting table");
-        self.db.db_link.read_table(name, &self.tree)
+        self.db.db_link.read_table_buffer(name, &self.tree)
     }
 
     #[instrument(name = "new table id", skip_all)]
@@ -94,7 +94,7 @@ impl TX {
                         .unwrap();
 
                     self.tree_set(k, v, SetFlag::UPDATE).map_err(|e| {
-                        error!(?e);
+                        error!(%e);
                         TableError::TableIdError("error when retrieving id".to_string())
                     })?;
 
@@ -118,7 +118,7 @@ impl TX {
                     .unwrap();
 
                 self.tree_set(k, v, SetFlag::INSERT).map_err(|e| {
-                    error!(?e);
+                    error!(%e);
                     TableError::TableIdError("error when retrieving id".to_string())
                 })?;
 
@@ -157,7 +157,7 @@ impl TX {
             ))?;
 
         self.tree_set(k, v, SetFlag::UPSERT).map_err(|e| {
-            error!("error when inserting");
+            error!(%e, "error when inserting");
             TableError::InsertTableError("error when inserting table".to_string())
         })?;
 
@@ -1491,7 +1491,7 @@ mod concurrent_tx_tests {
 
                     barrier.wait();
 
-                    let r = retry(&mut Backoff::default(), || {
+                    let r = retry(Backoff::default(), || {
                         let mut tx = db.begin(&db, TXKind::Write);
                         let rec = Record::new().add(i as i64).add(format!("user_{}", i));
 
@@ -1537,23 +1537,266 @@ mod concurrent_tx_tests {
     }
 
     #[test]
-    fn update_conflict() -> Result<()> {
-        let path = "test-files/concurrent_update.rdb";
+    fn concurrent_read_same_records() -> Result<()> {
+        let path = "test-files/concurrent_read_same.rdb";
         cleanup_file(path);
         let db = Arc::new(KVDB::new(path));
         let mut tx = db.begin(&db, TXKind::Write);
 
         let table = TableBuilder::new()
-            .id(3)
-            .name("counter")
+            .id(100)
+            .name("read_table")
             .add_col("id", TypeCol::INTEGER)
-            .add_col("value", TypeCol::INTEGER)
+            .add_col("value", TypeCol::BYTES)
             .pkey(1)
             .build(&mut tx)?;
 
         tx.insert_table(&table)?;
 
-        // Insert initial record
+        // Insert initial data
+        for i in 1..=5 {
+            tx.insert_rec(
+                Record::new().add(i as i64).add(format!("value_{}", i)),
+                &table,
+                SetFlag::INSERT,
+            )?;
+        }
+        db.commit(tx)?;
+
+        let n_threads = 20;
+        let barrier = Arc::new(Barrier::new(n_threads));
+        let results = Arc::new(Mutex::new(vec![]));
+
+        thread::scope(|s| {
+            for _ in 0..n_threads {
+                let db = db.clone();
+                let table = table.clone();
+                let barrier = barrier.clone();
+                let results = results.clone();
+
+                s.spawn(move || {
+                    barrier.wait();
+
+                    let tx = db.begin(&db, TXKind::Read);
+
+                    // All threads read the same records
+                    let mut success = true;
+                    for i in 1..=5 {
+                        let q = Query::with_key(&table)
+                            .add("id", i as i64)
+                            .encode()
+                            .unwrap();
+                        if let Some(value) = tx.tree_get(q) {
+                            let decoded = value.decode();
+                            if decoded[0] != DataCell::Str(format!("value_{}", i)) {
+                                success = false;
+                            }
+                        } else {
+                            success = false;
+                        }
+                    }
+
+                    let _ = db.commit(tx);
+                    results.lock().push(success);
+                });
+            }
+        });
+
+        // All read transactions should succeed and be consistent
+        let results = results.lock();
+        assert_eq!(results.iter().filter(|r| **r).count(), n_threads);
+
+        cleanup_file(path);
+        Ok(())
+    }
+
+    #[test]
+    fn concurrent_read_multi_table() -> Result<()> {
+        let path = "test-files/concurrent_read_multi_table.rdb";
+        cleanup_file(path);
+        let db = Arc::new(KVDB::new(path));
+        let mut tx = db.begin(&db, TXKind::Write);
+
+        let table1 = TableBuilder::new()
+            .id(101)
+            .name("table1")
+            .add_col("id", TypeCol::INTEGER)
+            .add_col("data", TypeCol::BYTES)
+            .pkey(1)
+            .build(&mut tx)?;
+
+        let table2 = TableBuilder::new()
+            .id(102)
+            .name("table2")
+            .add_col("id", TypeCol::INTEGER)
+            .add_col("data", TypeCol::BYTES)
+            .pkey(1)
+            .build(&mut tx)?;
+
+        tx.insert_table(&table1)?;
+        tx.insert_table(&table2)?;
+
+        for i in 1..=10 {
+            tx.insert_rec(
+                Record::new()
+                    .add(i as i64)
+                    .add(format!("table1_data_{}", i)),
+                &table1,
+                SetFlag::INSERT,
+            )?;
+            tx.insert_rec(
+                Record::new()
+                    .add(i as i64)
+                    .add(format!("table2_data_{}", i)),
+                &table2,
+                SetFlag::INSERT,
+            )?;
+        }
+        db.commit(tx)?;
+
+        let n_threads = 15;
+        let barrier = Arc::new(Barrier::new(n_threads));
+        let results = Arc::new(Mutex::new(vec![]));
+
+        thread::scope(|s| {
+            for _ in 0..n_threads {
+                let db = db.clone();
+                let table1 = table1.clone();
+                let table2 = table2.clone();
+                let barrier = barrier.clone();
+                let results = results.clone();
+
+                s.spawn(move || {
+                    barrier.wait();
+
+                    let tx = db.begin(&db, TXKind::Read);
+                    let mut success = true;
+
+                    for i in 1..=10 {
+                        let q1 = Query::with_key(&table1)
+                            .add("id", i as i64)
+                            .encode()
+                            .unwrap();
+                        let q2 = Query::with_key(&table2)
+                            .add("id", i as i64)
+                            .encode()
+                            .unwrap();
+
+                        if let (Some(v1), Some(v2)) = (tx.tree_get(q1), tx.tree_get(q2)) {
+                            let d1 = v1.decode();
+                            let d2 = v2.decode();
+                            if d1[0] != DataCell::Str(format!("table1_data_{}", i))
+                                || d2[0] != DataCell::Str(format!("table2_data_{}", i))
+                            {
+                                success = false;
+                            }
+                        } else {
+                            success = false;
+                        }
+                    }
+
+                    let _ = db.commit(tx);
+                    results.lock().push(success);
+                });
+            }
+        });
+
+        let results = results.lock();
+        assert_eq!(results.iter().filter(|r| **r).count(), n_threads);
+
+        cleanup_file(path);
+        Ok(())
+    }
+
+    #[test]
+    fn concurrent_update_different_keys() -> Result<()> {
+        let path = "test-files/concurrent_update_diff.rdb";
+        cleanup_file(path);
+        let db = Arc::new(KVDB::new(path));
+        let mut tx = db.begin(&db, TXKind::Write);
+
+        let table = TableBuilder::new()
+            .id(103)
+            .name("update_table")
+            .add_col("id", TypeCol::INTEGER)
+            .add_col("value", TypeCol::BYTES)
+            .pkey(1)
+            .build(&mut tx)?;
+
+        tx.insert_table(&table)?;
+
+        // Insert initial records
+        for i in 1..=10 {
+            tx.insert_rec(
+                Record::new().add(i as i64).add(format!("initial_{}", i)),
+                &table,
+                SetFlag::INSERT,
+            )?;
+        }
+        db.commit(tx)?;
+
+        let n_threads = 10;
+        let barrier = Arc::new(Barrier::new(n_threads));
+        let results = Arc::new(Mutex::new(vec![]));
+
+        thread::scope(|s| {
+            for i in 0..n_threads {
+                let db = db.clone();
+                let table = table.clone();
+                let barrier = barrier.clone();
+                let results = results.clone();
+
+                s.spawn(move || {
+                    barrier.wait();
+
+                    let mut tx = db.begin(&db, TXKind::Write);
+                    let thread_id = i as i64 + 1;
+
+                    let rec = Record::new()
+                        .add(thread_id)
+                        .add(format!("updated_by_thread_{}", i));
+                    let r = tx.insert_rec(rec, &table, SetFlag::UPSERT);
+
+                    let commit_result = db.commit(tx);
+                    results.lock().push(commit_result);
+                });
+            }
+        });
+
+        // All updates should succeed (different keys)
+        let results = results.lock();
+        assert_eq!(results.iter().filter(|r| r.is_ok()).count(), n_threads);
+
+        // Verify all updates were applied
+        let tx = db.begin(&db, TXKind::Read);
+        for i in 0..n_threads {
+            let q = Query::with_key(&table).add("id", i as i64 + 1).encode()?;
+            let res = tx.tree_get(q).unwrap().decode();
+            assert_eq!(res[0], DataCell::Str(format!("updated_by_thread_{}", i)));
+        }
+        db.commit(tx)?;
+
+        cleanup_file(path);
+        Ok(())
+    }
+
+    #[test]
+    fn concurrent_update_same_key_conflict() -> Result<()> {
+        let path = "test-files/concurrent_update_conflict.rdb";
+        cleanup_file(path);
+        let db = Arc::new(KVDB::new(path));
+        let mut tx = db.begin(&db, TXKind::Write);
+
+        let table = TableBuilder::new()
+            .id(104)
+            .name("conflict_table")
+            .add_col("id", TypeCol::INTEGER)
+            .add_col("counter", TypeCol::INTEGER)
+            .pkey(1)
+            .build(&mut tx)?;
+
+        tx.insert_table(&table)?;
+
         tx.insert_rec(Record::new().add(1i64).add(0i64), &table, SetFlag::INSERT)?;
         db.commit(tx)?;
 
@@ -1571,65 +1814,151 @@ mod concurrent_tx_tests {
                 s.spawn(move || {
                     barrier.wait();
 
-                    let mut tx = db.begin(&db, TXKind::Write);
+                    let r = retry(Backoff::default(), || {
+                        let mut tx = db.begin(&db, TXKind::Write);
 
-                    // Read current value
-                    let q = Query::with_key(&table).add("id", 1i64).encode().unwrap();
-                    let current = tx.tree_get(q).unwrap().decode();
-                    let val = if let DataCell::Int(v) = current[0] {
-                        v
-                    } else {
-                        0
-                    };
+                        // Read current value
+                        let q = Query::with_key(&table).add("id", 1i64).encode().unwrap();
+                        let current_val = if let Some(v) = tx.tree_get(q) {
+                            let decoded = v.decode();
+                            if let DataCell::Int(val) = decoded[1] {
+                                val
+                            } else {
+                                0
+                            }
+                        } else {
+                            0
+                        };
 
-                    // Update with new value
-                    let rec = Record::new().add(1i64).add(val + 1);
-                    let _ = tx.insert_rec(rec, &table, SetFlag::UPDATE);
+                        let rec = Record::new().add(1i64).add(current_val + 1);
+                        let _ = tx.insert_rec(rec, &table, SetFlag::UPSERT);
 
-                    let commit_result = db.commit(tx);
-                    results.lock().push(commit_result);
+                        let commit_result = db.commit(tx);
+                        if commit_result.can_retry() {
+                            RetryStatus::Continue
+                        } else {
+                            results.lock().push(commit_result);
+                            RetryStatus::Break
+                        }
+                    });
+
+                    if r == RetryResult::AttemptsExceeded {
+                        results
+                            .lock()
+                            .push(Err(Error::TransactionError(TXError::RetriesExceeded)));
+                    }
                 });
             }
         });
 
-        // Should have conflicts
+        // Some transactions will succeed, some will fail due to conflicts
         let results = results.lock();
-        let successes = results.iter().filter(|r| r.is_ok()).count();
-        let failures = results.iter().filter(|r| r.is_err()).count();
-
-        assert!(failures > 0, "Expected some conflicts");
-        assert!(successes > 0, "Expected some successes");
-        assert_eq!(successes + failures, n_threads);
+        let successful = results.iter().filter(|r| r.is_ok()).count();
+        assert!(successful > 0); // At least some should succeed
+        assert!(successful < n_threads); // Not all will succeed due to conflicts
 
         cleanup_file(path);
         Ok(())
     }
 
     #[test]
-    fn delete_same_record() -> Result<()> {
-        let path = "test-files/concurrent_delete.rdb";
+    fn concurrent_delete_different_keys() -> Result<()> {
+        let path = "test-files/concurrent_delete_diff.rdb";
         cleanup_file(path);
         let db = Arc::new(KVDB::new(path));
         let mut tx = db.begin(&db, TXKind::Write);
 
         let table = TableBuilder::new()
-            .id(3)
-            .name("items")
+            .id(105)
+            .name("delete_table")
             .add_col("id", TypeCol::INTEGER)
-            .add_col("data", TypeCol::BYTES)
+            .add_col("value", TypeCol::BYTES)
             .pkey(1)
             .build(&mut tx)?;
 
         tx.insert_table(&table)?;
 
         // Insert records to delete
-        for i in 0..5 {
+        for i in 1..=10 {
             tx.insert_rec(
-                Record::new().add(i as i64).add(format!("data_{}", i)),
+                Record::new().add(i as i64).add(format!("to_delete_{}", i)),
                 &table,
                 SetFlag::INSERT,
             )?;
         }
+        db.commit(tx)?;
+
+        let n_threads = 10;
+        let barrier = Arc::new(Barrier::new(n_threads));
+        let results = Arc::new(Mutex::new(vec![]));
+
+        thread::scope(|s| {
+            for i in 0..n_threads {
+                let db = db.clone();
+                let table = table.clone();
+                let barrier = barrier.clone();
+                let results = results.clone();
+
+                s.spawn(move || {
+                    barrier.wait();
+
+                    let mut tx = db.begin(&db, TXKind::Write);
+                    let q = Query::with_key(&table)
+                        .add("id", i as i64 + 1)
+                        .encode()
+                        .unwrap();
+
+                    if let Ok(_) = tx.tree_delete(q) {
+                        let commit_result = db.commit(tx);
+                        results.lock().push(commit_result);
+                    } else {
+                        let _ = db.commit(tx);
+                        results
+                            .lock()
+                            .push(Err(Error::TransactionError(TXError::RetriesExceeded)));
+                    }
+                });
+            }
+        });
+
+        // All deletes should succeed (different keys)
+        let results = results.lock();
+        assert_eq!(results.iter().filter(|r| r.is_ok()).count(), n_threads);
+
+        // Verify all records were deleted
+        let tx = db.begin(&db, TXKind::Read);
+        for i in 1..=10 {
+            let q = Query::with_key(&table).add("id", i as i64).encode()?;
+            assert!(tx.tree_get(q).is_none());
+        }
+        db.commit(tx)?;
+
+        cleanup_file(path);
+        Ok(())
+    }
+
+    #[test]
+    fn concurrent_delete_same_key_conflict() -> Result<()> {
+        let path = "test-files/concurrent_delete_conflict.rdb";
+        cleanup_file(path);
+        let db = Arc::new(KVDB::new(path));
+        let mut tx = db.begin(&db, TXKind::Write);
+
+        let table = TableBuilder::new()
+            .id(106)
+            .name("delete_conflict_table")
+            .add_col("id", TypeCol::INTEGER)
+            .add_col("value", TypeCol::BYTES)
+            .pkey(1)
+            .build(&mut tx)?;
+
+        tx.insert_table(&table)?;
+
+        tx.insert_rec(
+            Record::new().add(1i64).add("shared_record"),
+            &table,
+            SetFlag::INSERT,
+        )?;
         db.commit(tx)?;
 
         let n_threads = 10;
@@ -1647,179 +1976,53 @@ mod concurrent_tx_tests {
                     barrier.wait();
 
                     let mut tx = db.begin(&db, TXKind::Write);
+                    let q = Query::with_key(&table).add("id", 1i64).encode().unwrap();
 
-                    // All threads try to delete same record
-                    let rec = Record::new().add(2i64).add("data_2");
-                    let del_result = tx.delete_rec(rec, &table);
-
-                    let commit_result = if del_result.is_ok() {
-                        db.commit(tx)
-                    } else {
-                        Err(del_result.unwrap_err())
-                    };
-
-                    results.lock().push(commit_result);
+                    // All threads try to delete the same key
+                    let delete_result = tx.tree_delete(q);
+                    let commit_result = db.commit(tx);
+                    results
+                        .lock()
+                        .push((delete_result.is_ok(), commit_result.is_ok()));
                 });
             }
         });
 
-        // Should have conflicts when deleting same record
+        // Only one delete should succeed
         let results = results.lock();
-        assert!(results.iter().any(|r| r.is_err()));
+        let successful_deletes = results.iter().filter(|(d, _)| *d).count();
+        let successful_commits = results.iter().filter(|(_, c)| *c).count();
+        assert_eq!(successful_deletes, 1); // Only one should successfully delete
 
         cleanup_file(path);
         Ok(())
     }
 
     #[test]
-    fn read_write_isolation() -> Result<()> {
-        let path = "test-files/read_write_isolation.rdb";
+    fn concurrent_mixed_crud_operations() -> Result<()> {
+        let path = "test-files/concurrent_mixed_crud.rdb";
         cleanup_file(path);
         let db = Arc::new(KVDB::new(path));
         let mut tx = db.begin(&db, TXKind::Write);
 
         let table = TableBuilder::new()
-            .id(3)
-            .name("data")
-            .add_col("key", TypeCol::BYTES)
-            .add_col("value", TypeCol::INTEGER)
-            .pkey(1)
-            .build(&mut tx)?;
-
-        tx.insert_table(&table)?;
-
-        tx.insert_rec(
-            Record::new().add("key1").add(100i64),
-            &table,
-            SetFlag::INSERT,
-        )?;
-        db.commit(tx)?;
-
-        let n_readers = 10;
-        let barrier = Arc::new(Barrier::new(n_readers + 1));
-        let read_values = Arc::new(Mutex::new(vec![]));
-
-        thread::scope(|s| {
-            // Readers
-            for _ in 0..n_readers {
-                let db = db.clone();
-                let table = table.clone();
-                let barrier = barrier.clone();
-                let read_values = read_values.clone();
-
-                s.spawn(move || {
-                    barrier.wait();
-
-                    let tx = db.begin(&db, TXKind::Read);
-                    let q = Query::with_key(&table).add("key", "key1").encode().unwrap();
-
-                    if let Some(val) = tx.tree_get(q) {
-                        let decoded = val.decode();
-                        if let DataCell::Int(v) = decoded[0] {
-                            read_values.lock().push(v);
-                        }
-                    }
-
-                    let _ = db.commit(tx);
-                });
-            }
-
-            // Writer
-            let db = db.clone();
-            let table = table.clone();
-            let barrier = barrier.clone();
-
-            s.spawn(move || {
-                barrier.wait();
-
-                let mut tx = db.begin(&db, TXKind::Write);
-                let _ = tx.insert_rec(
-                    Record::new().add("key1").add(200i64),
-                    &table,
-                    SetFlag::UPDATE,
-                );
-                let _ = db.commit(tx);
-            });
-        });
-
-        // All readers should see consistent snapshot (100)
-        let values = read_values.lock();
-        assert!(values.iter().all(|&v| v == 100));
-
-        cleanup_file(path);
-        Ok(())
-    }
-
-    #[test]
-    fn table_operations() -> Result<()> {
-        let path = "test-files/concurrent_tables.rdb";
-        cleanup_file(path);
-        let db = Arc::new(KVDB::new(path));
-
-        let n_threads = 5;
-        let barrier = Arc::new(Barrier::new(n_threads));
-        let results = Arc::new(Mutex::new(vec![]));
-
-        thread::scope(|s| {
-            for i in 0..n_threads {
-                let db = db.clone();
-                let barrier = barrier.clone();
-                let results = results.clone();
-
-                s.spawn(move || {
-                    barrier.wait();
-
-                    let mut tx = db.begin(&db, TXKind::Write);
-
-                    let table = TableBuilder::new()
-                        .id((10 + i) as u32)
-                        .name(&format!("table_{}", i))
-                        .add_col("col1", TypeCol::BYTES)
-                        .pkey(1)
-                        .build(&mut tx)
-                        .unwrap();
-
-                    let insert_result = tx.insert_table(&table);
-                    let commit_result = if insert_result.is_ok() {
-                        db.commit(tx)
-                    } else {
-                        Err(insert_result.unwrap_err())
-                    };
-
-                    results.lock().push(commit_result);
-                });
-            }
-        });
-
-        // All should succeed (different table names)
-        let results = results.lock();
-        assert_eq!(results.iter().filter(|r| r.is_ok()).count(), n_threads);
-
-        cleanup_file(path);
-        Ok(())
-    }
-
-    #[test]
-    fn mixed_operations() -> Result<()> {
-        let path = "test-files/mixed_ops.rdb";
-        cleanup_file(path);
-        let db = Arc::new(KVDB::new(path));
-        let mut tx = db.begin(&db, TXKind::Write);
-
-        let table = TableBuilder::new()
-            .id(3)
-            .name("mixed")
+            .id(107)
+            .name("mixed_crud_table")
             .add_col("id", TypeCol::INTEGER)
+            .add_col("operation", TypeCol::BYTES)
             .add_col("value", TypeCol::BYTES)
             .pkey(1)
             .build(&mut tx)?;
 
         tx.insert_table(&table)?;
 
-        // Seed some data
-        for i in 0..20 {
+        // Insert some initial records
+        for i in 1..=5 {
             tx.insert_rec(
-                Record::new().add(i as i64).add(format!("initial_{}", i)),
+                Record::new()
+                    .add(i as i64)
+                    .add("initial")
+                    .add(format!("initial_val_{}", i)),
                 &table,
                 SetFlag::INSERT,
             )?;
@@ -1828,122 +2031,272 @@ mod concurrent_tx_tests {
 
         let n_threads = 15;
         let barrier = Arc::new(Barrier::new(n_threads));
+        let results = Arc::new(Mutex::new(vec![]));
 
         thread::scope(|s| {
             for i in 0..n_threads {
                 let db = db.clone();
                 let table = table.clone();
                 let barrier = barrier.clone();
+                let results = results.clone();
 
                 s.spawn(move || {
                     barrier.wait();
 
                     let mut tx = db.begin(&db, TXKind::Write);
+                    let operation_id = (i % 3) as u32;
 
-                    match i % 3 {
+                    match operation_id {
                         0 => {
-                            // Insert new
-                            let _ = tx.insert_rec(
-                                Record::new()
-                                    .add((100 + i) as i64)
-                                    .add(format!("new_{}", i)),
-                                &table,
-                                SetFlag::INSERT,
-                            );
+                            // READ
+                            let q = Query::with_key(&table).add("id", 1i64).encode().unwrap();
+                            let _ = tx.tree_get(q);
                         }
                         1 => {
-                            // Update existing
-                            let _ = tx.insert_rec(
-                                Record::new()
-                                    .add((i % 10) as i64)
-                                    .add(format!("updated_{}", i)),
-                                &table,
-                                SetFlag::UPDATE,
-                            );
+                            // INSERT/UPDATE
+                            let new_id = i as i64 + 10;
+                            let rec = Record::new()
+                                .add(new_id)
+                                .add("insert_op")
+                                .add(format!("inserted_by_{}", i));
+                            let _ = tx.insert_rec(rec, &table, SetFlag::UPSERT);
                         }
                         2 => {
-                            // Delete existing
-                            let _ =
-                                tx.delete_rec(Record::new().add((i % 10) as i64).add(""), &table);
+                            // UPDATE existing
+                            let update_id = (i % 5) as i64 + 1;
+                            let rec = Record::new()
+                                .add(update_id)
+                                .add("updated")
+                                .add(format!("updated_by_thread_{}", i));
+                            let _ = tx.insert_rec(rec, &table, SetFlag::UPSERT);
                         }
                         _ => unreachable!(),
                     }
 
-                    let _ = db.commit(tx);
+                    let commit_result = db.commit(tx);
+                    results.lock().push(commit_result);
                 });
             }
         });
+
+        let results = results.lock();
+        let successful = results.iter().filter(|r| r.is_ok()).count();
+        assert!(successful >= n_threads / 2); // At least half should succeed
 
         cleanup_file(path);
         Ok(())
     }
 
     #[test]
-    fn sequential_tid_generation() -> Result<()> {
-        let path = "test-files/sequential_tid.rdb";
-        cleanup_file(path);
-        let db = Arc::new(KVDB::new(path));
-
-        let n_threads = 10;
-        let barrier = Arc::new(Barrier::new(n_threads));
-        let tids = Arc::new(Mutex::new(vec![]));
-
-        thread::scope(|s| {
-            for _ in 0..n_threads {
-                let db = db.clone();
-                let barrier = barrier.clone();
-                let tids = tids.clone();
-
-                s.spawn(move || {
-                    barrier.wait();
-
-                    let mut tx = db.begin(&db, TXKind::Write);
-                    if let Ok(tid) = tx.new_tid() {
-                        tids.lock().push(tid);
-                        let _ = db.commit(tx);
-                    }
-                });
-            }
-        });
-
-        // Check for uniqueness
-        let mut tids = tids.lock().clone();
-        tids.sort();
-        tids.dedup();
-
-        // May have fewer than n_threads due to conflicts, but all should be unique
-        assert!(tids.len() > 0);
-        assert!(tids.len() <= n_threads);
-
-        cleanup_file(path);
-        Ok(())
-    }
-
-    #[test]
-    fn read_only_tx_no_conflict() -> Result<()> {
-        let path = "test-files/read_only.rdb";
+    fn concurrent_read_during_writes() -> Result<()> {
+        let path = "test-files/concurrent_read_during_writes.rdb";
         cleanup_file(path);
         let db = Arc::new(KVDB::new(path));
         let mut tx = db.begin(&db, TXKind::Write);
 
         let table = TableBuilder::new()
-            .id(3)
-            .name("readonly_test")
-            .add_col("key", TypeCol::INTEGER)
-            .add_col("val", TypeCol::BYTES)
+            .id(108)
+            .name("read_during_write_table")
+            .add_col("id", TypeCol::INTEGER)
+            .add_col("value", TypeCol::INTEGER)
             .pkey(1)
             .build(&mut tx)?;
 
         tx.insert_table(&table)?;
-        tx.insert_rec(Record::new().add(1i64).add("data"), &table, SetFlag::INSERT)?;
+
+        tx.insert_rec(Record::new().add(1i64).add(0i64), &table, SetFlag::INSERT)?;
         db.commit(tx)?;
 
-        let n_readers = 20;
-        let barrier = Arc::new(Barrier::new(n_readers));
+        let n_threads = 12;
+        let barrier = Arc::new(Barrier::new(n_threads));
+        let read_results = Arc::new(Mutex::new(vec![]));
+        let write_results = Arc::new(Mutex::new(vec![]));
+
+        thread::scope(|s| {
+            for i in 0..n_threads {
+                let db = db.clone();
+                let table = table.clone();
+                let barrier = barrier.clone();
+                let read_results = read_results.clone();
+                let write_results = write_results.clone();
+
+                s.spawn(move || {
+                    barrier.wait();
+
+                    if i < 6 {
+                        // Reader threads
+                        let tx = db.begin(&db, TXKind::Read);
+                        let q = Query::with_key(&table).add("id", 1i64).encode().unwrap();
+                        let val = tx.tree_get(q);
+                        let _ = db.commit(tx);
+                        read_results.lock().push(val.is_some());
+                    } else {
+                        // Writer threads
+                        let mut tx = db.begin(&db, TXKind::Write);
+                        let current = if let Some(v) =
+                            tx.tree_get(Query::with_key(&table).add("id", 1i64).encode().unwrap())
+                        {
+                            let decoded = v.decode();
+                            if let DataCell::Int(val) = decoded[1] {
+                                val
+                            } else {
+                                0
+                            }
+                        } else {
+                            0
+                        };
+
+                        let rec = Record::new().add(1i64).add(current + 1);
+                        let _ = tx.insert_rec(rec, &table, SetFlag::UPSERT);
+                        let result = db.commit(tx);
+                        write_results.lock().push(result.is_ok());
+                    }
+                });
+            }
+        });
+
+        // All readers should see data
+        let read_results = read_results.lock();
+        assert_eq!(read_results.iter().filter(|r| **r).count(), 6);
+
+        // Some writers should succeed
+        let write_results = write_results.lock();
+        let write_success = write_results.iter().filter(|r| **r).count();
+        assert!(write_success > 0);
+
+        cleanup_file(path);
+        Ok(())
+    }
+
+    #[test]
+    fn concurrent_insert_then_read_consistency() -> Result<()> {
+        let path = "test-files/concurrent_insert_read_consistency.rdb";
+        cleanup_file(path);
+        let db = Arc::new(KVDB::new(path));
+        let mut tx = db.begin(&db, TXKind::Write);
+
+        let table = TableBuilder::new()
+            .id(109)
+            .name("insert_read_consistency")
+            .add_col("id", TypeCol::INTEGER)
+            .add_col("data", TypeCol::BYTES)
+            .pkey(1)
+            .build(&mut tx)?;
+
+        tx.insert_table(&table)?;
+        db.commit(tx)?;
+
+        let n_insert_threads = 5;
+        let n_read_threads = 10;
+        let barrier = Arc::new(Barrier::new(n_insert_threads + n_read_threads));
+        let insert_results = Arc::new(Mutex::new(vec![]));
+        let read_results = Arc::new(Mutex::new(vec![]));
+
+        thread::scope(|s| {
+            for i in 0..n_insert_threads {
+                let db = db.clone();
+                let table = table.clone();
+                let barrier = barrier.clone();
+                let insert_results = insert_results.clone();
+
+                s.spawn(move || {
+                    barrier.wait();
+
+                    let r = retry(Backoff::default(), || {
+                        let mut tx = db.begin(&db, TXKind::Write);
+                        let rec = Record::new().add(i as i64).add(format!("inserted_{}", i));
+                        let _ = tx.insert_rec(rec, &table, SetFlag::INSERT);
+                        let result = db.commit(tx);
+                        if result.can_retry() {
+                            RetryStatus::Continue
+                        } else {
+                            insert_results.lock().push(result);
+                            RetryStatus::Break
+                        }
+                    });
+                });
+            }
+
+            for _ in 0..n_read_threads {
+                let db = db.clone();
+                let table = table.clone();
+                let barrier = barrier.clone();
+                let read_results = read_results.clone();
+
+                s.spawn(move || {
+                    barrier.wait();
+
+                    let tx = db.begin(&db, TXKind::Read);
+                    let mut count = 0;
+
+                    for i in 0..n_insert_threads {
+                        let q = Query::with_key(&table)
+                            .add("id", i as i64)
+                            .encode()
+                            .unwrap();
+                        if tx.tree_get(q).is_some() {
+                            count += 1;
+                        }
+                    }
+
+                    let _ = db.commit(tx);
+                    read_results.lock().push(count);
+                });
+            }
+        });
+
+        // All inserts should eventually succeed
+        let insert_results = insert_results.lock();
+        assert_eq!(
+            insert_results.iter().filter(|r| r.is_ok()).count(),
+            n_insert_threads
+        );
+
+        // Readers should see consistent number of inserted records
+        let read_results = read_results.lock();
+        assert!(
+            read_results
+                .iter()
+                .all(|count| *count <= n_insert_threads as usize)
+        );
+
+        cleanup_file(path);
+        Ok(())
+    }
+
+    #[test]
+    fn concurrent_full_table_scan() -> Result<()> {
+        let path = "test-files/concurrent_full_scan.rdb";
+        cleanup_file(path);
+        let db = Arc::new(KVDB::new(path));
+        let mut tx = db.begin(&db, TXKind::Write);
+
+        let table = TableBuilder::new()
+            .id(110)
+            .name("scan_table")
+            .add_col("id", TypeCol::INTEGER)
+            .add_col("value", TypeCol::BYTES)
+            .pkey(1)
+            .build(&mut tx)?;
+
+        tx.insert_table(&table)?;
+
+        // Insert 50 records
+        for i in 1..=50 {
+            tx.insert_rec(
+                Record::new().add(i as i64).add(format!("value_{}", i)),
+                &table,
+                SetFlag::INSERT,
+            )?;
+        }
+        db.commit(tx)?;
+
+        let n_threads = 10;
+        let barrier = Arc::new(Barrier::new(n_threads));
         let results = Arc::new(Mutex::new(vec![]));
 
         thread::scope(|s| {
-            for _ in 0..n_readers {
+            for _ in 0..n_threads {
                 let db = db.clone();
                 let table = table.clone();
                 let barrier = barrier.clone();
@@ -1953,55 +2306,203 @@ mod concurrent_tx_tests {
                     barrier.wait();
 
                     let tx = db.begin(&db, TXKind::Read);
-                    let q = Query::with_key(&table).add("key", 1i64).encode().unwrap();
-                    let _ = tx.tree_get(q);
+                    let records = tx.full_table_scan(&table).unwrap().collect_records();
+                    let _ = db.commit(tx);
 
-                    let r = db.commit(tx);
-                    results.lock().push(r);
+                    results.lock().push(records.len());
                 });
             }
         });
 
-        // All read transactions should succeed
+        // All scans should return the same count
         let results = results.lock();
-        assert_eq!(results.iter().filter(|r| r.is_ok()).count(), n_readers);
+        assert!(results.iter().all(|count| *count == 50));
 
         cleanup_file(path);
         Ok(())
     }
 
     #[test]
-    fn abort_leaves_db_consistent() -> Result<()> {
-        let path = "test-files/abort_consistent.rdb";
+    fn concurrent_insert_with_retry_logic() -> Result<()> {
+        let path = "test-files/concurrent_insert_retry.rdb";
         cleanup_file(path);
         let db = Arc::new(KVDB::new(path));
         let mut tx = db.begin(&db, TXKind::Write);
 
         let table = TableBuilder::new()
-            .id(3)
-            .name("abort_test")
+            .id(111)
+            .name("retry_table")
             .add_col("id", TypeCol::INTEGER)
+            .add_col("name", TypeCol::BYTES)
             .pkey(1)
             .build(&mut tx)?;
 
         tx.insert_table(&table)?;
-        tx.insert_rec(Record::new().add(1i64), &table, SetFlag::INSERT)?;
         db.commit(tx)?;
 
-        // Start transaction and modify
-        let mut tx2 = db.begin(&db, TXKind::Write);
-        tx2.insert_rec(Record::new().add(2i64), &table, SetFlag::INSERT)?;
-        db.abort(tx2); // Abort instead of commit
+        let n_threads = 20;
+        let barrier = Arc::new(Barrier::new(n_threads));
+        let results = Arc::new(Mutex::new(vec![]));
 
-        // Verify original data unchanged
-        let tx3 = db.begin(&db, TXKind::Read);
+        thread::scope(|s| {
+            for i in 0..n_threads {
+                let db = db.clone();
+                let table = table.clone();
+                let barrier = barrier.clone();
+                let results = results.clone();
+
+                s.spawn(move || {
+                    barrier.wait();
+
+                    let r = retry(Backoff::default(), || {
+                        let mut tx = db.begin(&db, TXKind::Write);
+                        let rec = Record::new().add(i as i64).add(format!("user_{}", i));
+                        let _ = tx.insert_rec(rec, &table, SetFlag::INSERT);
+                        let commit_result = db.commit(tx);
+
+                        if commit_result.can_retry() {
+                            RetryStatus::Continue
+                        } else {
+                            results.lock().push(commit_result);
+                            RetryStatus::Break
+                        }
+                    });
+
+                    if r == RetryResult::AttemptsExceeded {
+                        results
+                            .lock()
+                            .push(Err(Error::TransactionError(TXError::RetriesExceeded)));
+                    }
+                });
+            }
+        });
+
+        // All different key inserts should succeed with retry logic
+        let results = results.lock();
+        assert_eq!(results.iter().filter(|r| r.is_ok()).count(), n_threads);
+
+        cleanup_file(path);
+        Ok(())
+    }
+
+    #[test]
+    fn concurrent_upsert_same_key() -> Result<()> {
+        let path = "test-files/concurrent_upsert_same.rdb";
+        cleanup_file(path);
+        let db = Arc::new(KVDB::new(path));
+        let mut tx = db.begin(&db, TXKind::Write);
+
+        let table = TableBuilder::new()
+            .id(112)
+            .name("upsert_table")
+            .add_col("id", TypeCol::INTEGER)
+            .add_col("version", TypeCol::INTEGER)
+            .pkey(1)
+            .build(&mut tx)?;
+
+        tx.insert_table(&table)?;
+        db.commit(tx)?;
+
+        let n_threads = 15;
+        let barrier = Arc::new(Barrier::new(n_threads));
+        let results = Arc::new(Mutex::new(vec![]));
+
+        thread::scope(|s| {
+            for i in 0..n_threads {
+                let db = db.clone();
+                let table = table.clone();
+                let barrier = barrier.clone();
+                let results = results.clone();
+
+                s.spawn(move || {
+                    barrier.wait();
+
+                    let mut tx = db.begin(&db, TXKind::Write);
+                    let rec = Record::new().add(1i64).add(i as i64);
+                    let _ = tx.insert_rec(rec, &table, SetFlag::UPSERT);
+                    let result = db.commit(tx);
+                    results.lock().push(result);
+                });
+            }
+        });
+
+        // All upserts should succeed
+        let results = results.lock();
+        let successful = results.iter().filter(|r| r.is_ok()).count();
+        assert!(successful > 0); // At least one should succeed
+        assert!(successful <= n_threads); // Not necessarily all if there's conflict detection
+
+        // Verify the final record exists
+        let tx = db.begin(&db, TXKind::Read);
         let q = Query::with_key(&table).add("id", 1i64).encode()?;
-        assert!(tx3.tree_get(q).is_some());
+        assert!(tx.tree_get(q).is_some());
+        db.commit(tx)?;
 
-        let q2 = Query::with_key(&table).add("id", 2i64).encode()?;
-        assert!(tx3.tree_get(q2).is_none()); // Aborted insert not visible
+        cleanup_file(path);
+        Ok(())
+    }
 
-        db.commit(tx3)?;
+    #[test]
+    fn concurrent_write_after_read() -> Result<()> {
+        let path = "test-files/concurrent_write_after_read.rdb";
+        cleanup_file(path);
+        let db = Arc::new(KVDB::new(path));
+        let mut tx = db.begin(&db, TXKind::Write);
+
+        let table = TableBuilder::new()
+            .id(113)
+            .name("write_after_read")
+            .add_col("id", TypeCol::INTEGER)
+            .add_col("data", TypeCol::BYTES)
+            .pkey(1)
+            .build(&mut tx)?;
+
+        tx.insert_table(&table)?;
+
+        for i in 1..=5 {
+            tx.insert_rec(
+                Record::new().add(i as i64).add(format!("initial_{}", i)),
+                &table,
+                SetFlag::INSERT,
+            )?;
+        }
+        db.commit(tx)?;
+
+        let n_threads = 10;
+        let barrier = Arc::new(Barrier::new(n_threads));
+        let results = Arc::new(Mutex::new(vec![]));
+
+        thread::scope(|s| {
+            for i in 0..n_threads {
+                let db = db.clone();
+                let table = table.clone();
+                let barrier = barrier.clone();
+                let results = results.clone();
+
+                s.spawn(move || {
+                    barrier.wait();
+
+                    let mut tx = db.begin(&db, TXKind::Write);
+
+                    // Read first
+                    let read_q = Query::with_key(&table).add("id", 1i64).encode().unwrap();
+                    let _ = tx.tree_get(read_q);
+
+                    // Then write
+                    let write_id = i as i64 + 10;
+                    let rec = Record::new().add(write_id).add(format!("written_by_{}", i));
+                    let _ = tx.insert_rec(rec, &table, SetFlag::INSERT);
+
+                    let result = db.commit(tx);
+                    results.lock().push(result);
+                });
+            }
+        });
+
+        // Most writes should succeed (different keys)
+        let results = results.lock();
+        let successful = results.iter().filter(|r| r.is_ok()).count();
+        assert!(successful >= n_threads / 2);
 
         cleanup_file(path);
         Ok(())

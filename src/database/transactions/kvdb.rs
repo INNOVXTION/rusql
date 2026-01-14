@@ -20,6 +20,7 @@ use crate::database::{
  * |[TABLE ID][PREFIX][PK1 ][PK2 ]..|[ v1 ][ v2 ]..|
 */
 
+// central shared struct
 pub(crate) struct KVDB {
     pub pager: Arc<DiskPager>,
     pub t_def: TDefTable,
@@ -52,12 +53,12 @@ impl KVDB {
     }
 
     pub fn get_meta<P: Pager>(&self, tree: &BTree<P>) -> Arc<Table> {
-        self.read_table(META_TABLE_NAME, tree)
+        self.read_table_buffer(META_TABLE_NAME, tree)
             .expect("this always returns the table")
     }
 
     /// gets the schema for a table name, schema is stored inside buffer
-    pub fn read_table<P: Pager>(&self, name: &str, tree: &BTree<P>) -> Option<Arc<Table>> {
+    pub fn read_table_buffer<P: Pager>(&self, name: &str, tree: &BTree<P>) -> Option<Arc<Table>> {
         let mut buf = self.t_buf.lock();
 
         // check buffer

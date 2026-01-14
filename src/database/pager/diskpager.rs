@@ -42,7 +42,7 @@ pub struct AllocatedPage {
     pub origin: PageOrigin,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PageOrigin {
     Append,
     Freelist,
@@ -328,7 +328,7 @@ impl DiskPager {
     }
 
     pub fn read(&self, ptr: Pointer, flag: NodeFlag, version: u64) -> Arc<Node> {
-        debug!(node=?flag, %ptr, "page read");
+        debug!(node=?flag, %ptr, version, "reading page...");
         let mut buf_shr = self.buf_shared.write();
 
         // check buffer first
