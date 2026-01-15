@@ -1249,7 +1249,7 @@ mod concurrent_tx_tests {
     use parking_lot::Mutex;
     use std::sync::{Arc, Barrier};
     use std::thread;
-    // use test_log::test;
+    use test_log::test;
     use tracing::{Level, span, warn};
 
     #[test]
@@ -1342,27 +1342,27 @@ mod concurrent_tx_tests {
         let path = "test-files/concurrent_insert_diff.rdb";
         cleanup_file(path);
 
-        use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt};
+        // use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
-        let file = std::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open("output.log")
-            .expect("failed to open log file");
+        // let file = std::fs::OpenOptions::new()
+        //     .create(true)
+        //     .write(true)
+        //     .truncate(true)
+        //     .open("output.log")
+        //     .expect("failed to open log file");
 
-        let (file_writer, _guard) = tracing_appender::non_blocking(file);
+        // let (file_writer, _guard) = tracing_appender::non_blocking(file);
 
-        let stdout_layer = fmt::layer().with_ansi(true);
-        let file_layer = fmt::layer()
-            .with_ansi(false)
-            .with_writer(file_writer)
-            .fmt_fields(fmt::format::DefaultFields::new());
+        // let stdout_layer = fmt::layer().with_ansi(true);
+        // let file_layer = fmt::layer()
+        //     .with_ansi(false)
+        //     .with_writer(file_writer)
+        //     .fmt_fields(fmt::format::DefaultFields::new());
 
-        tracing_subscriber::registry()
-            .with(stdout_layer)
-            .with(file_layer)
-            .init();
+        // tracing_subscriber::registry()
+        //     .with(stdout_layer)
+        //     .with(file_layer)
+        //     .init();
 
         let db = Arc::new(KVDB::new(path));
 
@@ -1581,7 +1581,7 @@ mod concurrent_tx_tests {
         }
         db.commit(tx)?;
 
-        let n_threads = 15;
+        let n_threads = 1000;
         let barrier = Arc::new(Barrier::new(n_threads));
         let results = Arc::new(Mutex::new(vec![]));
 
@@ -1653,7 +1653,7 @@ mod concurrent_tx_tests {
         tx.insert_table(&table)?;
 
         // Insert initial records
-        for i in 1..=10 {
+        for i in 1..=1000 {
             tx.insert_rec(
                 Record::new().add(i as i64).add(format!("initial_{}", i)),
                 &table,
@@ -1662,7 +1662,7 @@ mod concurrent_tx_tests {
         }
         db.commit(tx)?;
 
-        let n_threads = 10;
+        let n_threads = 1000;
         let barrier = Arc::new(Barrier::new(n_threads));
         let results = Arc::new(Mutex::new(vec![]));
 
@@ -1744,7 +1744,7 @@ mod concurrent_tx_tests {
         tx.insert_rec(Record::new().add(1i64).add(0i64), &table, SetFlag::INSERT)?;
         db.commit(tx)?;
 
-        let n_threads = 100;
+        let n_threads = 1000;
         let barrier = Arc::new(Barrier::new(n_threads));
         let results = Arc::new(Mutex::new(vec![]));
 
@@ -1823,7 +1823,7 @@ mod concurrent_tx_tests {
         tx.insert_table(&table)?;
 
         // Insert records to delete
-        for i in 1..=100 {
+        for i in 1..=1000 {
             tx.insert_rec(
                 Record::new().add(i as i64).add(format!("to_delete_{}", i)),
                 &table,
@@ -1832,7 +1832,7 @@ mod concurrent_tx_tests {
         }
         db.commit(tx)?;
 
-        let n_threads = 100;
+        let n_threads = 1000;
         let barrier = Arc::new(Barrier::new(n_threads));
         let results = Arc::new(Mutex::new(vec![]));
 
@@ -1916,7 +1916,7 @@ mod concurrent_tx_tests {
         )?;
         db.commit(tx)?;
 
-        let n_threads = 10;
+        let n_threads = 1000;
         let barrier = Arc::new(Barrier::new(n_threads));
         let results = Arc::new(Mutex::new(vec![]));
 
@@ -2092,7 +2092,7 @@ mod concurrent_tx_tests {
         tx.insert_rec(Record::new().add(1i64).add(0i64), &table, SetFlag::INSERT)?;
         db.commit(tx)?;
 
-        let n_threads = 12;
+        let n_threads = 1000;
         let barrier = Arc::new(Barrier::new(n_threads));
         let read_results = Arc::new(Mutex::new(vec![]));
         let write_results = Arc::new(Mutex::new(vec![]));
