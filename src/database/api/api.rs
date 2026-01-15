@@ -8,7 +8,7 @@ use parking_lot::RwLock;
 
 use crate::database::{
     BTree,
-    pager::{BufferEntry, DiskBuffer, DiskPager, MetaPage},
+    pager::{BufferEntry, DiskPager, MetaPage},
     transactions::kvdb::KVDB,
     types::Pointer,
 };

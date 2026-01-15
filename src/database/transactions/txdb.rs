@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::Ordering;
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
@@ -7,7 +7,7 @@ use tracing::debug;
 
 use crate::database::pager::diskpager::PageOrigin;
 use crate::database::{
-    pager::{DiskBuffer, NodeFlag, Pager},
+    pager::{NodeFlag, Pager},
     transactions::{kvdb::KVDB, tx::TXKind},
     types::{Node, Pointer},
 };
@@ -21,7 +21,7 @@ pub struct TXDB {
 
 pub struct TXBuffer {
     pub write_map: HashMap<Pointer, TXBufWriteEntry>,
-    pub dealloc_q: VecDeque<Pointer>,
+    pub dealloc_map: HashSet<Pointer>,
     pub nappend: u32,
 }
 
@@ -42,7 +42,7 @@ impl TXDB {
                 db_link: db.clone(),
                 tx_buf: Some(RefCell::new(TXBuffer {
                     write_map: HashMap::new(),
-                    dealloc_q: VecDeque::new(),
+                    dealloc_map: HashSet::new(),
                     nappend: 0,
                 })),
                 version: db.pager.version.load(Ordering::Acquire),
@@ -69,12 +69,23 @@ impl TXDB {
                 }
                 debug!("");
                 debug!("dealloc queue:");
-                for e in self.tx_buf.as_ref().unwrap().borrow().dealloc_q.iter() {
+                for e in self.tx_buf.as_ref().unwrap().borrow().dealloc_map.iter() {
                     debug!("- {e}")
                 }
                 debug!("{:-<10}", "-");
             }
         }
+    }
+
+    fn is_synced(&self) -> bool {
+        let buf = self.tx_buf.as_ref().unwrap().borrow();
+
+        for e in buf.write_map.iter() {
+            if buf.dealloc_map.contains(e.0) {
+                return false;
+            }
+        }
+        true
     }
 }
 
@@ -92,31 +103,37 @@ impl Pager for TXDB {
 
     fn page_alloc(&self, node: Node, version: u64) -> Pointer {
         let mut buf = self.tx_buf.as_ref().unwrap().borrow_mut();
+        debug!(nappend = buf.nappend, "allocating new page");
 
         // request pointer from pager
         let page = self.db_link.pager.alloc(&node, version, buf.nappend);
 
         // store node in TX buffer
-        if let None = buf.write_map.insert(
+        let r = buf.write_map.insert(
             page.ptr,
             TXBufWriteEntry {
                 node: Arc::new(node),
                 origin: page.origin,
             },
-        ) && let PageOrigin::Append = page.origin
-        {
+        );
+        if r.is_none() && PageOrigin::Append == page.origin {
             // if the page didnt exist and the new page came from an append
             buf.nappend += 1;
         }
 
+        // sync with deallocations
+        buf.dealloc_map.remove(&page.ptr);
+        drop(buf);
+
         #[cfg(test)]
         {
             if let Ok("debug") = std::env::var("RUSQL_LOG_TX").as_deref() {
-                drop(buf);
                 self.debug_print();
             }
         };
 
+        debug_assert!(self.is_synced());
+        debug!("handing out: {}", page.ptr);
         page.ptr
     }
 
@@ -125,13 +142,22 @@ impl Pager for TXDB {
         let mut buf = self.tx_buf.as_ref().unwrap().borrow_mut();
 
         // push to dealloc list
-        buf.dealloc_q.push_back(ptr);
+        buf.dealloc_map.insert(ptr);
 
         // sync write buffer
         if let Some(entry) = buf.write_map.remove(&ptr)
             && entry.origin == PageOrigin::Append
         {
-            buf.nappend -= 1;
+            // buf.nappend -= 1;
         };
+
+        drop(buf);
+        #[cfg(test)]
+        {
+            if let Ok("debug") = std::env::var("RUSQL_LOG_TX").as_deref() {
+                self.debug_print();
+            }
+        };
+        debug_assert!(self.is_synced());
     }
 }

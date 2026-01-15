@@ -216,7 +216,7 @@ impl<P: Pager> BTree<P> {
 
     pub fn encode(&self, node: TreeNode) -> Pointer {
         let strong = self.pager.upgrade().expect("tree callback encode failed");
-        debug!("requesting alloc");
+        debug!("requesting node");
         strong.page_alloc(Node::Tree(node), 0)
     }
 

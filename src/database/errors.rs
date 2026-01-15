@@ -196,6 +196,8 @@ pub(crate) enum TXError {
     TxBeginError(String),
     #[error("Commit error {0}")]
     CommitError(String),
+    #[error("Write TX didnt touch anything")]
+    EmptyWriteError,
     #[error("Retry limit reached")]
     RetriesExceeded,
 }

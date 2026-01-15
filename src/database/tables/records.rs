@@ -386,7 +386,7 @@ mod test {
         let kv = rec.encode(&table)?.next().unwrap();
         assert_eq!(kv.0.to_string(), "2 0 hello 10");
         assert_eq!(kv.1.to_string(), "world");
-        db.commit(tx)?;
+        let _ = db.commit(tx);
         cleanup_file(path);
         Ok(())
     }
@@ -453,7 +453,7 @@ mod test {
         assert_eq!(kv.0.to_string(), "2 1 10 hello");
         assert_eq!(kv.1.to_string(), "world");
 
-        db.commit(tx)?;
+        let _ = db.commit(tx);
         cleanup_file(path);
         Ok(())
     }
@@ -493,7 +493,7 @@ mod test {
         assert_eq!(kv.0.to_string(), "5 1 Berlin 1");
         assert_eq!(kv.1.to_string(), "Alfred Firefighter");
 
-        db.commit(tx)?;
+        let _ = db.commit(tx);
         cleanup_file(path);
         Ok(())
     }

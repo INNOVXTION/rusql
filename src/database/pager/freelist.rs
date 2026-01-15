@@ -4,15 +4,15 @@ use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, Weak};
 
 use crate::database::codec::{NumDecode, NumEncode};
+use crate::database::pager::DiskPager;
 use crate::database::pager::diskpager::{GCCallbacks, NodeFlag, Pager};
-use crate::database::pager::{DiskBuffer, DiskPager};
 use crate::database::types::{FREE_PAGE, Node, VER_SIZE};
 use crate::database::{
     btree::TreeNode,
     errors::FLError,
     types::{PAGE_SIZE, PTR_SIZE, Pointer},
 };
-use tracing::debug;
+use tracing::{debug, warn};
 
 pub(crate) struct FreeList {
     pub pager: Weak<DiskPager>,
@@ -196,6 +196,7 @@ impl GC for FreeList {
 
     /// increments the max_seq for next transaction cycle
     fn set_max_seq(&mut self) {
+        debug!("freelist: setting max seq to {}", self.tail_seq);
         self.max_seq = self.tail_seq
     }
 
@@ -245,10 +246,16 @@ impl FreeList {
 
     /// flPop
     fn pop_head(&mut self) -> (Option<Pointer>, Option<Pointer>) {
+        debug!("freelist node request");
         // experimental
         // head seq cant overtake max seq when on the same page as tail
         if self.is_empty() {
             // no free page available
+            debug!(
+                max_seq = self.max_seq,
+                tail_seq = self.tail_seq,
+                "freelist is empty"
+            );
             return (None, None);
         }
 
@@ -256,6 +263,11 @@ impl FreeList {
 
         // is the version retrieved newer than max_ver
         if ptr.1 > self.max_ver {
+            warn!(
+                max_ver = self.max_ver,
+                ptr_ver = ptr.1,
+                "cant give out freelist node"
+            );
             return (None, None);
         }
 
@@ -371,7 +383,7 @@ impl FreeList {
     }
 
     fn is_empty(&self) -> bool {
-        if self.head_page == self.tail_page && self.head_seq == self.max_seq {
+        if self.head_seq == self.max_seq && self.head_page == self.tail_page {
             true
         } else {
             false

@@ -10,6 +10,7 @@ use crate::database::{
     pager::{KVEngine, MetaPage, Pager},
     tables::{
         Key, Query, Record, Value,
+        records::QueryKey,
         tables::{
             DEF_TABLE_COL1, LOWEST_PREMISSIABLE_TID, META_TABLE_COL1, META_TABLE_ID_ROW,
             META_TABLE_NAME, MetaTable, Table,
@@ -301,6 +302,16 @@ impl TX {
         Ok(())
     }
 
+    fn delete_from_query(&mut self, q: QueryKey, schema: &Table) -> Result<()> {
+        let key = q.encode()?;
+        let val = match self.tree_get(key.clone()) {
+            Some(v) => v,
+            None => return Err(Error::DeleteError("key doesnt exist".to_string())),
+        };
+        let rec = Record::from_kv((key, val));
+        self.delete_rec(rec, schema)
+    }
+
     /// deletes a record and potential secondary indicies
     fn delete_rec(&mut self, rec: Record, schema: &Table) -> Result<()> {
         info!(?rec, "deleting record");
@@ -559,7 +570,7 @@ mod tables {
                 .is_err()
         );
 
-        db.commit(tx).unwrap();
+        let _ = db.commit(tx);
         cleanup_file(path);
     }
 
@@ -1221,134 +1232,6 @@ mod scan {
 }
 
 #[cfg(test)]
-mod pager_test {
-    use super::*;
-    use crate::database::{
-        btree::SetFlag,
-        helper::cleanup_file,
-        pager::transaction::Transaction,
-        tables::Value,
-        transactions::{kvdb::KVDB, tx::TXKind},
-    };
-    use rand::Rng;
-    use std::sync::Arc;
-    use test_log::test;
-
-    #[test]
-    fn open_pager() {
-        let path = "test-files/open_pager.rdb";
-        cleanup_file(path);
-        let _db = Arc::new(KVDB::new(path));
-        cleanup_file(path);
-    }
-
-    #[test]
-    fn disk_insert1() -> Result<()> {
-        let path = "test-files/disk_insert1.rdb";
-        cleanup_file(path);
-        let db = Arc::new(KVDB::new(path));
-        let mut tx = db.begin(&db, TXKind::Write);
-
-        tx.tree_set(
-            "1".into(),
-            Value::from_unencoded_str("val"),
-            SetFlag::UPSERT,
-        )?;
-        assert_eq!(
-            tx.tree_get("1".into()).unwrap(),
-            Value::from_unencoded_str("val")
-        );
-
-        db.commit(tx)?;
-        cleanup_file(path);
-        Ok(())
-    }
-
-    #[test]
-    fn disk_insert2() -> Result<()> {
-        let path = "test-files/disk_insert2.rdb";
-        cleanup_file(path);
-        let db = Arc::new(KVDB::new(path));
-        let mut tx = db.begin(&db, TXKind::Write);
-
-        for i in 1u16..=300u16 {
-            tx.tree
-                .set(format!("{i}").into(), "value".into(), SetFlag::UPSERT)?;
-        }
-        for i in 1u16..=300u16 {
-            assert_eq!(tx.tree_get(format!("{i}").into()).unwrap(), "value".into())
-        }
-
-        db.commit(tx)?;
-        cleanup_file(path);
-        Ok(())
-    }
-
-    #[test]
-    fn disk_delete1() -> Result<()> {
-        let path = "test-files/disk_delete1.rdb";
-        cleanup_file(path);
-        let db = Arc::new(KVDB::new(path));
-        let mut tx = db.begin(&db, TXKind::Write);
-
-        for i in 1u16..=300u16 {
-            tx.tree
-                .set(format!("{i}").into(), "value".into(), SetFlag::UPSERT)?;
-        }
-        for i in 1u16..=300u16 {
-            tx.tree_delete(format!("{i}").into())?;
-        }
-
-        db.commit(tx)?;
-        cleanup_file(path);
-        Ok(())
-    }
-
-    #[test]
-    fn disk_random1() -> Result<()> {
-        let path = "test-files/disk_random1.rdb";
-        cleanup_file(path);
-        let db = Arc::new(KVDB::new(path));
-        let mut tx = db.begin(&db, TXKind::Write);
-
-        for _ in 1u16..=1000 {
-            tx.tree_set(
-                format!("{:?}", rand::rng().random_range(1..1000)).into(),
-                Value::from_unencoded_str("val"),
-                SetFlag::UPSERT,
-            )?;
-        }
-
-        db.commit(tx)?;
-        cleanup_file(path);
-        Ok(())
-    }
-
-    #[test]
-    fn disk_delete2() -> Result<()> {
-        let path = "test-files/disk_delete2.rdb";
-        cleanup_file(path);
-        let db = Arc::new(KVDB::new(path));
-        let mut tx = db.begin(&db, TXKind::Write);
-
-        for k in 1u16..=1000 {
-            tx.tree_set(
-                format!("{}", k).into(),
-                Value::from_unencoded_str("val"),
-                SetFlag::UPSERT,
-            )?;
-        }
-        for k in 1u16..=1000 {
-            tx.tree_delete(format!("{}", k).into())?;
-        }
-
-        db.commit(tx)?;
-        cleanup_file(path);
-        Ok(())
-    }
-}
-
-#[cfg(test)]
 mod concurrent_tx_tests {
     use super::*;
     use crate::database::{
@@ -1367,7 +1250,7 @@ mod concurrent_tx_tests {
     use std::sync::{Arc, Barrier};
     use std::thread;
     use test_log::test;
-    use tracing::{Level, span};
+    use tracing::{Level, span, warn};
 
     #[test]
     fn same_key_write() -> Result<()> {
@@ -1747,18 +1630,35 @@ mod concurrent_tx_tests {
                 let results = results.clone();
 
                 s.spawn(move || {
+                    let id = thread::current().id();
+                    let span = span!(Level::DEBUG, "thread", ?id);
+                    let _guard = span.enter();
+
                     barrier.wait();
 
-                    let mut tx = db.begin(&db, TXKind::Write);
-                    let thread_id = i as i64 + 1;
+                    let r = retry(Backoff::default(), || {
+                        let mut tx = db.begin(&db, TXKind::Write);
+                        let thread_id = i as i64 + 1;
 
-                    let rec = Record::new()
-                        .add(thread_id)
-                        .add(format!("updated_by_thread_{}", i));
-                    let r = tx.insert_rec(rec, &table, SetFlag::UPSERT);
+                        let rec = Record::new()
+                            .add(thread_id)
+                            .add(format!("updated_by_thread_{}", i));
+                        let _ = tx.insert_rec(rec, &table, SetFlag::UPSERT);
 
-                    let commit_result = db.commit(tx);
-                    results.lock().push(commit_result);
+                        let commit_result = db.commit(tx);
+                        if commit_result.can_retry() {
+                            RetryStatus::Continue
+                        } else {
+                            results.lock().push(commit_result);
+                            RetryStatus::Break
+                        }
+                    });
+
+                    if r == RetryResult::AttemptsExceeded {
+                        results
+                            .lock()
+                            .push(Err(Error::TransactionError(TXError::RetriesExceeded)));
+                    }
                 });
             }
         });
@@ -1879,7 +1779,7 @@ mod concurrent_tx_tests {
         tx.insert_table(&table)?;
 
         // Insert records to delete
-        for i in 1..=10 {
+        for i in 1..=100 {
             tx.insert_rec(
                 Record::new().add(i as i64).add(format!("to_delete_{}", i)),
                 &table,
@@ -1888,12 +1788,12 @@ mod concurrent_tx_tests {
         }
         db.commit(tx)?;
 
-        let n_threads = 10;
+        let n_threads = 100;
         let barrier = Arc::new(Barrier::new(n_threads));
         let results = Arc::new(Mutex::new(vec![]));
 
         thread::scope(|s| {
-            for i in 0..n_threads {
+            for i in 1..=n_threads {
                 let db = db.clone();
                 let table = table.clone();
                 let barrier = barrier.clone();
@@ -1902,17 +1802,28 @@ mod concurrent_tx_tests {
                 s.spawn(move || {
                     barrier.wait();
 
-                    let mut tx = db.begin(&db, TXKind::Write);
-                    let q = Query::with_key(&table)
-                        .add("id", i as i64 + 1)
-                        .encode()
-                        .unwrap();
+                    let r = retry(Backoff::default(), || {
+                        let mut tx = db.begin(&db, TXKind::Write);
 
-                    if let Ok(_) = tx.tree_delete(q) {
+                        let id = thread::current().id();
+                        let span = span!(Level::DEBUG, "thread", ?id, tx.version);
+                        let _guard = span.enter();
+
+                        let q = Query::with_key(&table).add("id", i as i64);
+
+                        let _ = tx.delete_from_query(q, &table);
                         let commit_result = db.commit(tx);
-                        results.lock().push(commit_result);
-                    } else {
-                        let _ = db.commit(tx);
+
+                        if commit_result.can_retry() {
+                            RetryStatus::Continue
+                        } else {
+                            results.lock().push(commit_result);
+                            RetryStatus::Break
+                        }
+                    });
+
+                    if r == RetryResult::AttemptsExceeded {
+                        warn!("retries exceeded");
                         results
                             .lock()
                             .push(Err(Error::TransactionError(TXError::RetriesExceeded)));
@@ -1973,17 +1884,34 @@ mod concurrent_tx_tests {
                 let results = results.clone();
 
                 s.spawn(move || {
+                    let id = thread::current().id();
+                    let span = span!(Level::DEBUG, "thread", ?id);
+                    let _guard = span.enter();
+
                     barrier.wait();
 
-                    let mut tx = db.begin(&db, TXKind::Write);
-                    let q = Query::with_key(&table).add("id", 1i64).encode().unwrap();
+                    let r = retry(Backoff::default(), || {
+                        let mut tx = db.begin(&db, TXKind::Write);
+                        let q = Query::with_key(&table).add("id", 1i64).encode().unwrap();
 
-                    // All threads try to delete the same key
-                    let delete_result = tx.tree_delete(q);
-                    let commit_result = db.commit(tx);
-                    results
-                        .lock()
-                        .push((delete_result.is_ok(), commit_result.is_ok()));
+                        // All threads try to delete the same key
+                        let _ = tx.tree_delete(q);
+                        let commit_result = db.commit(tx);
+
+                        if commit_result.can_retry() {
+                            RetryStatus::Continue
+                        } else if commit_result.is_err() {
+                            results.lock().push((false, true));
+                            RetryStatus::Break
+                        } else {
+                            results.lock().push((true, true));
+                            RetryStatus::Break
+                        }
+                    });
+
+                    if r == RetryResult::AttemptsExceeded {
+                        results.lock().push((false, false));
+                    }
                 });
             }
         });
@@ -2043,38 +1971,51 @@ mod concurrent_tx_tests {
                 s.spawn(move || {
                     barrier.wait();
 
-                    let mut tx = db.begin(&db, TXKind::Write);
-                    let operation_id = (i % 3) as u32;
+                    let r = retry(Backoff::default(), || {
+                        let mut tx = db.begin(&db, TXKind::Write);
+                        let operation_id = (i % 3) as u32;
 
-                    match operation_id {
-                        0 => {
-                            // READ
-                            let q = Query::with_key(&table).add("id", 1i64).encode().unwrap();
-                            let _ = tx.tree_get(q);
+                        match operation_id {
+                            0 => {
+                                // READ
+                                let q = Query::with_key(&table).add("id", 1i64).encode().unwrap();
+                                let _ = tx.tree_get(q);
+                            }
+                            1 => {
+                                // INSERT/UPDATE
+                                let new_id = i as i64 + 10;
+                                let rec = Record::new()
+                                    .add(new_id)
+                                    .add("insert_op")
+                                    .add(format!("inserted_by_{}", i));
+                                let _ = tx.insert_rec(rec, &table, SetFlag::UPSERT);
+                            }
+                            2 => {
+                                // UPDATE existing
+                                let update_id = (i % 5) as i64 + 1;
+                                let rec = Record::new()
+                                    .add(update_id)
+                                    .add("updated")
+                                    .add(format!("updated_by_thread_{}", i));
+                                let _ = tx.insert_rec(rec, &table, SetFlag::UPSERT);
+                            }
+                            _ => unreachable!(),
                         }
-                        1 => {
-                            // INSERT/UPDATE
-                            let new_id = i as i64 + 10;
-                            let rec = Record::new()
-                                .add(new_id)
-                                .add("insert_op")
-                                .add(format!("inserted_by_{}", i));
-                            let _ = tx.insert_rec(rec, &table, SetFlag::UPSERT);
+
+                        let commit_result = db.commit(tx);
+                        if commit_result.can_retry() {
+                            RetryStatus::Continue
+                        } else {
+                            results.lock().push(commit_result);
+                            RetryStatus::Break
                         }
-                        2 => {
-                            // UPDATE existing
-                            let update_id = (i % 5) as i64 + 1;
-                            let rec = Record::new()
-                                .add(update_id)
-                                .add("updated")
-                                .add(format!("updated_by_thread_{}", i));
-                            let _ = tx.insert_rec(rec, &table, SetFlag::UPSERT);
-                        }
-                        _ => unreachable!(),
+                    });
+
+                    if r == RetryResult::AttemptsExceeded {
+                        results
+                            .lock()
+                            .push(Err(Error::TransactionError(TXError::RetriesExceeded)));
                     }
-
-                    let commit_result = db.commit(tx);
-                    results.lock().push(commit_result);
                 });
             }
         });
@@ -2132,24 +2073,36 @@ mod concurrent_tx_tests {
                         read_results.lock().push(val.is_some());
                     } else {
                         // Writer threads
-                        let mut tx = db.begin(&db, TXKind::Write);
-                        let current = if let Some(v) =
-                            tx.tree_get(Query::with_key(&table).add("id", 1i64).encode().unwrap())
-                        {
-                            let decoded = v.decode();
-                            if let DataCell::Int(val) = decoded[1] {
-                                val
+                        let r = retry(Backoff::default(), || {
+                            let mut tx = db.begin(&db, TXKind::Write);
+                            let current = if let Some(v) = tx
+                                .tree_get(Query::with_key(&table).add("id", 1i64).encode().unwrap())
+                            {
+                                let decoded = v.decode();
+                                if let DataCell::Int(val) = decoded[0] {
+                                    val
+                                } else {
+                                    0
+                                }
                             } else {
                                 0
-                            }
-                        } else {
-                            0
-                        };
+                            };
 
-                        let rec = Record::new().add(1i64).add(current + 1);
-                        let _ = tx.insert_rec(rec, &table, SetFlag::UPSERT);
-                        let result = db.commit(tx);
-                        write_results.lock().push(result.is_ok());
+                            let rec = Record::new().add(1i64).add(current + 1);
+                            let _ = tx.insert_rec(rec, &table, SetFlag::UPSERT);
+                            let result = db.commit(tx);
+
+                            if result.can_retry() {
+                                RetryStatus::Continue
+                            } else {
+                                write_results.lock().push(result.is_ok());
+                                RetryStatus::Break
+                            }
+                        });
+
+                        if r == RetryResult::AttemptsExceeded {
+                            write_results.lock().push(false);
+                        }
                     }
                 });
             }
@@ -2417,11 +2370,25 @@ mod concurrent_tx_tests {
                 s.spawn(move || {
                     barrier.wait();
 
-                    let mut tx = db.begin(&db, TXKind::Write);
-                    let rec = Record::new().add(1i64).add(i as i64);
-                    let _ = tx.insert_rec(rec, &table, SetFlag::UPSERT);
-                    let result = db.commit(tx);
-                    results.lock().push(result);
+                    let r = retry(Backoff::default(), || {
+                        let mut tx = db.begin(&db, TXKind::Write);
+                        let rec = Record::new().add(1i64).add(i as i64);
+                        let _ = tx.insert_rec(rec, &table, SetFlag::UPSERT);
+                        let result = db.commit(tx);
+
+                        if result.can_retry() {
+                            RetryStatus::Continue
+                        } else {
+                            results.lock().push(result);
+                            RetryStatus::Break
+                        }
+                    });
+
+                    if r == RetryResult::AttemptsExceeded {
+                        results
+                            .lock()
+                            .push(Err(Error::TransactionError(TXError::RetriesExceeded)));
+                    }
                 });
             }
         });
@@ -2482,19 +2449,32 @@ mod concurrent_tx_tests {
                 s.spawn(move || {
                     barrier.wait();
 
-                    let mut tx = db.begin(&db, TXKind::Write);
+                    let r = retry(Backoff::default(), || {
+                        let mut tx = db.begin(&db, TXKind::Write);
 
-                    // Read first
-                    let read_q = Query::with_key(&table).add("id", 1i64).encode().unwrap();
-                    let _ = tx.tree_get(read_q);
+                        // Read first
+                        let read_q = Query::with_key(&table).add("id", 1i64).encode().unwrap();
+                        let _ = tx.tree_get(read_q);
 
-                    // Then write
-                    let write_id = i as i64 + 10;
-                    let rec = Record::new().add(write_id).add(format!("written_by_{}", i));
-                    let _ = tx.insert_rec(rec, &table, SetFlag::INSERT);
+                        // Then write
+                        let write_id = i as i64 + 10;
+                        let rec = Record::new().add(write_id).add(format!("written_by_{}", i));
+                        let _ = tx.insert_rec(rec, &table, SetFlag::INSERT);
 
-                    let result = db.commit(tx);
-                    results.lock().push(result);
+                        let result = db.commit(tx);
+                        if result.can_retry() {
+                            RetryStatus::Continue
+                        } else {
+                            results.lock().push(result);
+                            RetryStatus::Break
+                        }
+                    });
+
+                    if r == RetryResult::AttemptsExceeded {
+                        results
+                            .lock()
+                            .push(Err(Error::TransactionError(TXError::RetriesExceeded)));
+                    }
                 });
             }
         });

@@ -72,8 +72,9 @@ impl Transaction for DiskPager {
 
         // did the TX write anything?
         if tx.db.tx_buf.as_ref().unwrap().borrow().write_map.len() == 0 {
+            warn!("no write happened");
             self.ongoing.write().pop(tx.version);
-            return Ok(CommitStatus::Success);
+            return Err(TXError::EmptyWriteError.into());
         }
 
         let _guard = self.lock.lock();
@@ -123,7 +124,7 @@ impl DiskPager {
         debug!(
             tx_version = tx.version,
             pager_version = self.version.load(Ordering::Acquire),
-            "tree operations complete, publishing tx"
+            "commit accepted, publishing..."
         );
 
         let recov_page = &tx.rollback;
@@ -164,25 +165,25 @@ impl DiskPager {
 
     /// write sequence
     fn commit_prog(&self, tx: &TX) -> Result<()> {
-        // updating free list for next update
-        self.freelist.write().set_max_seq();
-
         // flush buffer to disk
-        self.commit_write(&tx)?;
+        self.flush_tx(&tx)?;
+        self.flush_fl(&tx)?;
         fsync(&self.database)?;
 
         // write currently loaded metapage to disk
         metapage_write(self, &metapage_save(self))?;
         fsync(&self.database)?;
 
+        // updating free list for next update
+        self.freelist.write().set_max_seq();
+
         Ok(())
     }
 
     /// helper function: writePages, flushes the buffer
-    fn commit_write(&self, tx: &TX) -> Result<()> {
-        debug!("writing page...");
+    fn flush_tx(&self, tx: &TX) -> Result<()> {
+        debug!("flushing TX buffer");
 
-        let mut fl_guard = self.freelist.write();
         let tx_buf = tx.db.tx_buf.as_ref().unwrap().borrow();
         let nwrites = tx_buf.write_map.len();
         let npages = self.npages.load(R);
@@ -230,14 +231,40 @@ impl DiskPager {
             count += 1;
         }
 
+        debug!(bytes_written, "bytes written:");
+        if bytes_written != count * PAGE_SIZE {
+            return Err(
+                PagerError::PageWriteError("wrong amount of bytes written".to_string()).into(),
+            );
+        };
+
+        // flipping over pager data
+        *self.tree.write() = tx.tree.get_root();
+        self.version.store(tx.version + 1, Ordering::Release);
+        self.npages.store(npages + tx_buf.nappend as u64, R);
+
+        debug!("write done");
+        Ok(())
+    }
+
+    fn flush_fl(&self, tx: &TX) -> Result<()> {
+        debug!("flushing freelist");
+
+        let mut fl_guard = self.freelist.write();
+        let tx_buf = tx.db.tx_buf.as_ref().unwrap().borrow();
+        let npages = self.npages.load(R);
+
+        let mut count = 0;
+        let mut bytes_written = 0;
+
         // adding dealloced pages back to the freelist
-        for ptr in tx_buf.dealloc_q.iter() {
+        for ptr in tx_buf.dealloc_map.iter() {
             fl_guard.append(*ptr, tx.version)?;
         }
 
-        // freelist write
         let mut fl_buf = self.buf_fl.write();
 
+        // freelist write
         for pair in fl_buf.to_dirty_iter() {
             debug!(
                 "writing pager buffer {:<10} at {:<5}",
@@ -265,18 +292,13 @@ impl DiskPager {
             );
         };
 
-        // flipping over pager data
-        *self.tree.write() = tx.tree.get_root();
-        self.version.store(tx.version + 1, Ordering::Release);
         fl_guard.set_cur_ver(tx.version);
-        self.npages
-            .store(npages + fl_buf.nappend + tx_buf.nappend as u64, R);
+        self.npages.store(npages + fl_buf.nappend, R);
 
         // adjust buffer
         fl_buf.nappend = 0;
         fl_buf.clear();
 
-        debug!("write done");
         Ok(())
     }
 

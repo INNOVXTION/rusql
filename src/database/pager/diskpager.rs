@@ -46,6 +46,7 @@ pub struct AllocatedPage {
 pub enum PageOrigin {
     Append,
     Freelist,
+    Read,
 }
 
 impl std::fmt::Display for NodeFlag {
@@ -357,9 +358,15 @@ impl DiskPager {
 
         // check freelist first
         if let Some(ptr) = fl_ref.get() {
-            debug!("allocating from buffer");
+            debug!("allocating from freelist");
 
             assert_ne!(ptr.0, 0);
+
+            debug!(
+                "encode: adding {:?} at page: {} to buffer",
+                node.get_type(),
+                ptr.0
+            );
 
             let page = AllocatedPage {
                 ptr,
@@ -369,9 +376,15 @@ impl DiskPager {
 
             page
         } else {
-            debug!("allocating from append");
+            debug!(
+                nappend,
+                npages = self.npages.load(Ordering::Relaxed),
+                "allocating from append"
+            );
 
-            let ptr = Pointer(self.npages.load(Ordering::Relaxed) + nappend as u64);
+            let ptr = Pointer(
+                self.npages.load(Ordering::Relaxed) + nappend as u64 + self.buf_fl.read().nappend,
+            );
 
             assert_ne!(ptr.0, 0);
 

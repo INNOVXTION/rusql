@@ -590,7 +590,7 @@ mod test {
 
         assert!(kv2.0 < kv3.0);
         assert_eq!(kv3.0.to_string(), "2 0 smol 5");
-        db.commit(tx)?;
+        let _ = db.commit(tx);
         cleanup_file(path);
         Ok(())
     }

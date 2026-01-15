@@ -165,8 +165,24 @@ pub(crate) struct OngoingTX {
 }
 
 impl OngoingTX {
+    fn debug_ongoing(&self) {
+        #[cfg(test)]
+        {
+            if let Ok("debug") = std::env::var("RUSQL_LOG_ONGOING").as_deref() {
+                debug!("{:-<10}", "-");
+                debug!("ongoing len: {}", self.map.len());
+                for e in self.map.iter() {
+                    debug!("version: {}, amount: {}", e.0, e.1);
+                }
+                debug!("{:-<10}", "-");
+            }
+        }
+    }
+
     pub fn push(&mut self, version: u64) {
         self.map.entry(version).and_modify(|e| *e += 1).or_insert(1);
+        debug!("adding new ongoing TX: {version}");
+        self.debug_ongoing();
         ()
     }
 
@@ -174,21 +190,27 @@ impl OngoingTX {
         use std::collections::btree_map::Entry as E;
 
         match self.map.entry(version) {
-            E::Vacant(vacant_entry) => (),
             E::Occupied(mut occupied_entry) => {
-                let v = *occupied_entry.get();
-                if v > 0 {
-                    *occupied_entry.get_mut() -= 1;
-                }
-                if *occupied_entry.get() == 0 {
+                // decrement
+                debug!("decrementing {version} from ongoing");
+                *occupied_entry.get_mut() -= 1;
+                // remove
+                let n = *occupied_entry.get();
+                if n == 0 {
+                    debug!("removing {n} from ongoing");
                     occupied_entry.remove();
                 }
             }
-        }
+            E::Vacant(vacant_entry) => (),
+        };
+        self.debug_ongoing();
     }
 
     pub fn get_oldest_version(&mut self) -> Option<u64> {
-        self.map.first_entry().map(|e| *e.key())
+        let r = self.map.first_entry().map(|e| *e.key());
+        debug!(r, "oldest version");
+        self.debug_ongoing();
+        r
     }
 }
 
