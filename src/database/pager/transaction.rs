@@ -81,17 +81,17 @@ impl Transaction for DiskPager {
         // warn!("got the global lock");
 
         // was there a new version published in the meantime?
-        let version = self.version.load(Ordering::Acquire);
-        if version == tx.version {
+        if self.version.load(Ordering::Acquire) == tx.version {
             return self.commit_start(tx).map(|_| CommitStatus::Success);
         }
 
-        // do the writes of the conflicting TX collide with our writes?
         if self.check_conflict(&tx) {
+            // write conflict!
             self.ongoing.write().pop(tx.version);
             Err(TXError::CommitError("write conflict detected".to_string()).into())
         } else {
             // retry on new version
+            self.ongoing.write().pop(tx.version);
             Ok(CommitStatus::StaleVersion)
         }
     }

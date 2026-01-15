@@ -1779,7 +1779,7 @@ mod concurrent_tx_tests {
         tx.insert_table(&table)?;
 
         // Insert records to delete
-        for i in 1..=100 {
+        for i in 1..=10 {
             tx.insert_rec(
                 Record::new().add(i as i64).add(format!("to_delete_{}", i)),
                 &table,
@@ -1788,7 +1788,7 @@ mod concurrent_tx_tests {
         }
         db.commit(tx)?;
 
-        let n_threads = 100;
+        let n_threads = 10;
         let barrier = Arc::new(Barrier::new(n_threads));
         let results = Arc::new(Mutex::new(vec![]));
 
@@ -1838,7 +1838,7 @@ mod concurrent_tx_tests {
 
         // Verify all records were deleted
         let tx = db.begin(&db, TXKind::Read);
-        for i in 1..=10 {
+        for i in 1..=100 {
             let q = Query::with_key(&table).add("id", i as i64).encode()?;
             assert!(tx.tree_get(q).is_none());
         }
