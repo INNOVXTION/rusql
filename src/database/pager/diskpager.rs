@@ -227,16 +227,16 @@ impl DiskPager {
     ///
     /// kv.pageRead, db.pageRead -> pagereadfile
     pub fn decode(&self, ptr: Pointer, node_type: NodeFlag) -> Node {
-        assert!(mmap_extend(self, ptr.0 as usize * PAGE_SIZE).is_ok());
+        assert!(mmap_extend(self, (ptr.0 as usize + 1) * PAGE_SIZE).is_ok());
         let mmap_ref = self.mmap.read();
 
         #[cfg(test)]
         {
             debug!(
-                "decoding ptr: {}, amount of chunks {}, chunk 0 size {}",
+                "decoding ptr: {}, amount of chunks {}, mmap size {}",
                 ptr.0,
                 mmap_ref.chunks.len(),
-                mmap_ref.chunks[0].len()
+                mmap_ref.total
             );
         }
 

@@ -18,21 +18,21 @@ struct Row {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let env = env::var("INFO_LEVEL").map_or("rusql=info".to_string(), |v| "rusql=".to_owned() + &v);
-    tracing_subscriber::fmt().with_env_filter(env).init();
+    // let env = env::var("INFO_LEVEL").map_or("rusql=info".to_string(), |v| "rusql=".to_owned() + &v);
+    // tracing_subscriber::fmt().with_env_filter(env).init();
 
-    let p1 = Row {
-        id: 1,
-        name: *encode_str(String::from("Alice")),
-        age: 20,
-    };
-    let p2 = Row {
-        id: 2,
-        name: *encode_str(String::from("Bob")),
-        age: 20,
-    };
-    encode(p1, 0)?;
-    decode()?;
+    // let p1 = Row {
+    //     id: 1,
+    //     name: *encode_str(String::from("Alice")),
+    //     age: 20,
+    // };
+    // let p2 = Row {
+    //     id: 2,
+    //     name: *encode_str(String::from("Bob")),
+    //     age: 20,
+    // };
+    // encode(p1, 0)?;
+    // decode()?;
     Ok(())
 }
 

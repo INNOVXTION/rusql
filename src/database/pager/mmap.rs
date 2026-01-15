@@ -92,7 +92,7 @@ pub fn mmap_extend(db: &DiskPager, size: usize) -> Result<(), PagerError> {
 
     // extending the mmap
     debug!("extending mmap: for file size {size}, {}", as_mb(size));
-    let mut alloc = 64 << 10; // allocating 64 MiB
+    let mut alloc = 64 << 20; // allocating 64 MiB
     while mmap_ref.total + alloc < size {
         // doubling if needed
         alloc *= 2;

@@ -91,6 +91,7 @@ impl TXDB {
 
 impl Pager for TXDB {
     fn page_read(&self, ptr: Pointer, flag: NodeFlag) -> Arc<Node> {
+        assert_ne!(ptr.get(), 0);
         // read own buffer first
         if let Some(b) = self.tx_buf.as_ref()
             && let Some(n) = b.borrow_mut().write_map.get(&ptr)
@@ -134,10 +135,13 @@ impl Pager for TXDB {
 
         debug_assert!(self.is_synced());
         debug!("handing out: {}", page.ptr);
+
+        assert_ne!(page.ptr.get(), 0, "never receive the mp for writes");
         page.ptr
     }
 
     fn dealloc(&self, ptr: Pointer) {
+        assert_ne!(ptr.get(), 0, "never mark the mp for deallocation");
         debug!(%ptr, "adding to dealloc q:");
         let mut buf = self.tx_buf.as_ref().unwrap().borrow_mut();
 

@@ -40,7 +40,7 @@ impl Backoff {
     /// default retry config: 5 retry attempts, jittered exponential backoff
     pub fn default() -> impl Delay {
         Default {
-            limit: 5,
+            limit: 10,
             attempts: 0,
             base_delay: 1,
             rng: rand::rng(),

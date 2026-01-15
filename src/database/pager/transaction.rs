@@ -171,6 +171,7 @@ impl DiskPager {
         fsync(&self.database)?;
 
         // write currently loaded metapage to disk
+        debug!("writing mp to disk");
         metapage_write(self, &metapage_save(self))?;
         fsync(&self.database)?;
 
@@ -195,7 +196,7 @@ impl DiskPager {
         assert_eq!(tx.version, pager_version);
 
         // extend the mmap if needed
-        let new_size = (npages as usize + nwrites) * PAGE_SIZE; // amount of pages in bytes
+        let new_size = (1 + npages as usize + nwrites) * PAGE_SIZE; // amount of pages in bytes
         mmap_extend(self, new_size).map_err(|e| {
             error!(%e, new_size, "Error when extending mmap");
             e
@@ -217,7 +218,7 @@ impl DiskPager {
                 pair.1.node.get_type(),
                 pair.0
             );
-            assert!(pair.0.get() != 0); // never write to the meta page
+            assert!(pair.0.get() != 0, "we cant write to the metapage");
 
             let offset = pair.0.get() * PAGE_SIZE as u64;
             let io_slice = rustix::io::IoSlice::new(&pair.1.node[..PAGE_SIZE]);
@@ -259,6 +260,7 @@ impl DiskPager {
 
         // adding dealloced pages back to the freelist
         for ptr in tx_buf.dealloc_map.iter() {
+            assert_ne!(ptr.get(), 0, "we cant add the mp to the freelist");
             fl_guard.append(*ptr, tx.version)?;
         }
 
@@ -271,7 +273,7 @@ impl DiskPager {
                 pair.1.get_type(),
                 pair.0
             );
-            assert!(pair.0.get() != 0); // never write to the meta page
+            assert!(pair.0.get() != 0, "we cant write to the metapage");
 
             let offset = pair.0.get() * PAGE_SIZE as u64;
             let io_slice = rustix::io::IoSlice::new(&pair.1[..PAGE_SIZE]);
@@ -295,9 +297,10 @@ impl DiskPager {
         fl_guard.set_cur_ver(tx.version);
         self.npages.store(npages + fl_buf.nappend, R);
 
-        // adjust buffer
-        fl_buf.nappend = 0;
-        fl_buf.clear();
+        fl_buf.erase();
+        // // adjust buffer
+        // fl_buf.nappend = 0;
+        // fl_buf.clear();
 
         Ok(())
     }

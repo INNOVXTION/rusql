@@ -41,6 +41,10 @@ impl DiskBuffer {
         self.hmap.get_mut(&ptr).map(|n| &mut n.node)
     }
 
+    pub fn set_dirty(&mut self, ptr: &Pointer) {
+        self.hmap.entry(*ptr).and_modify(|e| e.dirty = true);
+    }
+
     pub fn get_clean(&self, ptr: Pointer) -> Option<Node> {
         self.hmap
             .get(&ptr)
@@ -197,7 +201,7 @@ impl OngoingTX {
                 // remove
                 let n = *occupied_entry.get();
                 if n == 0 {
-                    debug!("removing {n} from ongoing");
+                    debug!("removing {version} from ongoing");
                     occupied_entry.remove();
                 }
             }

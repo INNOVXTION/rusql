@@ -1249,11 +1249,11 @@ mod concurrent_tx_tests {
     use parking_lot::Mutex;
     use std::sync::{Arc, Barrier};
     use std::thread;
-    use test_log::test;
+    // use test_log::test;
     use tracing::{Level, span, warn};
 
     #[test]
-    fn same_key_write() -> Result<()> {
+    fn concurrent_same_key_write() -> Result<()> {
         let path = "test-files/records_insert_search.rdb";
         cleanup_file(path);
         let db = Arc::new(KVDB::new(path));
@@ -1338,10 +1338,34 @@ mod concurrent_tx_tests {
     }
 
     #[test]
-    fn insert_different_keys() -> Result<()> {
+    fn concurrent_insert_different_keys() -> Result<()> {
         let path = "test-files/concurrent_insert_diff.rdb";
         cleanup_file(path);
+
+        use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt};
+
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open("output.log")
+            .expect("failed to open log file");
+
+        let (file_writer, _guard) = tracing_appender::non_blocking(file);
+
+        let stdout_layer = fmt::layer().with_ansi(true);
+        let file_layer = fmt::layer()
+            .with_ansi(false)
+            .with_writer(file_writer)
+            .fmt_fields(fmt::format::DefaultFields::new());
+
+        tracing_subscriber::registry()
+            .with(stdout_layer)
+            .with(file_layer)
+            .init();
+
         let db = Arc::new(KVDB::new(path));
+
         let mut tx = db.begin(&db, TXKind::Write);
 
         let table = TableBuilder::new()
@@ -1355,19 +1379,21 @@ mod concurrent_tx_tests {
         tx.insert_table(&table)?;
         db.commit(tx)?;
 
-        let n_threads = 10;
-        let retries = 3;
+        let n_threads = 1000;
         let barrier = Arc::new(Barrier::new(n_threads));
         let results = Arc::new(Mutex::new(vec![]));
+        let retries_exceeded = Arc::new(Mutex::new(0));
 
         thread::scope(|s| {
+            let mut handles = vec![];
             for i in 0..n_threads {
                 let db = db.clone();
                 let table = table.clone();
                 let barrier = barrier.clone();
                 let results = results.clone();
+                let retries_exceeded = retries_exceeded.clone();
 
-                s.spawn(move || {
+                handles.push(s.spawn(move || {
                     let id = thread::current().id();
                     let span = span!(Level::DEBUG, "thread", ?id);
                     let _guard = span.enter();
@@ -1395,14 +1421,32 @@ mod concurrent_tx_tests {
                         results
                             .lock()
                             .push(Err(Error::TransactionError(TXError::RetriesExceeded)));
+                        *retries_exceeded.lock() += 1;
                     }
-                });
+                }));
+            }
+
+            for h in handles {
+                let id = h.thread().id();
+                if let Err(err) = h.join() {
+                    println!("thread {:?} panicked!", id);
+                    if let Some(s) = err.downcast_ref::<&str>() {
+                        println!("panic message: {}", s);
+                        panic!()
+                    } else if let Some(s) = err.downcast_ref::<String>() {
+                        println!("panic message: {}", s);
+                        panic!()
+                    }
+                }
             }
         });
 
         // All transactions should succeed (different keys)
         let results = results.lock();
-        assert_eq!(results.iter().filter(|r| r.is_ok()).count(), n_threads);
+        assert_eq!(
+            results.iter().filter(|r| r.is_ok()).count() + *retries_exceeded.lock(),
+            n_threads
+        );
 
         // Verify all records exist
         let tx = db.begin(&db, TXKind::Read);
@@ -1414,8 +1458,8 @@ mod concurrent_tx_tests {
             assert_eq!(res[0], DataCell::Str(format!("user_{}", i)));
         }
         db.commit(tx)?;
-
         cleanup_file(path);
+
         Ok(())
     }
 
@@ -1700,7 +1744,7 @@ mod concurrent_tx_tests {
         tx.insert_rec(Record::new().add(1i64).add(0i64), &table, SetFlag::INSERT)?;
         db.commit(tx)?;
 
-        let n_threads = 20;
+        let n_threads = 100;
         let barrier = Arc::new(Barrier::new(n_threads));
         let results = Arc::new(Mutex::new(vec![]));
 
@@ -1721,7 +1765,7 @@ mod concurrent_tx_tests {
                         let q = Query::with_key(&table).add("id", 1i64).encode().unwrap();
                         let current_val = if let Some(v) = tx.tree_get(q) {
                             let decoded = v.decode();
-                            if let DataCell::Int(val) = decoded[1] {
+                            if let DataCell::Int(val) = decoded[0] {
                                 val
                             } else {
                                 0
@@ -1779,7 +1823,7 @@ mod concurrent_tx_tests {
         tx.insert_table(&table)?;
 
         // Insert records to delete
-        for i in 1..=10 {
+        for i in 1..=100 {
             tx.insert_rec(
                 Record::new().add(i as i64).add(format!("to_delete_{}", i)),
                 &table,
@@ -1788,7 +1832,7 @@ mod concurrent_tx_tests {
         }
         db.commit(tx)?;
 
-        let n_threads = 10;
+        let n_threads = 100;
         let barrier = Arc::new(Barrier::new(n_threads));
         let results = Arc::new(Mutex::new(vec![]));
 

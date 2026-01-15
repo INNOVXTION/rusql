@@ -66,6 +66,7 @@ pub(crate) trait GC {
 impl GC for FreeList {
     /// removes a page from the head, decrement head seq
     fn get(&mut self) -> Option<Pointer> {
+        assert!(self.head_page.is_some());
         match self.pop_head() {
             (Some(ptr), Some(head)) => {
                 debug!(%ptr, "retrieving from freelist with head: ");
@@ -85,16 +86,16 @@ impl GC for FreeList {
     /// PushTail
     fn append(&mut self, ptr: Pointer, version: u64) -> Result<(), FLError> {
         debug!("appending {} to free list...", ptr);
+        assert_ne!(ptr.get(), 0, "we cant append 0 to the fl");
         assert!(self.tail_page.is_some());
 
         // updates tail page, by getting a reference to the buffer if its already in there
         // updating appending the pointer
-        self.update_set_ptr(
-            self.tail_page.unwrap(),
-            ptr,
-            version,
-            seq_to_idx(self.tail_seq),
-        );
+        let seq = self.tail_seq;
+        assert_ne!(seq, FREE_LIST_CAP);
+        let idx = seq_to_idx(seq);
+
+        self.update_set_ptr(self.tail_page.unwrap(), ptr, version, idx);
         self.tail_seq += 1;
 
         // allocating new node if the the node is full
@@ -104,8 +105,10 @@ impl GC for FreeList {
                 // head page is empty
                 (None, None) => {
                     debug!("head node empty!");
+
                     let new_node = self.encode(FLNode::new()); // this stays as encode
                     self.update_set_next(self.tail_page.unwrap(), new_node);
+
                     self.tail_page = Some(new_node);
                     self.tail_seq = 0; // experimental
                 }
@@ -114,7 +117,9 @@ impl GC for FreeList {
                 (Some(next), None) => {
                     debug!("got page from head...");
                     assert_ne!(next.0, 0);
+
                     self.update_set_next(self.tail_page.unwrap(), next);
+
                     self.tail_page = Some(next);
                     self.tail_seq = 0; // experimental
                 }
@@ -124,12 +129,16 @@ impl GC for FreeList {
                     debug!("got last ptr and head!.");
                     assert_ne!(next.0, 0);
                     assert_ne!(head.0, 0);
+
                     // sets current tail next to new page
                     self.update_set_next(self.tail_page.unwrap(), next);
+
                     // moves tail to new empty page
                     self.tail_page = Some(next);
+
                     // appending the empty head
                     self.update_set_ptr(self.tail_page.unwrap(), head, FREE_PAGE, 0);
+
                     self.tail_seq = 0; // experimental
                     self.tail_seq += 1; // accounting for re-added head
                 }
@@ -259,7 +268,10 @@ impl FreeList {
             return (None, None);
         }
 
-        let ptr = self.update_get_ptr(self.head_page.unwrap(), seq_to_idx(self.head_seq));
+        let seq = self.head_seq;
+        assert_ne!(seq, FREE_LIST_CAP);
+        let idx = seq_to_idx(seq);
+        let ptr = self.update_get_ptr(self.head_page.unwrap(), idx);
 
         // is the version retrieved newer than max_ver
         if ptr.1 > self.max_ver {
@@ -281,9 +293,16 @@ impl FreeList {
         // in case the head page is empty we reuse it
         if seq_to_idx(self.head_seq) == 0 {
             let head = self.head_page.unwrap();
+
             // self.head_page = Some(node.get_next());
             self.head_page = Some(self.update_get_next(self.head_page.unwrap()));
             self.head_seq = 0; // experimental: resetting the counter
+
+            // evict from buffer
+            let strong = self.pager.upgrade().unwrap();
+            let mut buf = strong.update(head);
+            buf.delete(head);
+
             return (Some(ptr.0), Some(head));
         }
         (Some(ptr.0), None)
@@ -334,6 +353,7 @@ impl FreeList {
         let node_ptr = entry.as_fl_mut();
         node_ptr.set_ptr(idx, ptr, version);
         buf.debug_print();
+        buf.set_dirty(&fl);
     }
 
     /// gets next ptr from free list node
@@ -380,14 +400,20 @@ impl FreeList {
 
         let node_ptr = entry.as_fl_mut();
         node_ptr.set_next(ptr);
+        buf.set_dirty(&fl);
     }
 
     fn is_empty(&self) -> bool {
-        if self.head_seq == self.max_seq && self.head_page == self.tail_page {
-            true
-        } else {
-            false
+        if self.head_page != self.tail_page {
+            return false;
         }
+        if self.head_seq >= self.max_seq {
+            return true;
+        }
+        if self.head_seq >= self.tail_seq {
+            return true;
+        }
+        false
     }
 }
 
@@ -396,8 +422,8 @@ fn seq_to_idx(seq: usize) -> u16 {
     seq as u16 % FREE_LIST_CAP as u16
 }
 
-const FREE_LIST_NEXT: usize = 8;
-const FREE_LIST_CAP: usize = (PAGE_SIZE - FREE_LIST_NEXT) / (PTR_SIZE + VER_SIZE);
+const FREE_LIST_NEXT: usize = PTR_SIZE;
+const FREE_LIST_CAP: usize = (PAGE_SIZE - FREE_LIST_NEXT) / (PTR_SIZE + VER_SIZE); // 255.5
 
 // -------Free List Node-------
 // | next | pointers | unused |
@@ -414,33 +440,37 @@ impl FLNode {
     fn get_next(&self) -> Pointer {
         debug!("getting next");
 
-        (&self[0..]).read_u64().into()
+        let ptr = (&self[0..]).read_u64();
+        assert_ne!(ptr, 0, "next fl cant be 0");
+        Pointer(ptr)
     }
 
     fn set_next(&mut self, ptr: Pointer) {
         debug!(ptr = ?ptr, "setting next");
+        assert_ne!(ptr.get(), 0, "we can put the mp to the fl");
 
         (&mut self[0..]).write_u64(ptr.get());
     }
 
     fn get_ptr(&self, idx: u16) -> (Pointer, u64) {
-        debug!(idx, "getting pointer from free list node");
+        debug!(idx, "getting pointer from free list node at");
         let offset = FREE_LIST_NEXT + ((PTR_SIZE + VER_SIZE) * idx as usize);
-        let mut slice = &self[offset..];
+        let mut r_slice = &self[offset..];
 
-        let ptr = Pointer::from(slice.read_u64());
-        let ver = slice.read_u64();
+        let ptr = r_slice.read_u64();
+        let ver = r_slice.read_u64();
 
-        (ptr, ver)
+        assert_ne!(ptr, 0, "we cant receive the mp from the fl");
+        (Pointer(ptr), ver)
     }
 
     fn set_ptr(&mut self, idx: u16, ptr: Pointer, version: u64) {
         debug!(idx, ptr = ?ptr, version = version, "setting pointer in fl node");
+        assert_ne!(ptr.get(), 0, "not possible to set ptr 0 in fl");
         let offset = FREE_LIST_NEXT + ((PTR_SIZE + VER_SIZE) * idx as usize);
+        let w_slice = &mut self[offset..];
 
-        (&mut self[offset..])
-            .write_u64(ptr.get())
-            .write_u64(version);
+        w_slice.write_u64(ptr.get()).write_u64(version);
     }
 }
 
@@ -485,7 +515,10 @@ impl Debug for FreeList {
 
 #[cfg(test)]
 mod test {
-    use crate::database::types::Pointer;
+    use crate::database::{
+        pager::freelist::{FLNode, FREE_LIST_CAP, seq_to_idx},
+        types::Pointer,
+    };
 
     #[test]
     fn modulo() {
@@ -495,10 +528,162 @@ mod test {
         assert_eq!(x % 10, 0);
         let x = 1;
         assert_eq!(x % 10, 1);
+        let x = 10;
+        assert_eq!(x % 10, 0);
 
         let p1 = Some(Pointer::from(1));
         let p2 = Some(Pointer::from(2));
 
+        let seq1 = 0;
+        let seq2 = 255;
+
+        assert_eq!(seq1 % FREE_LIST_CAP, seq2 % FREE_LIST_CAP);
+
         assert_ne!(p1, p2)
+    }
+
+    #[test]
+    fn test_fl_node_set_and_get_next() {
+        let mut node = FLNode::new();
+        let ptr = Pointer(100);
+
+        node.set_next(ptr);
+        let retrieved = node.get_next();
+
+        assert_eq!(retrieved, ptr);
+    }
+
+    #[test]
+    fn test_fl_node_set_and_get_ptr_single() {
+        let mut node = FLNode::new();
+        let ptr = Pointer(42);
+        let version = 1u64;
+        let idx = 0u16;
+
+        node.set_ptr(idx, ptr, version);
+        let (retrieved_ptr, retrieved_ver) = node.get_ptr(idx);
+
+        assert_eq!(retrieved_ptr, ptr);
+        assert_eq!(retrieved_ver, version);
+    }
+
+    #[test]
+    fn test_fl_node_set_and_get_ptr_multiple() {
+        let mut node = FLNode::new();
+
+        // Set multiple pointers at different indices
+        let test_cases = vec![
+            (0, Pointer(10), 1u64),
+            (1, Pointer(20), 2u64),
+            (5, Pointer(50), 5u64),
+            (10, Pointer(100), 10u64),
+        ];
+
+        for (idx, ptr, ver) in &test_cases {
+            node.set_ptr(*idx, *ptr, *ver);
+        }
+
+        // Verify all stored correctly
+        for (idx, ptr, ver) in test_cases {
+            let (retrieved_ptr, retrieved_ver) = node.get_ptr(idx);
+            assert_eq!(retrieved_ptr, ptr, "Failed at index {}", idx);
+            assert_eq!(retrieved_ver, ver, "Failed at index {}", idx);
+        }
+    }
+
+    #[test]
+    fn test_fl_node_ptr_at_boundary() {
+        let mut node = FLNode::new();
+
+        // Test first and last valid indices
+        let first_idx = 0u16;
+        let last_idx = (FREE_LIST_CAP - 1) as u16;
+
+        node.set_ptr(first_idx, Pointer(111), 11);
+        node.set_ptr(last_idx, Pointer(222), 22);
+
+        let (ptr1, ver1) = node.get_ptr(first_idx);
+        let (ptr2, ver2) = node.get_ptr(last_idx);
+
+        assert_eq!(ptr1, Pointer(111));
+        assert_eq!(ver1, 11);
+        assert_eq!(ptr2, Pointer(222));
+        assert_eq!(ver2, 22);
+    }
+
+    #[test]
+    fn test_fl_node_next_and_ptr_separate() {
+        let mut node = FLNode::new();
+
+        // Set next pointer
+        let next_ptr = Pointer(999);
+        node.set_next(next_ptr);
+
+        // Set data pointers at different indices
+        node.set_ptr(0, Pointer(1), 1);
+        node.set_ptr(1, Pointer(2), 2);
+
+        // Verify next pointer is unchanged
+        let retrieved_next = node.get_next();
+        assert_eq!(retrieved_next, next_ptr);
+
+        // Verify data pointers are correct
+        let (ptr0, ver0) = node.get_ptr(0);
+        let (ptr1, ver1) = node.get_ptr(1);
+        assert_eq!(ptr0, Pointer(1));
+        assert_eq!(ver0, 1);
+        assert_eq!(ptr1, Pointer(2));
+        assert_eq!(ver1, 2);
+    }
+
+    #[test]
+    fn test_seq_to_idx_wrapping() {
+        // Test that seq wraps around correctly
+        assert_eq!(seq_to_idx(0), 0);
+        assert_eq!(seq_to_idx(1), 1);
+        assert_eq!(seq_to_idx(FREE_LIST_CAP - 1), (FREE_LIST_CAP - 1) as u16);
+        assert_eq!(seq_to_idx(FREE_LIST_CAP), 0); // Should wrap
+        assert_eq!(seq_to_idx(FREE_LIST_CAP + 1), 1); // Should wrap
+        assert_eq!(seq_to_idx(2 * FREE_LIST_CAP), 0); // Should wrap
+    }
+
+    #[test]
+    fn test_fl_node_overwrite_ptr() {
+        let mut node = FLNode::new();
+        let idx = 5u16;
+
+        // Set initial value
+        node.set_ptr(idx, Pointer(100), 1);
+        let (ptr, ver) = node.get_ptr(idx);
+        assert_eq!(ptr, Pointer(100));
+        assert_eq!(ver, 1);
+
+        // Overwrite with new value
+        node.set_ptr(idx, Pointer(200), 2);
+        let (ptr, ver) = node.get_ptr(idx);
+        assert_eq!(ptr, Pointer(200));
+        assert_eq!(ver, 2);
+    }
+
+    #[test]
+    fn test_fl_node_independent_slots() {
+        let mut node = FLNode::new();
+
+        // Set multiple slots and verify they don't interfere
+        for i in 0..10 {
+            node.set_ptr(i as u16, Pointer((i + 100) as u64), i as u64);
+        }
+
+        // Verify all values are independent
+        for i in 0..10 {
+            let (ptr, ver) = node.get_ptr(i as u16);
+            assert_eq!(
+                ptr.get(),
+                (i + 100) as u64,
+                "Pointer mismatch at index {}",
+                i
+            );
+            assert_eq!(ver, i as u64, "Version mismatch at index {}", i);
+        }
     }
 }

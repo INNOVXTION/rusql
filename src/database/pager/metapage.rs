@@ -86,20 +86,22 @@ impl DerefMut for MetaPage {
 
 /// returns metapage object of current pager state
 pub fn metapage_save(pager: &DiskPager) -> MetaPage {
-    let flc = pager.freelist.read().get_config();
+    let fl = pager.freelist.read();
+    let flc = fl.get_config();
     let npages = pager.npages.load(Ordering::Relaxed);
     let mut data = MetaPage::new();
 
     debug!(
-        sig = DB_SIG,
-        root_ptr = ?pager.tree.read(),
-        npages = npages,
-        fl_head_ptr = ?flc.head_page,
-        fl_head_seq = flc.head_seq,
-        fl_tail_ptr = ?flc.tail_page,
-        fl_tail_seq = flc.tail_seq,
-        version = pager.version.load(Ordering::Relaxed),
-        "saving meta page:"
+        "sig: {}\nroot: {:?}\nnpage: {}\nhead page: {:?}\nhead seq: {}\ntail page: {:?}\ntail seq: {}\nmax_seq: {}\nversion: {}\n",
+        DB_SIG,
+        pager.tree.read(),
+        npages,
+        flc.head_page,
+        flc.head_seq,
+        flc.tail_page,
+        flc.tail_seq,
+        fl.max_seq,
+        pager.version.load(Ordering::Relaxed),
     );
 
     use MpField as M;

@@ -3,3 +3,4 @@ notes.md
 .zed/
 /test-files
 database.rdb
+output.log
