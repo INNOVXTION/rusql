@@ -10,6 +10,7 @@ use crate::database::codec::*;
 use crate::database::errors::{Error, Result};
 use crate::database::tables::tables::TypeCol;
 use crate::database::types::DataCell;
+use crate::debug_if_env;
 
 // encoded and parsed key for the pager, should only be created from encoding a record
 //
@@ -67,10 +68,12 @@ impl Key {
     /// adds TID = 1, PREFIX = 0
     pub fn from_unencoded_type<S: Codec>(data: S) -> Self {
         let mut buf: Vec<u8> = vec![];
+        const TID: u32 = 1;
+        const PREFIX: u16 = 0;
 
         // TID 1 and PREFIX 0
-        buf.extend_from_slice(&1u32.to_le_bytes());
-        buf.extend_from_slice(&0u16.to_le_bytes());
+        buf.extend_from_slice(&TID.to_le_bytes());
+        buf.extend_from_slice(&PREFIX.to_le_bytes());
         buf.extend_from_slice(&data.encode());
 
         Key(Arc::from(buf))
@@ -410,15 +413,12 @@ fn cell_cmp(a: &[u8], b: &[u8]) -> Ordering {
     let mut val_a = a;
     let mut val_b = b;
 
-    #[cfg(test)]
-    {
-        if let Ok("debug") = std::env::var("RUSQL_LOG_CMP").as_deref() {
-            debug!(len_a = val_a.len());
-            debug!(?val_a);
-            debug!(len_b = val_b.len());
-            debug!(?val_b);
-        }
-    }
+    debug_if_env!("RUSQL_LOG_CMP", {
+        debug!(len_a = val_a.len());
+        debug!(?val_a);
+        debug!(len_b = val_b.len());
+        debug!(?val_b);
+    });
 
     loop {
         if let Some(o) = len_cmp(val_a, val_b) {
@@ -459,16 +459,16 @@ fn cell_cmp(a: &[u8], b: &[u8]) -> Ordering {
                 let int_a = val_a.read_i64();
                 let int_b = val_b.read_i64();
 
-                // debug!(int_a, int_b, "comparing integer");
+                debug_if_env!("RUSQL_LOG_CMP", {
+                    debug!(int_a, int_b, "comparing integer")
+                });
 
                 // flipping the sign bit for comparison
                 let in_a = int_a as u64 ^ 0x8000_0000_0000_0000;
                 let in_b = int_b as u64 ^ 0x8000_0000_0000_0000;
 
                 match int_a.cmp(&int_b) {
-                    Ordering::Equal => {
-                        // debug!("integer are equal");
-                    }
+                    Ordering::Equal => {}
                     o => return o,
                 }
             }

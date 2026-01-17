@@ -304,11 +304,14 @@ impl TX {
 
     fn delete_from_query(&mut self, q: QueryKey, schema: &Table) -> Result<()> {
         let key = q.encode()?;
+
+        // getting full record
         let val = match self.tree_get(key.clone()) {
             Some(v) => v,
             None => return Err(Error::DeleteError("key doesnt exist".to_string())),
         };
         let rec = Record::from_kv((key, val));
+
         self.delete_rec(rec, schema)
     }
 
@@ -357,12 +360,6 @@ impl TX {
 
     fn delete_index(&self, col: &str, table: &Table) {
         // TODO
-    }
-
-    fn del_prefix(schema: &Table, prefix: u16) {
-        // TODO
-        let key = Query::with_prefix(schema, prefix);
-        let scan = ScanMode::new_open(key, Compare::GT);
     }
 }
 

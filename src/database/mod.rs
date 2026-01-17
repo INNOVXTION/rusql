@@ -2,7 +2,7 @@ pub mod api;
 mod btree;
 mod codec;
 mod errors;
-mod helper;
+pub(crate) mod helper;
 mod pager;
 mod tables;
 mod transactions;

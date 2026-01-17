@@ -11,6 +11,7 @@ use crate::database::{
     errors::{Result, TableError},
     tables::tables::{Table, TypeCol},
 };
+use crate::debug_if_env;
 
 /// Record object used to insert data
 #[derive(Debug)]
@@ -78,12 +79,9 @@ impl Record {
                     // constructing Value
                     val_cells = (n_cols..self.data.len()).map(|i| &self.data[i]).collect();
 
-                    #[cfg(test)]
-                    {
-                        if let Ok("debug") = std::env::var("RUSQL_LOG_RECORDS").as_deref() {
-                            debug!(?pkey_cells, ?val_cells);
-                        }
-                    }
+                    debug_if_env!("RUSQL_LOG_RECORDS", {
+                        debug!(?pkey_cells, ?val_cells);
+                    });
 
                     // chaining together
                     let data_iter = pkey_cells
@@ -114,12 +112,9 @@ impl Record {
                         })
                         .collect();
 
-                    #[cfg(test)]
-                    {
-                        if let Ok("debug") = std::env::var("RUSQL_LOG_RECORDS").as_deref() {
-                            debug!(?key_cells, ?val_cells);
-                        }
-                    }
+                    debug_if_env!("RUSQL_LOG_RECORDS", {
+                        debug!(?key_cells, ?val_cells);
+                    });
 
                     // chaining together
                     let data_iter = key_cells.iter().map(|c| *c).chain(
@@ -275,6 +270,9 @@ impl<'a> QueryKey<'a> {
                 // invalid column name
                 None => return Err(TableError::QueryError("invalid column name".to_string()))?,
             }
+        }
+        if buf.len() > BTREE_MAX_KEY_SIZE {
+            return Err(TableError::QueryError("maximum key size exceeded".to_string()).into());
         }
         Ok(Key::from_encoded_slice(&buf))
     }

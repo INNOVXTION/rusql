@@ -7,6 +7,19 @@ use tracing::{debug, error};
 
 use crate::database::btree::TreeNode;
 
+/// runs and compiles code in debug build when a specified env variable is set to "debug"
+#[macro_export]
+macro_rules! debug_if_env {
+    ($env:literal, $body:block) => {
+        #[cfg(test)]
+        {
+            if let Ok("debug") = std::env::var($env).as_deref() {
+                $body
+            }
+        }
+    };
+}
+
 /// casts usize to u16
 pub(crate) fn as_usize(n: usize) -> u16 {
     if n > u16::MAX as usize {
