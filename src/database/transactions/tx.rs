@@ -1256,6 +1256,7 @@ mod concurrent_tx_tests {
     fn concurrent_same_key_write() -> Result<()> {
         let path = "test-files/records_insert_search.rdb";
         cleanup_file(path);
+
         let db = Arc::new(KVDB::new(path));
         let mut tx = db.begin(&db, TXKind::Write);
 
@@ -1303,7 +1304,16 @@ mod concurrent_tx_tests {
             }
 
             for h in handles {
-                assert!(h.join().is_ok());
+                let id = h.thread().id();
+                if let Err(err) = h.join() {
+                    if let Some(s) = err.downcast_ref::<&str>() {
+                        error!("thread {:?} panicked: {}", id, s);
+                        panic!()
+                    } else if let Some(s) = err.downcast_ref::<String>() {
+                        error!("thread {:?} panicked: {}", id, s);
+                        panic!()
+                    }
+                }
             }
         });
 
@@ -1342,30 +1352,7 @@ mod concurrent_tx_tests {
         let path = "test-files/concurrent_insert_diff.rdb";
         cleanup_file(path);
 
-        // use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt};
-
-        // let file = std::fs::OpenOptions::new()
-        //     .create(true)
-        //     .write(true)
-        //     .truncate(true)
-        //     .open("output.log")
-        //     .expect("failed to open log file");
-
-        // let (file_writer, _guard) = tracing_appender::non_blocking(file);
-
-        // let stdout_layer = fmt::layer().with_ansi(true);
-        // let file_layer = fmt::layer()
-        //     .with_ansi(false)
-        //     .with_writer(file_writer)
-        //     .fmt_fields(fmt::format::DefaultFields::new());
-
-        // tracing_subscriber::registry()
-        //     .with(stdout_layer)
-        //     .with(file_layer)
-        //     .init();
-
         let db = Arc::new(KVDB::new(path));
-
         let mut tx = db.begin(&db, TXKind::Write);
 
         let table = TableBuilder::new()
@@ -1404,9 +1391,10 @@ mod concurrent_tx_tests {
                         let mut tx = db.begin(&db, TXKind::Write);
                         let rec = Record::new().add(i as i64).add(format!("user_{}", i));
 
-                        let r = tx.insert_rec(rec, &table, SetFlag::INSERT);
+                        let _ = tx.insert_rec(rec, &table, SetFlag::INSERT);
 
                         let commit_result = db.commit(tx);
+
                         if commit_result.can_retry() {
                             debug!("retrying");
                             RetryStatus::Continue
@@ -1429,12 +1417,11 @@ mod concurrent_tx_tests {
             for h in handles {
                 let id = h.thread().id();
                 if let Err(err) = h.join() {
-                    println!("thread {:?} panicked!", id);
                     if let Some(s) = err.downcast_ref::<&str>() {
-                        println!("panic message: {}", s);
+                        error!("thread {:?} panicked: {}", id, s);
                         panic!()
                     } else if let Some(s) = err.downcast_ref::<String>() {
-                        println!("panic message: {}", s);
+                        error!("thread {:?} panicked: {}", id, s);
                         panic!()
                     }
                 }
@@ -1467,6 +1454,7 @@ mod concurrent_tx_tests {
     fn concurrent_read_same_records() -> Result<()> {
         let path = "test-files/concurrent_read_same.rdb";
         cleanup_file(path);
+
         let db = Arc::new(KVDB::new(path));
         let mut tx = db.begin(&db, TXKind::Write);
 
@@ -1488,6 +1476,7 @@ mod concurrent_tx_tests {
                 SetFlag::INSERT,
             )?;
         }
+
         db.commit(tx)?;
 
         let n_threads = 20;
@@ -1563,7 +1552,7 @@ mod concurrent_tx_tests {
         tx.insert_table(&table1)?;
         tx.insert_table(&table2)?;
 
-        for i in 1..=10 {
+        for i in 1..=100 {
             tx.insert_rec(
                 Record::new()
                     .add(i as i64)
@@ -1579,6 +1568,7 @@ mod concurrent_tx_tests {
                 SetFlag::INSERT,
             )?;
         }
+
         db.commit(tx)?;
 
         let n_threads = 1000;
@@ -1599,7 +1589,7 @@ mod concurrent_tx_tests {
                     let tx = db.begin(&db, TXKind::Read);
                     let mut success = true;
 
-                    for i in 1..=10 {
+                    for i in 1..=100 {
                         let q1 = Query::with_key(&table1)
                             .add("id", i as i64)
                             .encode()

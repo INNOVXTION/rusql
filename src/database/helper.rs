@@ -116,3 +116,25 @@ mod test {
         Ok(())
     }
 }
+
+// use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt};
+
+// let file = std::fs::OpenOptions::new()
+//     .create(true)
+//     .write(true)
+//     .truncate(true)
+//     .open("output.log")
+//     .expect("failed to open log file");
+
+// let (file_writer, _guard) = tracing_appender::non_blocking(file);
+
+// let stdout_layer = fmt::layer().with_ansi(true);
+// let file_layer = fmt::layer()
+//     .with_ansi(false)
+//     .with_writer(file_writer)
+//     .fmt_fields(fmt::format::DefaultFields::new());
+
+// tracing_subscriber::registry()
+//     .with(stdout_layer)
+//     .with(file_layer)
+//     .init();

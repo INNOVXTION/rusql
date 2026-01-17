@@ -8,7 +8,7 @@ use crate::database::btree::BTree;
 use crate::database::btree::tree::SetResponse;
 use crate::database::pager::diskpager::Pager;
 use crate::database::tables::{Key, Value};
-use crate::database::types::Node;
+use crate::database::types::{Node, PTR_SIZE, U16_SIZE};
 use crate::database::{
     helper::*,
     types::{MERGE_FACTOR, NODE_SIZE, PAGE_SIZE, Pointer},
@@ -49,7 +49,7 @@ pub(crate) enum MergeDirection {
     Right(Arc<Node>),
 }
 #[derive(Debug)]
-pub(crate) struct TreeNode(pub Box<[u8; NODE_SIZE]>);
+pub(crate) struct TreeNode(Box<[u8; NODE_SIZE]>);
 
 impl TreeNode {
     pub fn new() -> Self {
@@ -68,12 +68,12 @@ impl TreeNode {
         true
     }
 
-    /// returns a slice of the underlying data
+    /// returns a slice of the underlying data starting at offset
     fn as_offset_slice(&self, offset: usize) -> &[u8] {
         &self[offset..]
     }
 
-    /// returns a mutable slice of the underlying data
+    /// returns a mutable slice of the underlying data starting at offset
     fn as_offset_slice_mut(&mut self, offset: usize) -> &mut [u8] {
         &mut self[offset..]
     }
@@ -107,7 +107,7 @@ impl TreeNode {
             error!("invalid index");
             panic!("invalid index")
         };
-        let pos: usize = HEADER_OFFSET + 8 * idx as usize;
+        let pos: usize = HEADER_OFFSET + PTR_SIZE * idx as usize;
         self.as_offset_slice(pos).read_u64().into()
     }
     /// sets pointer at index in pointer array, does not increase nkeys!
@@ -116,7 +116,7 @@ impl TreeNode {
             error!("invalid index");
             panic!("invalid index")
         };
-        let pos: usize = HEADER_OFFSET + 8 * idx as usize;
+        let pos: usize = HEADER_OFFSET + PTR_SIZE * idx as usize;
         self.as_offset_slice_mut(pos).write_u64(ptr.get());
     }
 
@@ -132,6 +132,8 @@ impl TreeNode {
     ) -> Result<(), Error> {
         debug!("inserting new kids...");
         let old_nkeys = old_node.get_nkeys();
+        assert!(old_nkeys > 0, "we cant copy from empty nodes!");
+
         self.set_header(NodeType::Node, old_nkeys + new_kids.0 - 1);
 
         // copy range before new idx
@@ -139,6 +141,7 @@ impl TreeNode {
             error!("append error before idx");
             e
         })?;
+
         // insert new ptr at idx, consuming the split array
         for (i, node) in new_kids.1.into_iter().enumerate() {
             let key = node.get_key(0)?;
@@ -154,6 +157,7 @@ impl TreeNode {
                     e
                 })?;
         }
+
         // copy from range after idx
         if old_nkeys > (idx + 1) {
             self.append_from_range(&old_node, idx + new_kids.0, idx + 1, old_nkeys - (idx + 1))
@@ -194,7 +198,8 @@ impl TreeNode {
             );
             return Err(Error::IndexError);
         }
-        let pos = HEADER_OFFSET + (8 * self.get_nkeys() as usize) + 2 * (idx as usize - 1);
+        let pos =
+            HEADER_OFFSET + (PTR_SIZE * self.get_nkeys() as usize) + U16_SIZE * (idx as usize - 1);
         Ok(self.as_offset_slice(pos).read_u16())
     }
 
@@ -204,7 +209,8 @@ impl TreeNode {
             error!("set_offset: set offset idx cant be zero");
             panic!()
         }
-        let pos = HEADER_OFFSET + (8 * self.get_nkeys() as usize) + 2 * (idx as usize - 1);
+        let pos =
+            HEADER_OFFSET + (PTR_SIZE * self.get_nkeys() as usize) + U16_SIZE * (idx as usize - 1);
         self.as_offset_slice_mut(pos).write_u16(size);
     }
 
@@ -703,6 +709,12 @@ impl Deref for TreeNode {
     }
 }
 
+impl DerefMut for TreeNode {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0[..]
+    }
+}
+
 impl AsRef<[u8]> for TreeNode {
     fn as_ref(&self) -> &[u8] {
         &self.0[..]
@@ -711,12 +723,6 @@ impl AsRef<[u8]> for TreeNode {
 
 impl AsMut<[u8]> for TreeNode {
     fn as_mut(&mut self) -> &mut [u8] {
-        &mut self.0[..]
-    }
-}
-
-impl DerefMut for TreeNode {
-    fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0[..]
     }
 }

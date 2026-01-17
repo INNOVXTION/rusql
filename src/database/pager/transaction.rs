@@ -294,10 +294,11 @@ impl DiskPager {
             );
         };
 
+        // flipping over data
         fl_guard.set_cur_ver(tx.version);
         self.npages.store(npages + fl_buf.nappend, R);
-
         fl_buf.erase();
+
         // // adjust buffer
         // fl_buf.nappend = 0;
         // fl_buf.clear();
@@ -310,7 +311,7 @@ impl DiskPager {
         #[cfg(test)]
         {
             if let Ok("debug") = std::env::var("RUSQL_LOG_TX").as_deref() {
-                tx.key_range.print();
+                tx.key_range.debug_print();
             }
         }
 
@@ -320,7 +321,7 @@ impl DiskPager {
         let borrow = self.history.read();
 
         if let Some(touched) = borrow.history.get(&tx.version)
-            && let true = Touched::conflict(&tx.key_range.recorded[..], &touched[..])
+            && Touched::conflict(&tx.key_range.recorded[..], &touched[..])
         {
             warn!(
                 tx_version = tx.version,
