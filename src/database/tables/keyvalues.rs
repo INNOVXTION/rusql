@@ -28,7 +28,7 @@ impl Key {
         Key(Arc::from([0u8; 6]))
     }
 
-    /// checks if key is the empty key, for len of the actual key use the len() method
+    /// checks if key is "the" empty key, for len of the actual key use the len() method
     pub fn is_empty(&self) -> bool {
         let e = [0u8; 6];
         e == *self.0
@@ -79,6 +79,7 @@ impl Key {
         Key(Arc::from(buf))
     }
 
+    /// returns len in bytes not elements!
     pub fn len(&self) -> usize {
         self.0.len()
     }

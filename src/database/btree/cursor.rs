@@ -22,11 +22,79 @@ pub(crate) enum ScanMode {
     },
 }
 
+pub(crate) struct PrefixScanIter<'a, P: Pager> {
+    cursor: Cursor<'a, P>,
+    key: Key,
+    tid: u32,
+    finished: bool,
+}
+
+impl<'a, P: Pager> PrefixScanIter<'a, P> {
+    pub fn collect_records(self) -> Vec<Record> {
+        self.into_iter().map(|kv| Record::from_kv(kv)).collect()
+    }
+}
+
+impl<'a, P: Pager> Iterator for PrefixScanIter<'a, P> {
+    type Item = (Key, Value);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.finished {
+            return None;
+        }
+        let (k, v) = self.cursor.next()?;
+
+        if !is_subkey(&self.key, &k) {
+            self.finished = true;
+            return None;
+        }
+        Some((k, v))
+    }
+}
+
 impl ScanMode {
+    /// returns matching partial keys, useful for secondary indices
+    ///
+    /// for a key:
+    ///
+    /// "1 0 Alice"
+    ///
+    /// will match:
+    ///
+    /// "1 0 Alice Clerk"
+    ///
+    /// "1 0 Alice Firefighter"
+    ///
+    /// "1 0 Alice Policewoman"
+    pub fn prefix<P: Pager>(key: Key, tree: &BTree<P>) -> Result<PrefixScanIter<'_, P>> {
+        if key.len() == 0 {
+            return Err(
+                ScanError::ScanCreateError("invalid input: key is empty".to_string()).into(),
+            );
+        }
+        let tid = key.get_tid();
+        let cursor = prefix_seek(&key, tree).ok_or(ScanError::ScanCreateError(
+            "couldnt create prefix cursor".to_string(),
+        ))?;
+
+        Ok(PrefixScanIter {
+            cursor,
+            key,
+            tid,
+            finished: false,
+        })
+    }
+
+    /// single scan, basically tree_get() over the cursor API
+    pub fn single<P: Pager>(key: Key, tree: &BTree<P>) -> Option<(Key, Value)> {
+        let cursor = seek(tree, &key, Compare::EQ)?;
+        Some(cursor.deref())
+    }
+
     /// builds an open scanner for open ended scans, never crosses TID boundaries
     ///
     /// ScanMode is lazy, and wont yied anything until `.into_iter()` is called
-    pub fn new_open(key: Key, cmp: Compare) -> Result<Self> {
+    pub fn open(key: Key, cmp: Compare) -> Result<Self> {
         if cmp == Compare::EQ {
             return Err(ScanError::ScanCreateError(
                 "invalid input: EQ predicate cant be used for open scans".to_string(),
@@ -39,7 +107,7 @@ impl ScanMode {
     /// scans a range between two keys, predicates dictate starting position for lo and hi
     ///
     /// ScanMode is lazy, and wont yied anything until `.into_iter()` is called
-    pub fn new_range(lo: (Key, Compare), hi: (Key, Compare)) -> Result<Self> {
+    pub fn range(lo: (Key, Compare), hi: (Key, Compare)) -> Result<Self> {
         let tid = lo.0.get_tid();
         if tid != hi.0.get_tid() {
             return Err(ScanError::ScanCreateError(
@@ -270,6 +338,49 @@ impl<'a, P: Pager> Cursor<'a, P> {
 
 // creates a new cursor
 #[instrument(skip_all)]
+fn prefix_seek<'a, P: Pager>(key: &Key, tree: &'a BTree<P>) -> Option<Cursor<'a, P>> {
+    let mut cursor = Cursor::new(tree);
+    let mut ptr = tree.get_root();
+
+    while let Some(p) = ptr {
+        let node = tree.decode(p);
+
+        ptr = match node.as_tn().get_type() {
+            NodeType::Node => {
+                let idx = node_lookup(node.as_tn(), &key, &Compare::LE)?; // navigating nodes
+                let ptr = node.as_tn().get_ptr(idx);
+
+                cursor.path.push(node);
+                cursor.pos.push(idx);
+
+                Some(ptr)
+            }
+            NodeType::Leaf => {
+                let idx = prefix_node_lookup(node.as_tn(), &key)?;
+                debug!(idx, "seek idx after lookup");
+
+                cursor.path.push(node);
+                cursor.pos.push(idx);
+
+                None
+            }
+        }
+    }
+    debug!("creating cursor, pos: {:?}", cursor.pos);
+    if cursor.pos.is_empty() || cursor.path.is_empty() {
+        return None;
+    }
+    // accounting for empty key edge case
+    if cursor.deref().0.is_empty() {
+        return None;
+    }
+    assert_eq!(cursor.pos.len(), cursor.path.len());
+
+    Some(cursor)
+}
+
+// creates a new cursor
+#[instrument(skip_all)]
 fn seek<'a, P: Pager>(tree: &'a BTree<P>, key: &Key, flag: Compare) -> Option<Cursor<'a, P>> {
     let mut cursor = Cursor::new(tree);
     let mut ptr = tree.get_root();
@@ -318,6 +429,23 @@ fn key_cmp(k1: &Key, k2: &Key, pred: Compare) -> bool {
         Compare::GT => k1 > k2,
         Compare::GE => k1 >= k2,
         Compare::EQ => k1 == k2,
+    }
+}
+
+/// looks up idx of key which houses key as a prefix
+fn prefix_node_lookup(node: &TreeNode, key: &Key) -> Option<u16> {
+    if node.get_nkeys() == 0 {
+        return None;
+    }
+
+    let idx = cmp_ge(node, key)?;
+    let cmp_key = node.get_key(idx).ok()?; // we just compared against it
+    let len = key.len();
+
+    if is_subkey(&key, &cmp_key) {
+        Some(idx)
+    } else {
+        None
     }
 }
 
@@ -503,6 +631,21 @@ fn cmp_eq(node: &TreeNode, key: &Key) -> Option<u16> {
         }
     }
     None
+}
+
+/// is key a a sub key of b?
+///```
+/// let key_a = "0 1 Alice";
+/// let key_b = "0 1 Alice Firefighter"
+/// assert!(is_subkey(&key_a, &key_b))
+///```
+fn is_subkey(a: &Key, b: &Key) -> bool {
+    let len = a.len();
+    if a.as_slice() == &b.as_slice()[..len] {
+        true
+    } else {
+        false
+    }
 }
 
 #[cfg(test)]
