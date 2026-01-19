@@ -71,7 +71,7 @@ impl KVDB {
         }
 
         // retrieve from tree
-        let key = Query::with_key(&self.t_def)
+        let key = Query::by_col(&self.t_def)
             .add(DEF_TABLE_COL1, name)
             .encode()
             .ok()?;

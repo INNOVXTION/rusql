@@ -10,7 +10,7 @@ use crate::database::{
     pager::{KVEngine, MetaPage, Pager},
     tables::{
         Key, Query, Record, Value,
-        records::QueryKey,
+        records::QueryCol,
         tables::{
             DEF_TABLE_COL1, LOWEST_PREMISSIABLE_TID, META_TABLE_COL1, META_TABLE_ID_ROW,
             META_TABLE_NAME, MetaTable, Table,
@@ -76,7 +76,7 @@ impl TX {
         self.key_range.listen();
 
         let meta = self.db.db_link.get_meta(&self.tree);
-        let key = Query::with_key(&meta)
+        let key = Query::by_col(&meta)
             .add(META_TABLE_COL1, META_TABLE_ID_ROW) // we query name column, where pkey = tid
             .encode()?;
 
@@ -198,7 +198,7 @@ impl TX {
         self.key_range.capture_and_listen();
 
         // delete from tdef
-        let qu = Query::with_key(&self.db.db_link.t_def)
+        let qu = Query::by_col(&self.db.db_link.t_def)
             .add(DEF_TABLE_COL1, name)
             .encode()?;
 
@@ -302,7 +302,7 @@ impl TX {
         Ok(())
     }
 
-    fn delete_from_query(&mut self, q: QueryKey, schema: &Table) -> Result<()> {
+    fn delete_from_query(&mut self, q: QueryCol, schema: &Table) -> Result<()> {
         let key = q.encode()?;
 
         // getting full record
@@ -354,12 +354,16 @@ impl TX {
         Ok(())
     }
 
-    fn create_index(&self, col: &str, table: &Table) {
-        // TODO cant delete from tdef or meta
+    fn create_index(&self, col: &str, table: &mut Table) -> Result<()> {
+        // TODO: retroactively add keys
+        table.create_index(col);
+        let _ = table.add_col_to_index(col, col)?;
+        Ok(())
     }
 
-    fn delete_index(&self, col: &str, table: &Table) {
-        // TODO
+    fn delete_index(&self, col: &str, table: &mut Table) -> Result<()> {
+        // TODO: retroactively remove keys keys
+        table.remove_index(col)
     }
 }
 
@@ -442,9 +446,9 @@ mod tables {
             tx.insert_rec(entry, &table, SetFlag::UPSERT)?;
         }
 
-        let q1 = Query::with_key(&table).add("name", "Alice").encode()?;
-        let q2 = Query::with_key(&table).add("name", "Bob").encode()?;
-        let q3 = Query::with_key(&table).add("name", "Charlie").encode()?;
+        let q1 = Query::by_col(&table).add("name", "Alice").encode()?;
+        let q2 = Query::by_col(&table).add("name", "Bob").encode()?;
+        let q3 = Query::by_col(&table).add("name", "Charlie").encode()?;
 
         let q1_res = tx.tree_get(q1).unwrap().decode();
         assert_eq!(q1_res[0], DataCell::Int(20));
@@ -482,20 +486,20 @@ mod tables {
 
         tx.insert_table(&table).unwrap();
 
-        let good_query = Query::with_key(&table).add("name", "Alice").add("age", 10);
+        let good_query = Query::by_col(&table).add("name", "Alice").add("age", 10);
         assert!(good_query.encode().is_ok());
 
-        let good_query = Query::with_key(&table).add("name", "Alice").add("age", 10);
-        let unordered = Query::with_key(&table).add("age", 10).add("name", "Alice");
+        let good_query = Query::by_col(&table).add("name", "Alice").add("age", 10);
+        let unordered = Query::by_col(&table).add("age", 10).add("name", "Alice");
         assert_eq!(good_query.encode().unwrap(), unordered.encode().unwrap());
 
-        let bad_query = Query::with_key(&table).add("name", "Alice");
+        let bad_query = Query::by_col(&table).add("name", "Alice");
         assert!(bad_query.encode().is_err());
 
-        let bad_query = Query::with_key(&table).add("dfasdf", "fasdf");
+        let bad_query = Query::by_col(&table).add("dfasdf", "fasdf");
         assert!(bad_query.encode().is_err());
 
-        let bad_query = Query::with_key(&table);
+        let bad_query = Query::by_col(&table);
         assert!(bad_query.encode().is_err());
 
         db.commit(tx).unwrap();
@@ -656,10 +660,10 @@ mod tables {
         tx.insert_table(&table).unwrap();
 
         // missing primary key
-        assert!(Query::with_key(&table).encode().is_err());
+        assert!(Query::by_col(&table).encode().is_err());
 
         // wrong column name
-        assert!(Query::with_key(&table).add("nope", "x").encode().is_err());
+        assert!(Query::by_col(&table).add("nope", "x").encode().is_err());
 
         db.commit(tx).unwrap();
         cleanup_file(path);
@@ -714,7 +718,7 @@ mod tables {
         }
 
         let open = ScanMode::new_open(
-            Query::with_key(&table1).add("name", "Alice").encode()?,
+            Query::by_col(&table1).add("name", "Alice").encode()?,
             Compare::GE,
         )?;
         let res: Vec<_> = tx.tree_scan(open)?.collect_records();
@@ -724,10 +728,7 @@ mod tables {
         assert_eq!(res[1].to_string(), "Bob 15");
         assert_eq!(res[2].to_string(), "Charlie 25");
 
-        let open = ScanMode::new_open(
-            Query::with_key(&table2).add("id", 20).encode()?,
-            Compare::GE,
-        )?;
+        let open = ScanMode::new_open(Query::by_col(&table2).add("id", 20).encode()?, Compare::GE)?;
         let res: Vec<_> = tx.tree_scan(open)?.collect_records();
 
         assert_eq!(res.len(), 2);
@@ -839,8 +840,8 @@ mod scan {
         }
 
         // Scan from id 5 to 15
-        let lo_key = Query::with_key(&table).add("id", 5i64).encode()?;
-        let hi_key = Query::with_key(&table).add("id", 15i64).encode()?;
+        let lo_key = Query::by_col(&table).add("id", 5i64).encode()?;
+        let hi_key = Query::by_col(&table).add("id", 15i64).encode()?;
 
         let range = ScanMode::new_range((lo_key, Compare::GE), (hi_key, Compare::LE))?;
 
@@ -905,7 +906,7 @@ mod scan {
 
         // Scan table1
         let open = ScanMode::new_open(
-            Query::with_key(&table1).add("key", "key_a_1").encode()?,
+            Query::by_col(&table1).add("key", "key_a_1").encode()?,
             Compare::GE,
         )?;
         let res1: Vec<_> = tx.tree_scan(open)?.collect_records();
@@ -916,7 +917,7 @@ mod scan {
 
         // Scan table2
         let open = ScanMode::new_open(
-            Query::with_key(&table2).add("key", "key_b_1").encode()?,
+            Query::by_col(&table2).add("key", "key_b_1").encode()?,
             Compare::GE,
         )?;
         let res2: Vec<_> = tx.tree_scan(open)?.collect_records();
@@ -959,7 +960,7 @@ mod scan {
 
         // Scan backwards from score 50
         let open = ScanMode::new_open(
-            Query::with_key(&table).add("score", 50i64).encode()?,
+            Query::by_col(&table).add("score", 50i64).encode()?,
             Compare::LT,
         )?;
 
@@ -1002,7 +1003,7 @@ mod scan {
 
         // Scan for values greater than max
         let open = ScanMode::new_open(
-            Query::with_key(&table).add("id", 100i64).encode()?,
+            Query::by_col(&table).add("id", 100i64).encode()?,
             Compare::GT,
         )?;
 
@@ -1038,7 +1039,7 @@ mod scan {
         )?;
 
         let open = ScanMode::new_open(
-            Query::with_key(&table).add("code", "CODE_001").encode()?,
+            Query::by_col(&table).add("code", "CODE_001").encode()?,
             Compare::EQ,
         );
         // EQ is not allowed in open scans, should error
@@ -1076,7 +1077,7 @@ mod scan {
 
         // Scan from 35 backwards (LE)
         let open = ScanMode::new_open(
-            Query::with_key(&table).add("value", 35i64).encode()?,
+            Query::by_col(&table).add("value", 35i64).encode()?,
             Compare::LE,
         )?;
 
@@ -1119,7 +1120,7 @@ mod scan {
 
         // Scan from id 100 onwards
         let open = ScanMode::new_open(
-            Query::with_key(&table).add("id", 100i64).encode()?,
+            Query::by_col(&table).add("id", 100i64).encode()?,
             Compare::GT,
         )?;
 
@@ -1162,7 +1163,7 @@ mod scan {
 
         // Scan from "bob" onwards
         let open = ScanMode::new_open(
-            Query::with_key(&table).add("name", "bob").encode()?,
+            Query::by_col(&table).add("name", "bob").encode()?,
             Compare::GE,
         )?;
 
@@ -1204,15 +1205,13 @@ mod scan {
 
         // Delete some records
         for i in [3, 5, 7].iter() {
-            let key = Query::with_key(&table).add("id", *i as i64).encode()?;
+            let key = Query::by_col(&table).add("id", *i as i64).encode()?;
             tx.tree_delete(key)?;
         }
 
         // Scan from beginning
-        let open = ScanMode::new_open(
-            Query::with_key(&table).add("id", 1i64).encode()?,
-            Compare::GE,
-        )?;
+        let open =
+            ScanMode::new_open(Query::by_col(&table).add("id", 1i64).encode()?, Compare::GE)?;
 
         let res: Vec<_> = tx.tree_scan(open)?.collect_records();
 
@@ -1320,9 +1319,9 @@ mod concurrent_tx_tests {
 
         let tx = db.begin(&db, TXKind::Read);
 
-        let q1 = Query::with_key(&table).add("name", "Alice").encode()?;
-        let q2 = Query::with_key(&table).add("name", "Bob").encode()?;
-        let q3 = Query::with_key(&table).add("name", "Charlie").encode()?;
+        let q1 = Query::by_col(&table).add("name", "Alice").encode()?;
+        let q2 = Query::by_col(&table).add("name", "Bob").encode()?;
+        let q3 = Query::by_col(&table).add("name", "Charlie").encode()?;
 
         let q1_res = tx.tree_get(q1).unwrap().decode();
         assert_eq!(q1_res[0], DataCell::Int(20));
@@ -1435,7 +1434,7 @@ mod concurrent_tx_tests {
         // Verify all records exist
         let tx = db.begin(&db, TXKind::Read);
         for i in 0..n_threads {
-            let q = Query::with_key(&table).add("id", i as i64).encode()?;
+            let q = Query::by_col(&table).add("id", i as i64).encode()?;
             let res = tx.tree_get(q);
             assert!(res.is_some());
             let res = res.unwrap().decode();
@@ -1495,10 +1494,7 @@ mod concurrent_tx_tests {
                     // All threads read the same records
                     let mut success = true;
                     for i in 1..=5 {
-                        let q = Query::with_key(&table)
-                            .add("id", i as i64)
-                            .encode()
-                            .unwrap();
+                        let q = Query::by_col(&table).add("id", i as i64).encode().unwrap();
                         if let Some(value) = tx.tree_get(q) {
                             let decoded = value.decode();
                             if decoded[0] != DataCell::Str(format!("value_{}", i)) {
@@ -1587,14 +1583,8 @@ mod concurrent_tx_tests {
                     let mut success = true;
 
                     for i in 1..=100 {
-                        let q1 = Query::with_key(&table1)
-                            .add("id", i as i64)
-                            .encode()
-                            .unwrap();
-                        let q2 = Query::with_key(&table2)
-                            .add("id", i as i64)
-                            .encode()
-                            .unwrap();
+                        let q1 = Query::by_col(&table1).add("id", i as i64).encode().unwrap();
+                        let q2 = Query::by_col(&table2).add("id", i as i64).encode().unwrap();
 
                         if let (Some(v1), Some(v2)) = (tx.tree_get(q1), tx.tree_get(q2)) {
                             let d1 = v1.decode();
@@ -1701,7 +1691,7 @@ mod concurrent_tx_tests {
         // Verify all updates were applied
         let tx = db.begin(&db, TXKind::Read);
         for i in 0..n_threads {
-            let q = Query::with_key(&table).add("id", i as i64 + 1).encode()?;
+            let q = Query::by_col(&table).add("id", i as i64 + 1).encode()?;
             let res = tx.tree_get(q).unwrap().decode();
             assert_eq!(res[0], DataCell::Str(format!("updated_by_thread_{}", i)));
         }
@@ -1749,7 +1739,7 @@ mod concurrent_tx_tests {
                         let mut tx = db.begin(&db, TXKind::Write);
 
                         // Read current value
-                        let q = Query::with_key(&table).add("id", 1i64).encode().unwrap();
+                        let q = Query::by_col(&table).add("id", 1i64).encode().unwrap();
                         let current_val = if let Some(v) = tx.tree_get(q) {
                             let decoded = v.decode();
                             if let DataCell::Int(val) = decoded[0] {
@@ -1840,7 +1830,7 @@ mod concurrent_tx_tests {
                         let span = span!(Level::DEBUG, "thread", ?id, tx.version);
                         let _guard = span.enter();
 
-                        let q = Query::with_key(&table).add("id", i as i64);
+                        let q = Query::by_col(&table).add("id", i as i64);
 
                         let _ = tx.delete_from_query(q, &table);
                         let commit_result = db.commit(tx);
@@ -1870,7 +1860,7 @@ mod concurrent_tx_tests {
         // Verify all records were deleted
         let tx = db.begin(&db, TXKind::Read);
         for i in 1..=100 {
-            let q = Query::with_key(&table).add("id", i as i64).encode()?;
+            let q = Query::by_col(&table).add("id", i as i64).encode()?;
             assert!(tx.tree_get(q).is_none());
         }
         db.commit(tx)?;
@@ -1923,7 +1913,7 @@ mod concurrent_tx_tests {
 
                     let r = retry(Backoff::default(), || {
                         let mut tx = db.begin(&db, TXKind::Write);
-                        let q = Query::with_key(&table).add("id", 1i64).encode().unwrap();
+                        let q = Query::by_col(&table).add("id", 1i64).encode().unwrap();
 
                         // All threads try to delete the same key
                         let _ = tx.tree_delete(q);
@@ -2009,7 +1999,7 @@ mod concurrent_tx_tests {
                         match operation_id {
                             0 => {
                                 // READ
-                                let q = Query::with_key(&table).add("id", 1i64).encode().unwrap();
+                                let q = Query::by_col(&table).add("id", 1i64).encode().unwrap();
                                 let _ = tx.tree_get(q);
                             }
                             1 => {
@@ -2098,7 +2088,7 @@ mod concurrent_tx_tests {
                     if i < 6 {
                         // Reader threads
                         let tx = db.begin(&db, TXKind::Read);
-                        let q = Query::with_key(&table).add("id", 1i64).encode().unwrap();
+                        let q = Query::by_col(&table).add("id", 1i64).encode().unwrap();
                         let val = tx.tree_get(q);
                         let _ = db.commit(tx);
                         read_results.lock().push(val.is_some());
@@ -2106,8 +2096,8 @@ mod concurrent_tx_tests {
                         // Writer threads
                         let r = retry(Backoff::default(), || {
                             let mut tx = db.begin(&db, TXKind::Write);
-                            let current = if let Some(v) = tx
-                                .tree_get(Query::with_key(&table).add("id", 1i64).encode().unwrap())
+                            let current = if let Some(v) =
+                                tx.tree_get(Query::by_col(&table).add("id", 1i64).encode().unwrap())
                             {
                                 let decoded = v.decode();
                                 if let DataCell::Int(val) = decoded[0] {
@@ -2214,10 +2204,7 @@ mod concurrent_tx_tests {
                     let mut count = 0;
 
                     for i in 0..n_insert_threads {
-                        let q = Query::with_key(&table)
-                            .add("id", i as i64)
-                            .encode()
-                            .unwrap();
+                        let q = Query::by_col(&table).add("id", i as i64).encode().unwrap();
                         if tx.tree_get(q).is_some() {
                             count += 1;
                         }
@@ -2432,7 +2419,7 @@ mod concurrent_tx_tests {
 
         // Verify the final record exists
         let tx = db.begin(&db, TXKind::Read);
-        let q = Query::with_key(&table).add("id", 1i64).encode()?;
+        let q = Query::by_col(&table).add("id", 1i64).encode()?;
         assert!(tx.tree_get(q).is_some());
         db.commit(tx)?;
 
@@ -2484,7 +2471,7 @@ mod concurrent_tx_tests {
                         let mut tx = db.begin(&db, TXKind::Write);
 
                         // Read first
-                        let read_q = Query::with_key(&table).add("id", 1i64).encode().unwrap();
+                        let read_q = Query::by_col(&table).add("id", 1i64).encode().unwrap();
                         let _ = tx.tree_get(read_q);
 
                         // Then write
@@ -2514,6 +2501,536 @@ mod concurrent_tx_tests {
         let results = results.lock();
         let successful = results.iter().filter(|r| r.is_ok()).count();
         assert!(successful >= n_threads / 2);
+
+        cleanup_file(path);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod secondary_index_ops {
+    use super::*;
+    use crate::database::{
+        btree::{Compare, ScanMode, SetFlag},
+        helper::cleanup_file,
+        pager::transaction::Transaction,
+        tables::{Query, Record, TypeCol, tables::TableBuilder},
+        transactions::{kvdb::KVDB, tx::TXKind},
+        types::DataCell,
+    };
+    use parking_lot::Mutex;
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+    use test_log::test;
+
+    #[test]
+    fn insert_record_with_single_secondary_index() -> Result<()> {
+        let path = "test-files/insert_single_secondary.rdb";
+        cleanup_file(path);
+        let db = Arc::new(KVDB::new(path));
+        let mut tx = db.begin(&db, TXKind::Write);
+
+        let mut table = TableBuilder::new()
+            .id(50)
+            .name("users")
+            .add_col("id", TypeCol::INTEGER)
+            .add_col("email", TypeCol::BYTES)
+            .add_col("name", TypeCol::BYTES)
+            .pkey(1)
+            .build(&mut tx)?;
+
+        table.create_index("email");
+        table.add_col_to_index("email", "email")?;
+        tx.insert_table(&table)?;
+
+        // Insert record
+        let rec = Record::new()
+            .add(1i64)
+            .add("alice@example.com")
+            .add("Alice");
+
+        tx.insert_rec(rec, &table, SetFlag::INSERT)?;
+
+        // Query by primary key
+        let pk_query = Query::by_col(&table).add("id", 1i64).encode()?;
+        let result = tx.tree_get(pk_query).unwrap().decode();
+        assert_eq!(result[0], DataCell::Str("alice@example.com".to_string()));
+        assert_eq!(result[1], DataCell::Str("Alice".to_string()));
+
+        // Query by secondary index (email)
+        let email_query = Query::by_col(&table)
+            .add("email", "alice@example.com")
+            .encode()?;
+        let result = tx.tree_get(email_query).unwrap().decode();
+        assert_eq!(result[0], DataCell::Str("Alice".to_string()));
+
+        db.commit(tx)?;
+        cleanup_file(path);
+        Ok(())
+    }
+
+    #[test]
+    fn insert_multiple_records_with_secondary_index() -> Result<()> {
+        let path = "test-files/insert_multi_secondary.rdb";
+        cleanup_file(path);
+        let db = Arc::new(KVDB::new(path));
+        let mut tx = db.begin(&db, TXKind::Write);
+
+        let mut table = TableBuilder::new()
+            .id(51)
+            .name("employees")
+            .add_col("id", TypeCol::INTEGER)
+            .add_col("department", TypeCol::BYTES)
+            .add_col("name", TypeCol::BYTES)
+            .pkey(1)
+            .build(&mut tx)?;
+
+        table.create_index("department");
+        table.add_col_to_index("department", "department")?;
+        tx.insert_table(&table)?;
+
+        // Insert multiple records
+        for i in 1..=5 {
+            let dept = if i % 2 == 0 { "Engineering" } else { "Sales" };
+            let rec = Record::new()
+                .add(i as i64)
+                .add(dept)
+                .add(format!("Employee_{}", i));
+            tx.insert_rec(rec, &table, SetFlag::INSERT)?;
+        }
+
+        // Verify records by primary key
+        for i in 1..=5 {
+            let pk_query = Query::by_col(&table).add("id", i as i64).encode()?;
+            let result = tx.tree_get(pk_query).unwrap().decode();
+            assert_eq!(result[1], DataCell::Str(format!("Employee_{}", i)));
+        }
+
+        // Verify records by secondary index
+        let eng_query = Query::by_col(&table)
+            .add("department", "Engineering")
+            .encode()?;
+        let result = tx.tree_get(eng_query).unwrap().decode();
+        // Just verify we got a result for Engineering department
+        assert_eq!(result.len(), 2);
+
+        db.commit(tx)?;
+        cleanup_file(path);
+        Ok(())
+    }
+
+    #[test]
+    fn insert_record_with_multiple_secondary_indices() -> Result<()> {
+        let path = "test-files/insert_multi_indices.rdb";
+        cleanup_file(path);
+        let db = Arc::new(KVDB::new(path));
+        let mut tx = db.begin(&db, TXKind::Write);
+
+        let mut table = TableBuilder::new()
+            .id(52)
+            .name("products")
+            .add_col("id", TypeCol::INTEGER)
+            .add_col("name", TypeCol::BYTES)
+            .add_col("category", TypeCol::BYTES)
+            .add_col("price", TypeCol::INTEGER)
+            .pkey(1)
+            .build(&mut tx)?;
+
+        table.create_index("name");
+        table.add_col_to_index("name", "name")?;
+        table.create_index("category");
+        table.add_col_to_index("category", "category")?;
+        table.create_index("price");
+        table.add_col_to_index("price", "price")?;
+        tx.insert_table(&table)?;
+
+        // Insert record
+        let rec = Record::new()
+            .add(1i64)
+            .add("Laptop")
+            .add("Electronics")
+            .add(1500i64);
+
+        tx.insert_rec(rec, &table, SetFlag::INSERT)?;
+
+        // Query by each secondary index
+        let name_query = Query::by_col(&table).add("name", "Laptop").encode()?;
+        assert!(tx.tree_get(name_query).is_some());
+
+        let category_query = Query::by_col(&table)
+            .add("category", "Electronics")
+            .encode()?;
+        assert!(tx.tree_get(category_query).is_some());
+
+        let price_query = Query::by_col(&table).add("price", 1500i64).encode()?;
+        assert!(tx.tree_get(price_query).is_some());
+
+        db.commit(tx)?;
+        cleanup_file(path);
+        Ok(())
+    }
+
+    #[test]
+    fn delete_record_with_secondary_index() -> Result<()> {
+        let path = "test-files/delete_secondary_index.rdb";
+        cleanup_file(path);
+        let db = Arc::new(KVDB::new(path));
+        let mut tx = db.begin(&db, TXKind::Write);
+
+        let mut table = TableBuilder::new()
+            .id(53)
+            .name("deletable")
+            .add_col("id", TypeCol::INTEGER)
+            .add_col("status", TypeCol::BYTES)
+            .add_col("data", TypeCol::BYTES)
+            .pkey(1)
+            .build(&mut tx)?;
+
+        table.create_index("status");
+        table.add_col_to_index("status", "status")?;
+        tx.insert_table(&table)?;
+
+        // Insert record
+        let rec = Record::new().add(1i64).add("active").add("test data");
+        tx.insert_rec(rec, &table, SetFlag::INSERT)?;
+
+        // Verify it exists via primary key
+        let pk_query = Query::by_col(&table).add("id", 1i64).encode()?;
+        assert!(tx.tree_get(pk_query.clone()).is_some());
+
+        // Verify it exists via secondary index
+        let status_query = Query::by_col(&table).add("status", "active").encode()?;
+        assert!(tx.tree_get(status_query.clone()).is_some());
+
+        // Delete the record
+        tx.tree_delete(pk_query.clone())?;
+
+        // Verify primary key is gone
+        assert!(tx.tree_get(pk_query).is_none());
+
+        // Verify secondary index entry is also gone (should be handled by record deletion)
+        assert!(tx.tree_get(status_query).is_none());
+
+        db.commit(tx)?;
+        cleanup_file(path);
+        Ok(())
+    }
+
+    #[test]
+    fn delete_multiple_records_with_secondary_index() -> Result<()> {
+        let path = "test-files/delete_multi_secondary.rdb";
+        cleanup_file(path);
+        let db = Arc::new(KVDB::new(path));
+        let mut tx = db.begin(&db, TXKind::Write);
+
+        let mut table = TableBuilder::new()
+            .id(54)
+            .name("deletable_multi")
+            .add_col("id", TypeCol::INTEGER)
+            .add_col("category", TypeCol::BYTES)
+            .add_col("name", TypeCol::BYTES)
+            .pkey(1)
+            .build(&mut tx)?;
+
+        table.create_index("category");
+        table.add_col_to_index("category", "category")?;
+        tx.insert_table(&table)?;
+
+        // Insert records
+        for i in 1..=10 {
+            let rec = Record::new()
+                .add(i as i64)
+                .add("category_a")
+                .add(format!("item_{}", i));
+            tx.insert_rec(rec, &table, SetFlag::INSERT)?;
+        }
+
+        // Delete some records
+        for i in [1, 3, 5, 7, 9].iter() {
+            let pk_query = Query::by_col(&table).add("id", *i as i64).encode()?;
+            tx.tree_delete(pk_query)?;
+        }
+
+        // Verify remaining records
+        for i in [2, 4, 6, 8, 10].iter() {
+            let pk_query = Query::by_col(&table).add("id", *i as i64).encode()?;
+            assert!(tx.tree_get(pk_query).is_some());
+        }
+
+        // Verify deleted records are gone
+        for i in [1, 3, 5, 7, 9].iter() {
+            let pk_query = Query::by_col(&table).add("id", *i as i64).encode()?;
+            assert!(tx.tree_get(pk_query).is_none());
+        }
+
+        db.commit(tx)?;
+        cleanup_file(path);
+        Ok(())
+    }
+
+    #[test]
+    fn read_record_via_secondary_index() -> Result<()> {
+        let path = "test-files/read_secondary_index.rdb";
+        cleanup_file(path);
+        let db = Arc::new(KVDB::new(path));
+        let mut tx = db.begin(&db, TXKind::Write);
+
+        let mut table = TableBuilder::new()
+            .id(55)
+            .name("readers")
+            .add_col("id", TypeCol::INTEGER)
+            .add_col("username", TypeCol::BYTES)
+            .add_col("email", TypeCol::BYTES)
+            .add_col("role", TypeCol::BYTES)
+            .pkey(1)
+            .build(&mut tx)?;
+
+        table.create_index("username");
+        table.add_col_to_index("username", "username")?;
+        table.create_index("email");
+        table.add_col_to_index("email", "email")?;
+        tx.insert_table(&table)?;
+
+        // Insert records
+        let records = vec![
+            (1i64, "alice", "alice@example.com", "admin"),
+            (2i64, "bob", "bob@example.com", "user"),
+            (3i64, "charlie", "charlie@example.com", "user"),
+        ];
+
+        for (id, username, email, role) in &records {
+            let rec = Record::new().add(*id).add(*username).add(*email).add(*role);
+            tx.insert_rec(rec, &table, SetFlag::INSERT)?;
+        }
+
+        // Read via username secondary index
+        let username_query = Query::by_col(&table).add("username", "alice").encode()?;
+        let result = tx.tree_get(username_query).unwrap().decode();
+        assert_eq!(result[0], DataCell::Str("alice@example.com".to_string()));
+        assert_eq!(result[1], DataCell::Str("admin".to_string()));
+
+        // Read via email secondary index
+        let email_query = Query::by_col(&table)
+            .add("email", "bob@example.com")
+            .encode()?;
+        let result = tx.tree_get(email_query).unwrap().decode();
+        assert_eq!(result[0], DataCell::Str("user".to_string()));
+
+        db.commit(tx)?;
+        cleanup_file(path);
+        Ok(())
+    }
+
+    #[test]
+    fn upsert_record_with_secondary_index() -> Result<()> {
+        let path = "test-files/upsert_secondary_index.rdb";
+        cleanup_file(path);
+        let db = Arc::new(KVDB::new(path));
+        let mut tx = db.begin(&db, TXKind::Write);
+
+        let mut table = TableBuilder::new()
+            .id(56)
+            .name("upsertable")
+            .add_col("id", TypeCol::INTEGER)
+            .add_col("status", TypeCol::BYTES)
+            .add_col("value", TypeCol::INTEGER)
+            .pkey(1)
+            .build(&mut tx)?;
+
+        table.create_index("status");
+        table.add_col_to_index("status", "status")?;
+        tx.insert_table(&table)?;
+
+        // Insert initial record
+        let rec = Record::new().add(1i64).add("pending").add(100i64);
+        tx.insert_rec(rec, &table, SetFlag::UPSERT)?;
+
+        // Verify initial state
+        let status_query = Query::by_col(&table).add("status", "pending").encode()?;
+        let result = tx.tree_get(status_query).unwrap().decode();
+        assert_eq!(result[0], DataCell::Int(100));
+
+        // Upsert with updated values
+        let rec = Record::new().add(1i64).add("completed").add(200i64);
+        tx.insert_rec(rec, &table, SetFlag::UPSERT)?;
+
+        // Verify updated state via primary key
+        let pk_query = Query::by_col(&table).add("id", 1i64).encode()?;
+        let result = tx.tree_get(pk_query).unwrap().decode();
+        assert_eq!(result[0], DataCell::Str("completed".to_string()));
+        assert_eq!(result[1], DataCell::Int(200));
+
+        // Verify new secondary index entry exists
+        let new_status_query = Query::by_col(&table).add("status", "completed").encode()?;
+        assert!(tx.tree_get(new_status_query).is_some());
+
+        db.commit(tx)?;
+        cleanup_file(path);
+        Ok(())
+    }
+
+    #[test]
+    fn scan_with_secondary_index_key() -> Result<()> {
+        let path = "test-files/scan_secondary_index.rdb";
+        cleanup_file(path);
+        let db = Arc::new(KVDB::new(path));
+        let mut tx = db.begin(&db, TXKind::Write);
+
+        let mut table = TableBuilder::new()
+            .id(57)
+            .name("scannables")
+            .add_col("id", TypeCol::INTEGER)
+            .add_col("score", TypeCol::INTEGER)
+            .add_col("name", TypeCol::BYTES)
+            .pkey(1)
+            .build(&mut tx)?;
+
+        table.create_index("score");
+        table.add_col_to_index("score", "score")?;
+        tx.insert_table(&table)?;
+
+        // Insert records with various scores
+        for i in 1..=20 {
+            let score = (i * 10) as i64;
+            let rec = Record::new()
+                .add(i as i64)
+                .add(score)
+                .add(format!("player_{}", i));
+            tx.insert_rec(rec, &table, SetFlag::INSERT)?;
+        }
+
+        // Scan from score 100 onwards
+        let start_key = Query::by_col(&table).add("score", 100i64).encode()?;
+        let scan_mode = ScanMode::new_open(start_key, Compare::GE)?;
+        let results: Vec<_> = tx.tree_scan(scan_mode)?.collect_records();
+
+        // Should get records with scores from 100 to 200 (11 records)
+        assert_eq!(results.len(), 11);
+
+        db.commit(tx)?;
+        cleanup_file(path);
+        Ok(())
+    }
+
+    #[test]
+    fn concurrent_inserts_different_secondary_values() -> Result<()> {
+        let path = "test-files/concurrent_secondary_inserts.rdb";
+        cleanup_file(path);
+        let db = Arc::new(KVDB::new(path));
+        let mut tx = db.begin(&db, TXKind::Write);
+
+        let mut table = TableBuilder::new()
+            .id(58)
+            .name("concurrent_secondary")
+            .add_col("id", TypeCol::INTEGER)
+            .add_col("tag", TypeCol::BYTES)
+            .add_col("data", TypeCol::BYTES)
+            .pkey(1)
+            .build(&mut tx)?;
+
+        table.create_index("tag");
+        table.add_col_to_index("tag", "tag")?;
+        tx.insert_table(&table)?;
+        db.commit(tx)?;
+
+        let n_threads = 50;
+        let barrier = Arc::new(Barrier::new(n_threads));
+        let results = Arc::new(Mutex::new(vec![]));
+
+        thread::scope(|s| {
+            for i in 0..n_threads {
+                let db = db.clone();
+                let table = table.clone();
+                let barrier = barrier.clone();
+                let results = results.clone();
+
+                s.spawn(move || {
+                    barrier.wait();
+
+                    let mut tx = db.begin(&db, TXKind::Write);
+                    let tag = format!("tag_{}", i % 5);
+                    let rec = Record::new()
+                        .add(i as i64)
+                        .add(tag.clone())
+                        .add(format!("data_{}", i));
+
+                    let result = match tx.insert_rec(rec, &table, SetFlag::INSERT) {
+                        Ok(_) => db.commit(tx),
+                        Err(e) => Err(e),
+                    };
+
+                    results.lock().push(result);
+                });
+            }
+        });
+
+        // All inserts should succeed (different primary keys)
+        let results = results.lock();
+        assert_eq!(results.iter().filter(|r| r.is_ok()).count(), n_threads);
+
+        // Verify records via secondary index
+        let tx = db.begin(&db, TXKind::Read);
+        for tag_idx in 0..5 {
+            let tag = format!("tag_{}", tag_idx);
+            let tag_query = Query::by_col(&table).add("tag", tag.as_str()).encode()?;
+            // Should find at least one record with this tag
+            assert!(tx.tree_get(tag_query).is_some());
+        }
+        db.commit(tx)?;
+
+        cleanup_file(path);
+        Ok(())
+    }
+
+    #[test]
+    fn secondary_index_isolation_across_transactions() -> Result<()> {
+        let path = "test-files/secondary_isolation.rdb";
+        cleanup_file(path);
+        let db = Arc::new(KVDB::new(path));
+        let mut tx = db.begin(&db, TXKind::Write);
+
+        let mut table = TableBuilder::new()
+            .id(59)
+            .name("isolation_test")
+            .add_col("id", TypeCol::INTEGER)
+            .add_col("status", TypeCol::BYTES)
+            .add_col("value", TypeCol::BYTES)
+            .pkey(1)
+            .build(&mut tx)?;
+
+        table.create_index("status");
+        table.add_col_to_index("status", "status")?;
+        tx.insert_table(&table)?;
+        db.commit(tx)?;
+
+        // Transaction 1: Insert with status "draft"
+        let mut tx1 = db.begin(&db, TXKind::Write);
+        let rec = Record::new().add(1i64).add("draft").add("content_1");
+        tx1.insert_rec(rec, &table, SetFlag::INSERT)?;
+        db.commit(tx1)?;
+
+        // Transaction 2: Read via secondary index
+        let tx2 = db.begin(&db, TXKind::Read);
+        let status_query = Query::by_col(&table).add("status", "draft").encode()?;
+        let result = tx2.tree_get(status_query).unwrap().decode();
+        assert_eq!(result[0], DataCell::Str("content_1".to_string()));
+        db.commit(tx2)?;
+
+        // Transaction 3: Update record
+        let mut tx3 = db.begin(&db, TXKind::Write);
+        let rec = Record::new()
+            .add(1i64)
+            .add("published")
+            .add("updated_content");
+        tx3.insert_rec(rec, &table, SetFlag::UPSERT)?;
+        db.commit(tx3)?;
+
+        // Transaction 4: Verify update via secondary index
+        let tx4 = db.begin(&db, TXKind::Read);
+        let new_status_query = Query::by_col(&table).add("status", "published").encode()?;
+        let result = tx4.tree_get(new_status_query).unwrap().decode();
+        assert_eq!(result[0], DataCell::Str("updated_content".to_string()));
+        db.commit(tx4)?;
 
         cleanup_file(path);
         Ok(())

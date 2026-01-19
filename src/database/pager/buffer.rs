@@ -12,6 +12,8 @@ use crate::database::{
     types::{LRU_BUFFER_SIZE, Node, Pointer},
 };
 
+const DISKBUFFER_LIMIT: usize = 50;
+
 /// Globally shared buffer, used by the freelist
 #[derive(Debug)]
 pub(crate) struct DiskBuffer {
@@ -28,7 +30,7 @@ pub(crate) struct BufferEntry {
 impl DiskBuffer {
     pub fn new() -> Self {
         Self {
-            hmap: HashMap::new(),
+            hmap: HashMap::with_capacity(DISKBUFFER_LIMIT),
             nappend: 0,
         }
     }
@@ -74,7 +76,23 @@ impl DiskBuffer {
         }
     }
 
+    fn evict_clean(&mut self) {
+        let clean_node: Vec<Pointer> = self
+            .hmap
+            .iter()
+            .filter_map(|e| if !e.1.dirty { Some(*e.0) } else { None })
+            .collect();
+
+        for ptr in clean_node {
+            self.delete(ptr);
+        }
+    }
+
     pub fn insert_clean(&mut self, ptr: Pointer, node: Node) {
+        if self.hmap.len() >= DISKBUFFER_LIMIT {
+            self.evict_clean();
+        };
+
         self.hmap.insert(
             ptr,
             BufferEntry {
@@ -86,6 +104,10 @@ impl DiskBuffer {
     }
 
     pub fn insert_dirty(&mut self, ptr: Pointer, node: Node) -> Option<()> {
+        if self.hmap.len() >= DISKBUFFER_LIMIT {
+            self.evict_clean();
+        };
+
         self.hmap
             .insert(
                 ptr,

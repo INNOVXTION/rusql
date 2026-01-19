@@ -11,6 +11,7 @@ use crate::database::{
     transactions::{kvdb::KVDB, tx::TXKind},
     types::{Node, Pointer},
 };
+use crate::debug_if_env;
 
 // per transaction resource struct
 pub struct TXDB {
@@ -50,31 +51,28 @@ impl TXDB {
         }
     }
     fn debug_print(&self) {
-        #[cfg(test)]
-        {
-            if let Ok("debug") = std::env::var("RUSQL_LOG_TX").as_deref() {
-                debug!("{:-<10}", "-");
+        debug_if_env!("RUSQL_LOG_TX", {
+            debug!("{:-<10}", "-");
+            debug!(
+                len = self.tx_buf.as_ref().unwrap().borrow().write_map.len(),
+                nappend = self.tx_buf.as_ref().unwrap().borrow().nappend,
+                "current TX buffer:"
+            );
+            for e in self.tx_buf.as_ref().unwrap().borrow().write_map.iter() {
                 debug!(
-                    len = self.tx_buf.as_ref().unwrap().borrow().write_map.len(),
-                    nappend = self.tx_buf.as_ref().unwrap().borrow().nappend,
-                    "current TX buffer:"
-                );
-                for e in self.tx_buf.as_ref().unwrap().borrow().write_map.iter() {
-                    debug!(
-                        "- {:<10}, {:<10}, {:?}",
-                        e.0,
-                        e.1.node.get_type(),
-                        e.1.origin
-                    )
-                }
-                debug!("");
-                debug!("dealloc queue:");
-                for e in self.tx_buf.as_ref().unwrap().borrow().dealloc_map.iter() {
-                    debug!("- {e}")
-                }
-                debug!("{:-<10}", "-");
+                    "- {:<10}, {:<10}, {:?}",
+                    e.0,
+                    e.1.node.get_type(),
+                    e.1.origin
+                )
             }
-        }
+            debug!("");
+            debug!("dealloc queue:");
+            for e in self.tx_buf.as_ref().unwrap().borrow().dealloc_map.iter() {
+                debug!("- {e}")
+            }
+            debug!("{:-<10}", "-");
+        })
     }
 
     fn is_synced(&self) -> bool {
@@ -156,12 +154,7 @@ impl Pager for TXDB {
         };
 
         drop(buf);
-        #[cfg(test)]
-        {
-            if let Ok("debug") = std::env::var("RUSQL_LOG_TX").as_deref() {
-                self.debug_print();
-            }
-        };
+        self.debug_print();
         debug_assert!(self.is_synced());
     }
 }

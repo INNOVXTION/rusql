@@ -4,7 +4,7 @@ use std::fmt::Write;
 use tracing::{debug, error};
 
 use crate::database::codec::*;
-use crate::database::tables::tables::IdxKind;
+use crate::database::tables::tables::{IdxKind, Index};
 use crate::database::tables::{Key, Value};
 use crate::database::types::{BTREE_MAX_KEY_SIZE, BTREE_MAX_VAL_SIZE, DataCell, InputData};
 use crate::database::{
@@ -169,112 +169,186 @@ impl std::fmt::Display for Record {
 pub(crate) struct Query;
 
 impl Query {
-    /// constructs a key for direct row lookup, add keys with `.add()` then call `.encode()`
-    pub fn with_key(schema: &Table) -> QueryKey<'_> {
-        QueryKey {
+    /// constructs the key for direct row lookup, add keys with `.add()` then call `.encode()`
+    pub fn by_col(schema: &Table) -> QueryCol<'_> {
+        QueryCol {
             data: HashMap::new(),
             schema,
         }
     }
 
     /// constructs a key with only the TID
-    pub fn with_tid(schema: &Table) -> Key {
+    pub fn by_tid(schema: &Table) -> Key {
         let mut buf = [0u8; TID_LEN];
         buf.write_u32(schema.id);
         Key::from_encoded_slice(&buf)
     }
 
     /// constructs a key with TID + Prefix
-    pub fn with_prefix(schema: &Table, prefix: u16) -> Key {
+    pub fn by_idx(schema: &Table, prefix: u16) -> Key {
         let mut buf = [0u8; TID_LEN + PREFIX_LEN];
         buf.write_u32(schema.id).write_u16(prefix);
         Key::from_encoded_slice(&buf)
     }
-
-    /// contrust a key with TID + Prefix + COL VALUE
-    pub fn with_prefix_col(schema: &Table, prefix: u16, col_value: &[&str]) -> Key {
-        let mut buf = vec![0u8; TID_LEN + PREFIX_LEN];
-        buf.write_u32(schema.id).write_u16(prefix);
-
-        for col in col_value {
-            buf.extend_from_slice(&col.to_string().encode());
-        }
-
-        Key::from_encoded_slice(&buf)
-    }
 }
 
-pub(crate) struct QueryKey<'a> {
+pub(crate) struct QueryCol<'a> {
     data: HashMap<String, DataCell>,
     schema: &'a Table,
 }
 
-impl<'a> QueryKey<'a> {
-    /// add the column and primary key which you want to query, can only be used on QueryKey
+impl<'a> QueryCol<'a> {
+    /// add the column and key which you want to query, can only be used on QueryKey
     ///
-    /// not sensitive to order, but all keys for an index have to be provided
+    /// not sensitive to order, but all keys for an index have to be provided and need to match the designated data type
     pub fn add<T: InputData>(mut self, col: &str, value: T) -> Self {
         self.data.insert(col.to_string(), value.into_cell());
         self
     }
-    /// encodes a Query into a key
+
+    // /// attempts to encode a Query into a key
+    // ///
+    // /// will error if keys are missing or the data types don't match!
+    // pub fn encode(self) -> Result<Key> {
+    //     let schema = self.schema;
+    //     let index = self.find_index();
+
+    //     // validating that cells match column data types
+    //     for (title, data) in self.data.iter() {
+    //         if !schema.valid_col(title, data) {
+    //             return Err(
+    //                 TableError::QueryError("data type doesnt match column".to_string()).into(),
+    //             );
+    //         }
+    //     }
+
+    //     let mut buf = Vec::<u8>::new();
+
+    //     // encoding table id + prefix
+    //     buf.extend_from_slice(&schema.id.to_le_bytes());
+    //     buf.extend_from_slice(&schema.indices[0].prefix.to_le_bytes());
+
+    //     // encoding primary keys
+    //     for i in 0..schema.pkeys {
+    //         let col = &schema.cols[i as usize];
+
+    //         match self.data.get(&col.title) {
+    //             Some(DataCell::Str(s)) => {
+    //                 if col.data_type == TypeCol::BYTES {
+    //                     buf.extend_from_slice(&String::encode(s));
+    //                 } else {
+    //                     error!("expected {:?}, got {:?}", TypeCol::BYTES, col.data_type);
+    //                     return Err(TableError::QueryEncodeError {
+    //                         expected: TypeCol::BYTES,
+    //                         found: format!("{:?}", col.data_type),
+    //                     }
+    //                     .into());
+    //                 }
+    //             }
+    //             Some(DataCell::Int(int)) => {
+    //                 if col.data_type == TypeCol::INTEGER {
+    //                     buf.extend_from_slice(&i64::encode(int));
+    //                 } else {
+    //                     error!("expected {:?}, got {:?}", TypeCol::BYTES, col.data_type);
+    //                     return Err(TableError::QueryEncodeError {
+    //                         expected: TypeCol::BYTES,
+    //                         found: format!("{:?}", col.data_type),
+    //                     }
+    //                     .into());
+    //                 }
+    //             }
+    //             None => return Err(TableError::QueryError("invalid column name".to_string()))?,
+    //         }
+    //     }
+    //     if buf.len() > BTREE_MAX_KEY_SIZE {
+    //         return Err(TableError::QueryError("maximum key size exceeded".to_string()).into());
+    //     }
+    //     Ok(Key::from_encoded_slice(&buf))
+    // }
+
+    // Version 2
+    /// attempts to encode a Query into a key
     ///
-    /// will error if primary keys are missing or the data type doesnt match
+    /// will error if keys are missing or the data types don't match!
     pub fn encode(self) -> Result<Key> {
         let schema = self.schema;
+        let index = self
+            .find_index()
+            .ok_or(TableError::QueryError("Index couldnt be found".to_string()))?;
 
-        // validating that cells match column data types
-        for (title, data) in self.data.iter() {
-            if !schema.valid_col(title, data) {
-                return Err(
-                    TableError::QueryError("data type doesnt match column".to_string()).into(),
-                );
+        // maintaining order
+        let mut cells = vec![];
+        for col_idx in index.columns.iter() {
+            let col_name = &schema.cols[*col_idx].title;
+            let cell_ref = self.data.get(col_name).ok_or(TableError::QueryError(
+                "error when ordering columns".to_string(),
+            ))?;
+
+            cells.push(cell_ref);
+        }
+
+        let (k, v) = encode_to_kv(schema.id, index.prefix, cells.iter().map(|e| *e), None)?;
+
+        Ok(k)
+    }
+
+    /// finds the matching index for the provided col/value pairs
+    ///
+    /// validates data types
+    fn find_index(&self) -> Option<&Index> {
+        let len = self.data.len();
+
+        assert!(len > 0);
+
+        // mapping the data to column indices
+        let col_idx: Vec<usize> = self
+            .data
+            .iter()
+            .filter_map(|e| self.schema.col_exists(e.0))
+            .collect();
+
+        // columns dont match schema
+        if col_idx.len() != len {
+            error!(
+                data=?self.data,
+                schema_cols=?self.schema.cols,
+                ?col_idx,
+                "columns dont match provided query"
+            );
+            return None;
+        }
+
+        let mut idx = None;
+        let mut count = 0;
+
+        // finding matching index by col amount
+        for e in self.schema.indices.iter() {
+            if e.columns.len() == len && e.columns.iter().all(|e| col_idx.contains(e)) {
+                idx = Some(e);
+                count += 1;
             }
         }
 
-        let mut buf = Vec::<u8>::new();
-
-        // encoding table id + prefix
-        buf.extend_from_slice(&schema.id.to_le_bytes());
-        buf.extend_from_slice(&schema.indices[0].prefix.to_le_bytes());
-
-        // encoding primary keys
-        for i in 0..schema.pkeys {
-            let col = &schema.cols[i as usize];
-
-            match self.data.get(&col.title) {
-                Some(DataCell::Str(s)) => {
-                    if col.data_type == TypeCol::BYTES {
-                        buf.extend_from_slice(&String::encode(s));
-                    } else {
-                        error!("expected {:?}, got {:?}", TypeCol::BYTES, col.data_type);
-                        return Err(TableError::QueryEncodeError {
-                            expected: TypeCol::BYTES,
-                            found: format!("{:?}", col.data_type),
-                        }
-                        .into());
-                    }
-                }
-                Some(DataCell::Int(int)) => {
-                    if col.data_type == TypeCol::INTEGER {
-                        buf.extend_from_slice(&i64::encode(int));
-                    } else {
-                        error!("expected {:?}, got {:?}", TypeCol::BYTES, col.data_type);
-                        return Err(TableError::QueryEncodeError {
-                            expected: TypeCol::BYTES,
-                            found: format!("{:?}", col.data_type),
-                        }
-                        .into());
-                    }
-                }
-                // invalid column name
-                None => return Err(TableError::QueryError("invalid column name".to_string()))?,
+        match count {
+            n if n == 0 => {
+                error!(data=?self.data, "no matching index found");
+                return None;
             }
+            n if n > 1 => {
+                error!(data=?self.data, matches=count, "multiple matching indices found");
+                return None;
+            }
+            _ => (),
         }
-        if buf.len() > BTREE_MAX_KEY_SIZE {
-            return Err(TableError::QueryError("maximum key size exceeded".to_string()).into());
-        }
-        Ok(Key::from_encoded_slice(&buf))
+
+        // validating if index cols match the data type
+        if !self.data.iter().all(|e| self.schema.valid_col(e.0, e.1)) {
+            error!(data=?self.data, "data types dont match!");
+            return None;
+        };
+
+        assert!(idx.is_some());
+        idx
     }
 }
 
@@ -434,7 +508,8 @@ mod test {
             .add_col("gretee", TypeCol::BYTES)
             .build(&mut tx)?;
 
-        table.add_index("number")?;
+        table.create_index("number")?;
+        table.add_col_to_index("number", "number")?;
         assert_eq!(table.indices.len(), 2);
 
         let s1 = "hello";
@@ -473,7 +548,8 @@ mod test {
             .add_col("job", TypeCol::BYTES)
             .build(&mut tx)?;
 
-        table.add_index("city")?;
+        table.create_index("city")?;
+        table.add_col_to_index("city", "city")?;
         assert_eq!(table.indices.len(), 2);
 
         let mut rec = Record::new()
@@ -490,6 +566,102 @@ mod test {
         kv = rec.next().unwrap();
         assert_eq!(kv.0.to_string(), "5 1 Berlin 1");
         assert_eq!(kv.1.to_string(), "Alfred Firefighter");
+
+        let _ = db.commit(tx);
+        cleanup_file(path);
+        Ok(())
+    }
+
+    #[test]
+    fn query_secondary_indicies1() -> Result<()> {
+        let path = "test-files/query_secondary_indicies1.rdb";
+        cleanup_file(path);
+        let db = Arc::new(KVDB::new(path));
+        let mut tx = db.begin(&db, TXKind::Write);
+
+        let mut table = TableBuilder::new()
+            .name("mytable")
+            .id(5)
+            .pkey(1)
+            .add_col("id", TypeCol::INTEGER)
+            .add_col("name", TypeCol::BYTES)
+            .add_col("city", TypeCol::BYTES)
+            .add_col("job", TypeCol::BYTES)
+            .build(&mut tx)?;
+
+        table.create_index("city")?;
+        table.add_col_to_index("city", "city")?;
+        assert_eq!(table.indices.len(), 2);
+
+        // primary index
+        let q = Query::by_col(&table).add("id", 1).encode();
+        assert!(q.is_ok());
+
+        // secondary index
+        let q = Query::by_col(&table).add("city", "New York").encode();
+        assert!(q.is_ok());
+
+        // non existant index
+        let q = Query::by_col(&table).add("name", "nonexistant").encode();
+        assert!(q.is_err());
+
+        let _ = db.commit(tx);
+        cleanup_file(path);
+        Ok(())
+    }
+
+    #[test]
+    fn query_multiple_secondary_indicies1() -> Result<()> {
+        let path = "test-files/query_multiple_secondary_indicies1.rdb";
+        cleanup_file(path);
+        let db = Arc::new(KVDB::new(path));
+        let mut tx = db.begin(&db, TXKind::Write);
+
+        let mut table = TableBuilder::new()
+            .name("mytable")
+            .id(5)
+            .pkey(1)
+            .add_col("id", TypeCol::INTEGER)
+            .add_col("name", TypeCol::BYTES)
+            .add_col("city", TypeCol::BYTES)
+            .add_col("job", TypeCol::BYTES)
+            .build(&mut tx)?;
+
+        table.create_index("sec")?;
+        table.add_col_to_index("sec", "city")?;
+        table.add_col_to_index("sec", "name")?;
+
+        assert_eq!(table.indices.len(), 2);
+
+        // primary index
+        let q = Query::by_col(&table).add("id", 1).encode();
+        assert!(q.is_ok());
+
+        // secondary index
+        let q1 = Query::by_col(&table)
+            .add("city", "New York")
+            .add("name", "alice")
+            .encode();
+        assert!(q.is_ok());
+
+        // mixed order
+        let q2 = Query::by_col(&table)
+            .add("name", "alice")
+            .add("city", "New York")
+            .encode();
+        assert!(q.is_ok());
+
+        assert_eq!(q1.unwrap(), q2.unwrap());
+
+        // non existant index
+        let q = Query::by_col(&table).add("job", "nonexistant").encode();
+        assert!(q.is_err());
+
+        // not all cols supplied
+        let q = Query::by_col(&table).add("name", "alice").encode();
+        assert!(q.is_err());
+        let q = Query::by_col(&table).add("city", "New York").encode();
+        assert!(q.is_err());
 
         let _ = db.commit(tx);
         cleanup_file(path);

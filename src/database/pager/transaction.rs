@@ -23,6 +23,7 @@ use crate::database::transactions::tx::{TX, TXKind};
 use crate::database::transactions::txdb::TXDB;
 use crate::database::types::PAGE_SIZE;
 use crate::database::{btree::ScanMode, tables::Key, types::Pointer};
+use crate::debug_if_env;
 
 pub struct TXHistory {
     pub history: HashMap<u64, Vec<Touched>>,
@@ -37,8 +38,6 @@ pub trait Transaction {
 
 impl Transaction for DiskPager {
     fn begin(&self, db: &Arc<KVDB>, kind: TXKind) -> TX {
-        // let _guard = self.lock.lock();
-
         let version = self.version.load(Ordering::Acquire);
         let txdb = Arc::new(TXDB::new(db, kind));
         let weak = Arc::downgrade(&txdb);
@@ -78,7 +77,6 @@ impl Transaction for DiskPager {
         }
 
         let _guard = self.lock.lock();
-        // warn!("got the global lock");
 
         // was there a new version published in the meantime?
         if self.version.load(Ordering::Acquire) == tx.version {
@@ -86,7 +84,6 @@ impl Transaction for DiskPager {
         }
 
         if self.check_conflict(&tx) {
-            // write conflict!
             self.ongoing.write().pop(tx.version);
             Err(TXError::CommitError("write conflict detected".to_string()).into())
         } else {
@@ -241,8 +238,18 @@ impl DiskPager {
 
         // flipping over pager data
         *self.tree.write() = tx.tree.get_root();
-        self.version.store(tx.version + 1, Ordering::Release);
-        self.npages.store(npages + tx_buf.nappend as u64, R);
+        self.npages
+            .store(npages + tx_buf.nappend as u64, Ordering::Release);
+
+        // updating version
+        if tx.version != u64::MAX {
+            self.version.store(tx.version + 1, Ordering::Release);
+        } else {
+            // wrap around to version 1
+            // this is a naive implementation, banking on the fact that a conflict is highly unlikely
+            // its technically possible for a write TX at version 1 to be in progress at this point
+            self.version.store(1, Ordering::Release);
+        }
 
         debug!("write done");
         Ok(())
@@ -308,12 +315,9 @@ impl DiskPager {
 
     /// checks if a TX write conflicts with history write
     fn check_conflict(&self, tx: &TX) -> bool {
-        #[cfg(test)]
-        {
-            if let Ok("debug") = std::env::var("RUSQL_LOG_TX").as_deref() {
-                tx.key_range.debug_print();
-            }
-        }
+        debug_if_env!("RUSQL_LOG_TX", {
+            tx.key_range.debug_print();
+        });
 
         assert!(!tx.key_range.recorded.is_empty());
 

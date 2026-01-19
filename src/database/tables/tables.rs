@@ -282,6 +282,9 @@ impl Table {
 
     /// checks if col by name exists and matches data type
     pub fn valid_col(&self, title: &str, data: &DataCell) -> bool {
+        if title.is_empty() {
+            return false;
+        }
         let cell_type = match data {
             DataCell::Str(_) => TypeCol::BYTES,
             DataCell::Int(_) => TypeCol::INTEGER,
@@ -295,26 +298,63 @@ impl Table {
         false
     }
 
-    fn col_exists(&self, title: &str) -> Option<u16> {
+    /// returns idx in column array matching title
+    pub fn col_exists(&self, title: &str) -> Option<usize> {
+        if title.is_empty() {
+            return None;
+        }
         for (i, col) in self.cols.iter().enumerate() {
             if col.title == title {
-                return Some(i as u16);
-            }
-        }
-        None
-    }
-
-    fn idx_exists(&self, title: &str) -> Option<usize> {
-        for (i, idx) in self.indices.iter().enumerate() {
-            if idx.name == title {
                 return Some(i);
             }
         }
         None
     }
 
-    /// adds a secondary index
-    pub fn add_index(&mut self, col: &str) -> Result<()> {
+    /// returns idx into indices array matching name
+    fn idx_exists(&self, idx_name: &str) -> Option<usize> {
+        if idx_name.is_empty() {
+            return None;
+        }
+
+        for (i, idx) in self.indices.iter().enumerate() {
+            if idx.name == idx_name {
+                return Some(i);
+            }
+        }
+        None
+    }
+
+    pub fn create_index(&mut self, name: &str) -> Result<()> {
+        if name.is_empty() {
+            return Err(
+                TableError::IndexDeleteError("index name cant be empty".to_string()).into(),
+            );
+        }
+
+        // check for duplicate indices
+        if self.idx_exists(name).is_some() {
+            return Err(TableError::IndexCreateError("index already exists".to_string()).into());
+        }
+
+        self.indices.push(Index {
+            name: name.to_string(),
+            columns: vec![],
+            prefix: self.indices.len() as u16,
+            kind: IdxKind::Secondary,
+        });
+
+        Ok(())
+    }
+
+    /// adds a secondary index, returns idx into the col arr
+    pub fn add_col_to_index(&mut self, idx_name: &str, col: &str) -> Result<()> {
+        if col.is_empty() || idx_name.is_empty() {
+            return Err(
+                TableError::IndexDeleteError("index name cant be empty".to_string()).into(),
+            );
+        }
+
         // check if column exists
         let col_idx = match self.col_exists(col) {
             Some(i) => i,
@@ -323,29 +363,36 @@ impl Table {
             }
         };
 
-        // check for duplicate indices
-        if self.idx_exists(col).is_some() {
-            return Err(TableError::IndexCreateError("index already exists".to_string()).into());
+        for e in self.indices.iter_mut() {
+            if e.name == idx_name {
+                if e.columns.contains(&col_idx) {
+                    return Err(TableError::IndexCreateError(
+                        "Column is already part of the index".to_string(),
+                    )
+                    .into());
+                }
+                e.columns.push(col_idx);
+                return Ok(());
+            }
         }
-
-        self.indices.push(Index {
-            name: col.to_string(),
-            columns: vec![col_idx as usize],
-            prefix: self.indices.len() as u16,
-            kind: IdxKind::Secondary,
-        });
-
-        Ok(())
+        Err(TableError::IndexCreateError("idx doesnt exist".to_string()).into())
     }
 
     /// removes a secondary index
     pub fn remove_index(&mut self, name: &str) -> Result<()> {
+        if name.is_empty() {
+            return Err(
+                TableError::IndexDeleteError("index name cant be empty".to_string()).into(),
+            );
+        }
+
         let idx = match self.idx_exists(name) {
             Some(i) => i,
             None => {
                 return Err(TableError::IndexDeleteError("index doesnt exist!".to_string()).into());
             }
         };
+
         if self.indices[idx].kind == IdxKind::Primary {
             return Err(
                 TableError::IndexDeleteError("cant delete primary index".to_string()).into(),
@@ -392,5 +439,537 @@ impl TypeCol {
             2 => Some(TypeCol::INTEGER),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod secondary_index_tests {
+    use super::*;
+    use crate::database::{
+        helper::cleanup_file,
+        pager::transaction::Transaction,
+        tables::{Record, TypeCol},
+        transactions::{kvdb::KVDB, tx::TXKind},
+    };
+    use std::sync::Arc;
+    use test_log::test;
+
+    #[test]
+    fn add_single_secondary_index() {
+        let path = "test-files/add_single_index.rdb";
+        cleanup_file(path);
+        let db = Arc::new(KVDB::new(path));
+        let mut tx = db.begin(&db, TXKind::Write);
+
+        let mut table = TableBuilder::new()
+            .name("users")
+            .id(10)
+            .pkey(1)
+            .add_col("id", TypeCol::INTEGER)
+            .add_col("email", TypeCol::BYTES)
+            .add_col("name", TypeCol::BYTES)
+            .build(&mut tx)
+            .unwrap();
+
+        assert_eq!(table.indices.len(), 1); // only primary key
+
+        table.create_index("email").unwrap();
+        let result = table.add_col_to_index("email", "email");
+
+        assert!(result.is_ok());
+        assert_eq!(table.indices.len(), 2);
+        assert_eq!(table.indices[1].name, "email");
+        assert_eq!(table.indices[1].kind, IdxKind::Secondary);
+        assert_eq!(table.indices[1].prefix, 1);
+
+        let _ = db.commit(tx);
+        cleanup_file(path);
+    }
+
+    #[test]
+    fn add_multiple_secondary_indices() {
+        let path = "test-files/add_multiple_indices.rdb";
+        cleanup_file(path);
+        let db = Arc::new(KVDB::new(path));
+        let mut tx = db.begin(&db, TXKind::Write);
+
+        let mut table = TableBuilder::new()
+            .name("products")
+            .id(11)
+            .pkey(1)
+            .add_col("id", TypeCol::INTEGER)
+            .add_col("name", TypeCol::BYTES)
+            .add_col("category", TypeCol::BYTES)
+            .add_col("price", TypeCol::INTEGER)
+            .build(&mut tx)
+            .unwrap();
+
+        assert_eq!(table.indices.len(), 1);
+
+        table.create_index("name").unwrap();
+        table.create_index("category").unwrap();
+        table.create_index("price").unwrap();
+
+        table.add_col_to_index("name", "name").unwrap();
+        table.add_col_to_index("category", "category").unwrap();
+        table.add_col_to_index("price", "price").unwrap();
+
+        assert_eq!(table.indices.len(), 4);
+        assert_eq!(table.indices[1].name, "name");
+        assert_eq!(table.indices[2].name, "category");
+        assert_eq!(table.indices[3].name, "price");
+        assert_eq!(table.indices[1].prefix, 1);
+        assert_eq!(table.indices[2].prefix, 2);
+        assert_eq!(table.indices[3].prefix, 3);
+
+        let _ = db.commit(tx);
+        cleanup_file(path);
+    }
+
+    #[test]
+    fn add_col_to_nonexistant_idx() {
+        let path = "test-files/add_index_nonexistent_col.rdb";
+        cleanup_file(path);
+        let db = Arc::new(KVDB::new(path));
+        let mut tx = db.begin(&db, TXKind::Write);
+
+        let mut table = TableBuilder::new()
+            .name("test_table")
+            .id(12)
+            .pkey(1)
+            .add_col("id", TypeCol::INTEGER)
+            .add_col("value", TypeCol::BYTES)
+            .build(&mut tx)
+            .unwrap();
+
+        let result = table.add_col_to_index("nonexistent", "nonexistent");
+
+        assert!(result.is_err());
+        assert_eq!(table.indices.len(), 1); // unchanged
+
+        let _ = db.commit(tx);
+        cleanup_file(path);
+    }
+
+    #[test]
+    fn add_duplicate_index_fails() {
+        let path = "test-files/add_duplicate_index.rdb";
+        cleanup_file(path);
+        let db = Arc::new(KVDB::new(path));
+        let mut tx = db.begin(&db, TXKind::Write);
+
+        let mut table = TableBuilder::new()
+            .name("duplicates")
+            .id(13)
+            .pkey(1)
+            .add_col("id", TypeCol::INTEGER)
+            .add_col("email", TypeCol::BYTES)
+            .build(&mut tx)
+            .unwrap();
+
+        table.create_index("email").unwrap();
+
+        table.add_col_to_index("email", "email").unwrap();
+        let result = table.add_col_to_index("email", "email");
+
+        assert!(result.is_err());
+        assert_eq!(table.indices.len(), 2); // unchanged
+
+        let _ = db.commit(tx);
+        cleanup_file(path);
+    }
+
+    #[test]
+    fn add_empty_index_name_fails() {
+        let path = "test-files/add_empty_index_name.rdb";
+        cleanup_file(path);
+        let db = Arc::new(KVDB::new(path));
+        let mut tx = db.begin(&db, TXKind::Write);
+
+        let mut table = TableBuilder::new()
+            .name("empty_idx")
+            .id(14)
+            .pkey(1)
+            .add_col("id", TypeCol::INTEGER)
+            .build(&mut tx)
+            .unwrap();
+
+        let result = table.create_index("");
+        assert!(result.is_err());
+
+        let _ = db.commit(tx);
+        cleanup_file(path);
+    }
+
+    #[test]
+    fn remove_secondary_index() {
+        let path = "test-files/remove_secondary_index.rdb";
+        cleanup_file(path);
+        let db = Arc::new(KVDB::new(path));
+        let mut tx = db.begin(&db, TXKind::Write);
+
+        let mut table = TableBuilder::new()
+            .name("remove_test")
+            .id(15)
+            .pkey(1)
+            .add_col("id", TypeCol::INTEGER)
+            .add_col("username", TypeCol::BYTES)
+            .build(&mut tx)
+            .unwrap();
+
+        table.create_index("username").unwrap();
+        table.add_col_to_index("username", "username").unwrap();
+
+        assert_eq!(table.indices.len(), 2);
+
+        let result = table.remove_index("username");
+        assert!(result.is_ok());
+        assert_eq!(table.indices.len(), 1);
+        assert_eq!(table.indices[0].kind, IdxKind::Primary);
+
+        let _ = db.commit(tx);
+        cleanup_file(path);
+    }
+
+    #[test]
+    fn remove_nonexistent_index_fails() {
+        let path = "test-files/remove_nonexistent_index.rdb";
+        cleanup_file(path);
+        let db = Arc::new(KVDB::new(path));
+        let mut tx = db.begin(&db, TXKind::Write);
+
+        let mut table = TableBuilder::new()
+            .name("no_remove")
+            .id(16)
+            .pkey(1)
+            .add_col("id", TypeCol::INTEGER)
+            .add_col("data", TypeCol::BYTES)
+            .build(&mut tx)
+            .unwrap();
+
+        let result = table.remove_index("nonexistent");
+        assert!(result.is_err());
+        assert_eq!(table.indices.len(), 1);
+
+        let _ = db.commit(tx);
+        cleanup_file(path);
+    }
+
+    #[test]
+    fn remove_primary_index_fails() {
+        let path = "test-files/remove_primary_index.rdb";
+        cleanup_file(path);
+        let db = Arc::new(KVDB::new(path));
+        let mut tx = db.begin(&db, TXKind::Write);
+
+        let mut table = TableBuilder::new()
+            .name("protect_primary")
+            .id(17)
+            .pkey(1)
+            .add_col("id", TypeCol::INTEGER)
+            .build(&mut tx)
+            .unwrap();
+
+        let result = table.remove_index("id");
+        assert!(result.is_err());
+        assert_eq!(table.indices.len(), 1);
+
+        let _ = db.commit(tx);
+        cleanup_file(path);
+    }
+
+    #[test]
+    fn remove_empty_index_name_fails() {
+        let path = "test-files/remove_empty_index_name.rdb";
+        cleanup_file(path);
+        let db = Arc::new(KVDB::new(path));
+        let mut tx = db.begin(&db, TXKind::Write);
+
+        let mut table = TableBuilder::new()
+            .name("empty_remove")
+            .id(18)
+            .pkey(1)
+            .add_col("id", TypeCol::INTEGER)
+            .build(&mut tx)
+            .unwrap();
+
+        let result = table.remove_index("");
+        assert!(result.is_err());
+
+        let _ = db.commit(tx);
+        cleanup_file(path);
+    }
+
+    #[test]
+    fn record_encoding_with_secondary_index() {
+        let path = "test-files/record_encoding_secondary.rdb";
+        cleanup_file(path);
+        let db = Arc::new(KVDB::new(path));
+        let mut tx = db.begin(&db, TXKind::Write);
+
+        let mut table = TableBuilder::new()
+            .name("record_test")
+            .id(19)
+            .pkey(1)
+            .add_col("id", TypeCol::INTEGER)
+            .add_col("status", TypeCol::BYTES)
+            .add_col("description", TypeCol::BYTES)
+            .build(&mut tx)
+            .unwrap();
+
+        table.create_index("status").unwrap();
+        table.add_col_to_index("status", "status").unwrap();
+
+        let rec = Record::new()
+            .add(42i64)
+            .add("active")
+            .add("test description");
+
+        let kv_pairs: Vec<_> = rec.encode(&table).unwrap().collect();
+
+        // Should have 2 key-value pairs (primary + secondary)
+        assert_eq!(kv_pairs.len(), 2);
+
+        // Primary key
+        assert_eq!(kv_pairs[0].0.to_string(), "19 0 42");
+        assert_eq!(kv_pairs[0].1.to_string(), "active test description");
+
+        // Secondary key (status index)
+        assert_eq!(kv_pairs[1].0.to_string(), "19 1 active 42");
+        assert_eq!(kv_pairs[1].1.to_string(), "test description");
+
+        let _ = db.commit(tx);
+        cleanup_file(path);
+    }
+
+    #[test]
+    fn record_encoding_with_multiple_secondary_indices() {
+        let path = "test-files/record_encoding_multi_secondary.rdb";
+        cleanup_file(path);
+        let db = Arc::new(KVDB::new(path));
+        let mut tx = db.begin(&db, TXKind::Write);
+
+        let mut table = TableBuilder::new()
+            .name("multi_idx")
+            .id(20)
+            .pkey(1)
+            .add_col("id", TypeCol::INTEGER)
+            .add_col("name", TypeCol::BYTES)
+            .add_col("city", TypeCol::BYTES)
+            .add_col("age", TypeCol::INTEGER)
+            .build(&mut tx)
+            .unwrap();
+
+        table.create_index("name").unwrap();
+        table.create_index("city").unwrap();
+        table.add_col_to_index("name", "name").unwrap();
+        table.add_col_to_index("city", "city").unwrap();
+
+        let rec = Record::new().add(1i64).add("Alice").add("NYC").add(30i64);
+
+        let kv_pairs: Vec<_> = rec.encode(&table).unwrap().collect();
+
+        // Should have 3 key-value pairs (primary + 2 secondary)
+        assert_eq!(kv_pairs.len(), 3);
+
+        // Primary key
+        assert_eq!(kv_pairs[0].0.to_string(), "20 0 1");
+        assert_eq!(kv_pairs[0].1.to_string(), "Alice NYC 30");
+
+        // Secondary index on name
+        assert_eq!(kv_pairs[1].0.to_string(), "20 1 Alice 1");
+        assert_eq!(kv_pairs[1].1.to_string(), "NYC 30");
+
+        // Secondary index on city
+        assert_eq!(kv_pairs[2].0.to_string(), "20 2 NYC 1");
+        assert_eq!(kv_pairs[2].1.to_string(), "Alice 30");
+
+        let _ = db.commit(tx);
+        cleanup_file(path);
+    }
+
+    #[test]
+    fn add_and_remove_multiple_indices_sequentially() {
+        let path = "test-files/add_remove_sequential.rdb";
+        cleanup_file(path);
+        let db = Arc::new(KVDB::new(path));
+        let mut tx = db.begin(&db, TXKind::Write);
+
+        let mut table = TableBuilder::new()
+            .name("sequential_test")
+            .id(21)
+            .pkey(1)
+            .add_col("id", TypeCol::INTEGER)
+            .add_col("col_a", TypeCol::BYTES)
+            .add_col("col_b", TypeCol::BYTES)
+            .add_col("col_c", TypeCol::BYTES)
+            .build(&mut tx)
+            .unwrap();
+
+        // Add indices
+        table.create_index("col_a").unwrap();
+        table.create_index("col_b").unwrap();
+        table.create_index("col_c").unwrap();
+        table.add_col_to_index("col_a", "col_a").unwrap();
+        table.add_col_to_index("col_b", "col_b").unwrap();
+        table.add_col_to_index("col_c", "col_c").unwrap();
+        assert_eq!(table.indices.len(), 4);
+
+        // Remove middle index
+        table.remove_index("col_b").unwrap();
+        assert_eq!(table.indices.len(), 3);
+        assert!(
+            table
+                .indices
+                .iter()
+                .find(|idx| idx.name == "col_b")
+                .is_none()
+        );
+        assert!(
+            table
+                .indices
+                .iter()
+                .find(|idx| idx.name == "col_a")
+                .is_some()
+        );
+        assert!(
+            table
+                .indices
+                .iter()
+                .find(|idx| idx.name == "col_c")
+                .is_some()
+        );
+
+        // Remove first secondary index
+        table.remove_index("col_a").unwrap();
+        assert_eq!(table.indices.len(), 2);
+
+        // Remove last secondary index
+        table.remove_index("col_c").unwrap();
+        assert_eq!(table.indices.len(), 1);
+        assert_eq!(table.indices[0].kind, IdxKind::Primary);
+
+        let _ = db.commit(tx);
+        cleanup_file(path);
+    }
+
+    #[test]
+    fn index_prefix_values_correct() {
+        let path = "test-files/index_prefix_values.rdb";
+        cleanup_file(path);
+        let db = Arc::new(KVDB::new(path));
+        let mut tx = db.begin(&db, TXKind::Write);
+
+        let mut table = TableBuilder::new()
+            .name("prefix_test")
+            .id(22)
+            .pkey(1)
+            .add_col("id", TypeCol::INTEGER)
+            .add_col("a", TypeCol::BYTES)
+            .add_col("b", TypeCol::BYTES)
+            .add_col("c", TypeCol::BYTES)
+            .add_col("d", TypeCol::BYTES)
+            .build(&mut tx)
+            .unwrap();
+
+        // Primary key should have prefix 0
+        assert_eq!(table.indices[0].prefix, 0);
+
+        // Add secondary indices and verify prefix increments
+        table.create_index("a").unwrap();
+        table.add_col_to_index("a", "a").unwrap();
+        assert_eq!(table.indices[1].prefix, 1);
+
+        table.create_index("b").unwrap();
+        table.add_col_to_index("b", "b").unwrap();
+        assert_eq!(table.indices[2].prefix, 2);
+
+        table.create_index("c").unwrap();
+        table.add_col_to_index("c", "c").unwrap();
+        assert_eq!(table.indices[3].prefix, 3);
+
+        table.create_index("d").unwrap();
+        table.add_col_to_index("d", "d").unwrap();
+        assert_eq!(table.indices[4].prefix, 4);
+
+        let _ = db.commit(tx);
+        cleanup_file(path);
+    }
+
+    #[test]
+    fn table_serialization_with_indices() {
+        let path = "test-files/table_serialization_indices.rdb";
+        cleanup_file(path);
+        let db = Arc::new(KVDB::new(path));
+        let mut tx = db.begin(&db, TXKind::Write);
+
+        let mut table = TableBuilder::new()
+            .name("serialized_table")
+            .id(23)
+            .pkey(1)
+            .add_col("id", TypeCol::INTEGER)
+            .add_col("email", TypeCol::BYTES)
+            .add_col("name", TypeCol::BYTES)
+            .build(&mut tx)
+            .unwrap();
+
+        table.create_index("email").unwrap();
+        table.add_col_to_index("email", "email").unwrap();
+
+        // Serialize
+        let encoded = table.encode().unwrap();
+
+        // Deserialize
+        let decoded = Table::decode(encoded.into()).unwrap();
+
+        // Verify structure is preserved
+        assert_eq!(decoded.name, "serialized_table");
+        assert_eq!(decoded.id, 23);
+        assert_eq!(decoded.indices.len(), 2);
+        assert_eq!(decoded.indices[0].kind, IdxKind::Primary);
+        assert_eq!(decoded.indices[1].kind, IdxKind::Secondary);
+        assert_eq!(decoded.indices[1].name, "email");
+
+        let _ = db.commit(tx);
+        cleanup_file(path);
+    }
+
+    #[test]
+    fn index_columns_match_table_structure() {
+        let path = "test-files/index_columns_match.rdb";
+        cleanup_file(path);
+        let db = Arc::new(KVDB::new(path));
+        let mut tx = db.begin(&db, TXKind::Write);
+
+        let mut table = TableBuilder::new()
+            .name("columns_match")
+            .id(24)
+            .pkey(1)
+            .add_col("id", TypeCol::INTEGER)
+            .add_col("first_name", TypeCol::BYTES)
+            .add_col("last_name", TypeCol::BYTES)
+            .add_col("age", TypeCol::INTEGER)
+            .build(&mut tx)
+            .unwrap();
+
+        table.create_index("first_name").unwrap();
+        table.create_index("age").unwrap();
+        table.add_col_to_index("first_name", "first_name").unwrap();
+        table.add_col_to_index("age", "age").unwrap();
+
+        // Find first_name index (column 1)
+        let first_name_idx = table
+            .indices
+            .iter()
+            .find(|idx| idx.name == "first_name")
+            .unwrap();
+        assert_eq!(first_name_idx.columns, vec![1]);
+
+        // Find age index (column 3)
+        let age_idx = table.indices.iter().find(|idx| idx.name == "age").unwrap();
+        assert_eq!(age_idx.columns, vec![3]);
+
+        let _ = db.commit(tx);
+        cleanup_file(path);
     }
 }

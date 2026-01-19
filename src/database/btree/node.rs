@@ -13,6 +13,7 @@ use crate::database::{
     helper::*,
     types::{MERGE_FACTOR, NODE_SIZE, PAGE_SIZE, Pointer},
 };
+use crate::debug_if_env;
 use tracing::{debug, error, instrument, warn};
 
 use crate::database::errors::Error;
@@ -167,20 +168,18 @@ impl TreeNode {
                 })?;
         }
 
-        #[cfg(test)]
-        {
-            if let Ok("debug") = std::env::var("RUSQL_LOG_TREE").as_deref() {
-                debug!("nkids after insertion:");
-                for i in 0..self.get_nkeys() {
-                    debug!(
-                        "idx: {}, key {} ptr {}",
-                        i,
-                        self.get_key(i).unwrap(),
-                        self.get_ptr(i)
-                    )
-                }
+        debug_if_env!("RUSQL_LOG_TREE", {
+            debug!("nkids after insertion:");
+            for i in 0..self.get_nkeys() {
+                debug!(
+                    "idx: {}, key {} ptr {}",
+                    i,
+                    self.get_key(i).unwrap(),
+                    self.get_ptr(i)
+                )
             }
-        }
+        });
+
         Ok(())
     }
     /// reads the value from the offset array for a given index, 0 has no offset
