@@ -312,7 +312,7 @@ impl Table {
     }
 
     /// returns idx into indices array matching name
-    fn idx_exists(&self, idx_name: &str) -> Option<usize> {
+    pub fn idx_exists(&self, idx_name: &str) -> Option<usize> {
         if idx_name.is_empty() {
             return None;
         }

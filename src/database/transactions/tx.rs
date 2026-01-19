@@ -13,7 +13,7 @@ use crate::database::{
         records::QueryCol,
         tables::{
             DEF_TABLE_COL1, LOWEST_PREMISSIABLE_TID, META_TABLE_COL1, META_TABLE_ID_ROW, MetaTable,
-            Table,
+            PKEY_PREFIX, Table,
         },
     },
     transactions::{keyrange::KeyRange, kvdb::KVDB, txdb::TXDB},
@@ -214,19 +214,18 @@ impl TX {
         Ok(())
     }
 
+    /// scans all primary keys in a table
     pub fn full_table_scan(&self, schema: &Table) -> Result<ScanIter<'_, TXDB>> {
-        // writing a seek key with TID
-        let mut buf = [0u8; TID_LEN];
-        let _ = &mut buf[..].write_u32(schema.id);
-        let seek_key = Key::from_encoded_slice(&buf);
-        let seek_mode = ScanMode::open(seek_key, Compare::GT)?;
-
-        self.tree_scan(seek_mode)
+        // writing a seek key with TID and Prefix 0
+        let key = Query::by_tid_prefix(schema, PKEY_PREFIX);
+        debug!(%key, "full table scan key");
+        let mode = ScanMode::open(key, Compare::GT)?;
+        self.tree_scan(mode)
     }
 
-    /// inserts a record and potential secondary indicies
+    /// inserts a record and potentially secondary indicies
     #[instrument(name = "insert rec", skip_all)]
-    pub fn insert_rec(&mut self, rec: Record, schema: &Table, flag: SetFlag) -> Result<()> {
+    pub fn insert_rec(&mut self, rec: Record, schema: &Table, flag: SetFlag) -> Result<u32> {
         info!(?rec, "inserting record");
         if self.kind == TXKind::Read {
             return Err(TXError::MismatchedKindError.into());
@@ -248,14 +247,16 @@ impl TX {
         ))?;
 
         let res = self.tree_set(primay_key.0, primay_key.1, flag);
-        if res.is_ok() {
-            modified += 1;
+        if let Ok(ref r) = res {
+            if r.updated || r.added {
+                modified += 1;
+            }
         }
 
         if iter.peek().is_none() {
             // there are no secondary keys, we are done
             self.key_range.capture_and_stop();
-            return Ok(());
+            return Ok(modified);
         }
 
         self.key_range.capture_and_listen(); // capturing primary key
@@ -308,8 +309,8 @@ impl TX {
             _ => unreachable!("we accounted for all cases"),
         }
 
-        debug_assert_eq!(modified, schema.indices.len());
-        Ok(())
+        debug_assert_eq!(modified as usize, schema.indices.len());
+        Ok(modified)
     }
 
     fn delete_from_query(&mut self, q: QueryCol, schema: &Table) -> Result<()> {
@@ -367,10 +368,23 @@ impl TX {
         Ok(())
     }
 
-    fn create_index(&self, col: &str, table: &mut Table) -> Result<()> {
-        // TODO: retroactively add keys
-        table.create_index(col);
-        let _ = table.add_col_to_index(col, col)?;
+    fn create_index(&mut self, idx_name: &str, col: &str, table: &mut Table) -> Result<()> {
+        if let None = table.idx_exists(idx_name) {
+            table.create_index(idx_name)?;
+        }
+        table.add_col_to_index(idx_name, col)?;
+
+        // get all primary rows
+        let recs = self.full_table_scan(table)?.collect_records();
+        let nrecs = recs.len();
+
+        // update existing keys
+        let mut modified = 0;
+        for rec in recs {
+            modified += self.insert_rec(rec, table, SetFlag::UPSERT)?;
+        }
+
+        assert_eq!(nrecs, modified as usize);
         Ok(())
     }
 
@@ -790,8 +804,8 @@ mod tables {
         }
 
         let mut entries_t2 = vec![];
-        entries_t2.push(Record::new().add(20).add("Alice").add("teacher"));
         entries_t2.push(Record::new().add(15).add("Bob").add("clerk"));
+        entries_t2.push(Record::new().add(20).add("Alice").add("teacher"));
         entries_t2.push(Record::new().add(25).add("Charlie").add("fire fighter"));
 
         for entry in entries_t2 {
@@ -802,9 +816,21 @@ mod tables {
         let records: Vec<_> = res.collect_records();
         assert_eq!(records.len(), 3);
 
+        let mut iter = records.into_iter();
+        assert_eq!(iter.next().unwrap().to_string(), "Alice 20");
+        assert_eq!(iter.next().unwrap().to_string(), "Bob 15");
+        assert_eq!(iter.next().unwrap().to_string(), "Charlie 25");
+        assert!(iter.next().is_none());
+
         let res = tx.full_table_scan(&table2)?;
         let records: Vec<_> = res.collect_records();
         assert_eq!(records.len(), 3);
+
+        let mut iter = records.into_iter();
+        assert_eq!(iter.next().unwrap().to_string(), "15 Bob clerk");
+        assert_eq!(iter.next().unwrap().to_string(), "20 Alice teacher");
+        assert_eq!(iter.next().unwrap().to_string(), "25 Charlie fire fighter");
+        assert!(iter.next().is_none());
 
         db.commit(tx)?;
         cleanup_file(path);

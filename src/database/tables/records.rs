@@ -185,7 +185,7 @@ impl Query {
     }
 
     /// constructs a key with TID + Prefix
-    pub fn by_idx(schema: &Table, prefix: u16) -> Key {
+    pub fn by_tid_prefix(schema: &Table, prefix: u16) -> Key {
         let mut buf = [0u8; TID_LEN + PREFIX_LEN];
         buf.write_u32(schema.id).write_u16(prefix);
         Key::from_encoded_slice(&buf)

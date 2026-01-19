@@ -54,18 +54,13 @@ impl<'a, P: Pager> Iterator for PrefixScanIter<'a, P> {
 
 impl ScanMode {
     /// returns matching partial keys, useful for secondary indices
-    ///
-    /// for a key:
-    ///
-    /// "1 0 Alice"
-    ///
-    /// will match:
-    ///
-    /// "1 0 Alice Clerk"
-    ///
-    /// "1 0 Alice Firefighter"
-    ///
-    /// "1 0 Alice Policewoman"
+    ///```
+    /// let key = "1 0 Alice"
+    /// let prefixscan = ScanMode::prefix(key, &tree)?;
+    /// assert_eq!(prefixscan.next(), "1 0 Alice Clerk");
+    /// assert_eq!(prefixscan.next(), "1 0 Alice Firefighter");
+    /// assert_eq!(prefixscan.next(), "1 0 Alice Policewoman");
+    ///```
     pub fn prefix<P: Pager>(key: Key, tree: &BTree<P>) -> Result<PrefixScanIter<'_, P>> {
         if key.len() == 0 {
             return Err(
@@ -212,6 +207,7 @@ impl<'a, P: Pager> Iterator for ScanIter<'a, P> {
                             self.finished = true;
                             return None;
                         };
+                        // debug!(%k, "returning next:");
                         Some((k, v))
                     }
                     CursorDir::Prev => {
@@ -222,6 +218,7 @@ impl<'a, P: Pager> Iterator for ScanIter<'a, P> {
                             self.finished = true;
                             return None;
                         };
+                        // debug!(%k, "returning next:");
                         Some((k, v))
                     }
                 }
