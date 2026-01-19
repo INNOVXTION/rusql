@@ -206,66 +206,6 @@ impl<'a> QueryCol<'a> {
         self
     }
 
-    // /// attempts to encode a Query into a key
-    // ///
-    // /// will error if keys are missing or the data types don't match!
-    // pub fn encode(self) -> Result<Key> {
-    //     let schema = self.schema;
-    //     let index = self.find_index();
-
-    //     // validating that cells match column data types
-    //     for (title, data) in self.data.iter() {
-    //         if !schema.valid_col(title, data) {
-    //             return Err(
-    //                 TableError::QueryError("data type doesnt match column".to_string()).into(),
-    //             );
-    //         }
-    //     }
-
-    //     let mut buf = Vec::<u8>::new();
-
-    //     // encoding table id + prefix
-    //     buf.extend_from_slice(&schema.id.to_le_bytes());
-    //     buf.extend_from_slice(&schema.indices[0].prefix.to_le_bytes());
-
-    //     // encoding primary keys
-    //     for i in 0..schema.pkeys {
-    //         let col = &schema.cols[i as usize];
-
-    //         match self.data.get(&col.title) {
-    //             Some(DataCell::Str(s)) => {
-    //                 if col.data_type == TypeCol::BYTES {
-    //                     buf.extend_from_slice(&String::encode(s));
-    //                 } else {
-    //                     error!("expected {:?}, got {:?}", TypeCol::BYTES, col.data_type);
-    //                     return Err(TableError::QueryEncodeError {
-    //                         expected: TypeCol::BYTES,
-    //                         found: format!("{:?}", col.data_type),
-    //                     }
-    //                     .into());
-    //                 }
-    //             }
-    //             Some(DataCell::Int(int)) => {
-    //                 if col.data_type == TypeCol::INTEGER {
-    //                     buf.extend_from_slice(&i64::encode(int));
-    //                 } else {
-    //                     error!("expected {:?}, got {:?}", TypeCol::BYTES, col.data_type);
-    //                     return Err(TableError::QueryEncodeError {
-    //                         expected: TypeCol::BYTES,
-    //                         found: format!("{:?}", col.data_type),
-    //                     }
-    //                     .into());
-    //                 }
-    //             }
-    //             None => return Err(TableError::QueryError("invalid column name".to_string()))?,
-    //         }
-    //     }
-    //     if buf.len() > BTREE_MAX_KEY_SIZE {
-    //         return Err(TableError::QueryError("maximum key size exceeded".to_string()).into());
-    //     }
-    //     Ok(Key::from_encoded_slice(&buf))
-    // }
-
     // Version 2
     /// attempts to encode a Query into a key
     ///
@@ -289,6 +229,9 @@ impl<'a> QueryCol<'a> {
 
         let (k, v) = encode_to_kv(schema.id, index.prefix, cells.iter().map(|e| *e), None)?;
 
+        assert_eq!(v.len(), 0);
+        assert!(k.len() > 0);
+
         Ok(k)
     }
 
@@ -297,8 +240,9 @@ impl<'a> QueryCol<'a> {
     /// validates data types
     fn find_index(&self) -> Option<&Index> {
         let len = self.data.len();
-
-        assert!(len > 0);
+        if len == 0 {
+            return None;
+        }
 
         // mapping the data to column indices
         let col_idx: Vec<usize> = self
@@ -414,6 +358,8 @@ where
     if val_slice.len() > BTREE_MAX_VAL_SIZE {
         return Err(TableError::RecordError("maximum value size exceeded".to_string()).into());
     }
+
+    assert!(!key_slice.is_empty());
 
     Ok((
         Key::from_encoded_slice(key_slice),
@@ -596,10 +542,12 @@ mod test {
         // primary index
         let q = Query::by_col(&table).add("id", 1).encode();
         assert!(q.is_ok());
+        assert_eq!(q.unwrap().to_string(), "5 0 1");
 
         // secondary index
         let q = Query::by_col(&table).add("city", "New York").encode();
         assert!(q.is_ok());
+        assert_eq!(q.unwrap().to_string(), "5 1 New York");
 
         // non existant index
         let q = Query::by_col(&table).add("name", "nonexistant").encode();
@@ -636,29 +584,46 @@ mod test {
         // primary index
         let q = Query::by_col(&table).add("id", 1).encode();
         assert!(q.is_ok());
+        assert_eq!(q.unwrap().to_string(), "5 0 1");
 
         // secondary index
         let q1 = Query::by_col(&table)
             .add("city", "New York")
-            .add("name", "alice")
+            .add("name", "Alice")
             .encode();
-        assert!(q.is_ok());
+        assert!(q1.is_ok());
+        assert_eq!(q1.unwrap().to_string(), "5 1 New York Alice");
 
         // mixed order
         let q2 = Query::by_col(&table)
-            .add("name", "alice")
+            .add("name", "Alice")
             .add("city", "New York")
             .encode();
-        assert!(q.is_ok());
-
-        assert_eq!(q1.unwrap(), q2.unwrap());
+        assert!(q2.is_ok());
+        assert_eq!(q2.unwrap().to_string(), "5 1 New York Alice");
 
         // non existant index
         let q = Query::by_col(&table).add("job", "nonexistant").encode();
         assert!(q.is_err());
 
+        // wrong data types
+        let q = Query::by_col(&table).add("name", 1).add("city", 2).encode();
+        assert!(q.is_err());
+
+        let q = Query::by_col(&table)
+            .add("name", "Alice")
+            .add("city", 2)
+            .encode();
+        assert!(q.is_err());
+
+        let q = Query::by_col(&table)
+            .add("city", 2)
+            .add("name", "Alice")
+            .encode();
+        assert!(q.is_err());
+
         // not all cols supplied
-        let q = Query::by_col(&table).add("name", "alice").encode();
+        let q = Query::by_col(&table).add("name", "Alice").encode();
         assert!(q.is_err());
         let q = Query::by_col(&table).add("city", "New York").encode();
         assert!(q.is_err());

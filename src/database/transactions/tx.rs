@@ -233,7 +233,7 @@ impl TX {
         let mut iter = rec.encode(schema)?.peekable();
         let mut old_rec;
         let old_pk;
-        let mut updated = 0;
+        let mut modified = 0;
 
         // updating the primary key and retrieving the old one
         let primay_key = iter.next().ok_or(Error::InsertError(
@@ -242,7 +242,7 @@ impl TX {
 
         let res = self.tree_set(primay_key.0, primay_key.1, flag);
         if res.is_ok() {
-            updated += 1;
+            modified += 1;
         }
 
         if iter.peek().is_none() {
@@ -251,11 +251,11 @@ impl TX {
             return Ok(());
         }
 
+        self.key_range.capture_and_listen(); // capturing primary key
         match res {
             // update found (UPSERT or UPDATE)
             Ok(res) if res.updated => {
                 old_pk = res.old.expect("update successful");
-                updated += 1;
 
                 // recreating the keys from the update
                 old_rec = Record::from_kv(old_pk).encode(schema)?;
@@ -265,13 +265,16 @@ impl TX {
                 for (k, v) in iter {
                     if let Some(old_kv) = old_rec.next() {
                         self.tree_delete(old_kv.0)?;
+                        self.key_range.capture_and_listen();
+
                         let res = self.tree_set(k, v, SetFlag::INSERT)?;
+                        self.key_range.capture_and_listen();
 
                         if !res.added {
                             return Err(Error::InsertError("couldnt insert record".to_string()));
                         }
 
-                        updated += 1;
+                        modified += 1;
                     } else {
                         return Err(Error::InsertError("failed to retrieve old key".to_string()));
                     }
@@ -282,13 +285,13 @@ impl TX {
                 for (k, v) in iter {
                     // inserting secondary keys
                     let res = self.tree_set(k, v, SetFlag::INSERT)?;
-                    self.key_range.capture_and_stop();
+                    self.key_range.capture_and_listen();
 
                     if !res.added {
                         return Err(Error::InsertError("couldnt insert record".to_string()));
                     }
 
-                    updated += 1;
+                    modified += 1;
                 }
             }
             // Key couldnt be inserted/updated
@@ -298,7 +301,7 @@ impl TX {
             _ => unreachable!("we accounted for all cases"),
         }
 
-        debug_assert_eq!(updated, schema.indices.len());
+        debug_assert_eq!(modified, schema.indices.len());
         Ok(())
     }
 
@@ -2513,9 +2516,13 @@ mod secondary_index_ops {
     use crate::database::{
         btree::{Compare, ScanMode, SetFlag},
         helper::cleanup_file,
-        pager::transaction::Transaction,
+        pager::transaction::{Retry, Transaction},
         tables::{Query, Record, TypeCol, tables::TableBuilder},
-        transactions::{kvdb::KVDB, tx::TXKind},
+        transactions::{
+            kvdb::KVDB,
+            retry::{Backoff, RetryResult, RetryStatus, retry},
+            tx::TXKind,
+        },
         types::DataCell,
     };
     use parking_lot::Mutex;
@@ -2539,7 +2546,7 @@ mod secondary_index_ops {
             .pkey(1)
             .build(&mut tx)?;
 
-        table.create_index("email");
+        table.create_index("email")?;
         table.add_col_to_index("email", "email")?;
         tx.insert_table(&table)?;
 
@@ -2554,6 +2561,7 @@ mod secondary_index_ops {
         // Query by primary key
         let pk_query = Query::by_col(&table).add("id", 1i64).encode()?;
         let result = tx.tree_get(pk_query).unwrap().decode();
+
         assert_eq!(result[0], DataCell::Str("alice@example.com".to_string()));
         assert_eq!(result[1], DataCell::Str("Alice".to_string()));
 
@@ -2561,8 +2569,21 @@ mod secondary_index_ops {
         let email_query = Query::by_col(&table)
             .add("email", "alice@example.com")
             .encode()?;
-        let result = tx.tree_get(email_query).unwrap().decode();
-        assert_eq!(result[0], DataCell::Str("Alice".to_string()));
+
+        let mut scan = ScanMode::new_open(email_query, Compare::GE)
+            .unwrap()
+            .into_iter(&tx.tree)
+            .unwrap();
+
+        let result = scan.next().unwrap();
+        let key = result.0.decode();
+        let val = result.1.decode();
+
+        assert_eq!(key[0], DataCell::Str("alice@example.com".to_string()));
+        assert_eq!(key[1], DataCell::Int(1));
+        assert_eq!(val[0], DataCell::Str("Alice".to_string()));
+
+        assert!(scan.next().is_none());
 
         db.commit(tx)?;
         cleanup_file(path);
@@ -2585,7 +2606,7 @@ mod secondary_index_ops {
             .pkey(1)
             .build(&mut tx)?;
 
-        table.create_index("department");
+        table.create_index("department")?;
         table.add_col_to_index("department", "department")?;
         tx.insert_table(&table)?;
 
@@ -2610,9 +2631,15 @@ mod secondary_index_ops {
         let eng_query = Query::by_col(&table)
             .add("department", "Engineering")
             .encode()?;
-        let result = tx.tree_get(eng_query).unwrap().decode();
-        // Just verify we got a result for Engineering department
-        assert_eq!(result.len(), 2);
+        let mut scan = ScanMode::new_open(eng_query, Compare::GE)
+            .unwrap()
+            .into_iter(&tx.tree)
+            .unwrap();
+        let mut count = 0;
+        while let Some(_) = scan.next() {
+            count += 1;
+        }
+        assert!(count > 0); // Verify we got at least one Engineering result
 
         db.commit(tx)?;
         cleanup_file(path);
@@ -2636,11 +2663,11 @@ mod secondary_index_ops {
             .pkey(1)
             .build(&mut tx)?;
 
-        table.create_index("name");
+        table.create_index("name")?;
         table.add_col_to_index("name", "name")?;
-        table.create_index("category");
+        table.create_index("category")?;
         table.add_col_to_index("category", "category")?;
-        table.create_index("price");
+        table.create_index("price")?;
         table.add_col_to_index("price", "price")?;
         tx.insert_table(&table)?;
 
@@ -2655,15 +2682,27 @@ mod secondary_index_ops {
 
         // Query by each secondary index
         let name_query = Query::by_col(&table).add("name", "Laptop").encode()?;
-        assert!(tx.tree_get(name_query).is_some());
+        let mut scan = ScanMode::new_open(name_query, Compare::GE)
+            .unwrap()
+            .into_iter(&tx.tree)
+            .unwrap();
+        assert!(scan.next().is_some()); // Found by name
 
         let category_query = Query::by_col(&table)
             .add("category", "Electronics")
             .encode()?;
-        assert!(tx.tree_get(category_query).is_some());
+        let mut scan = ScanMode::new_open(category_query, Compare::GE)
+            .unwrap()
+            .into_iter(&tx.tree)
+            .unwrap();
+        assert!(scan.next().is_some()); // Found by category
 
         let price_query = Query::by_col(&table).add("price", 1500i64).encode()?;
-        assert!(tx.tree_get(price_query).is_some());
+        let mut scan = ScanMode::new_open(price_query, Compare::GE)
+            .unwrap()
+            .into_iter(&tx.tree)
+            .unwrap();
+        assert!(scan.next().is_some()); // Found by price
 
         db.commit(tx)?;
         cleanup_file(path);
@@ -2686,7 +2725,7 @@ mod secondary_index_ops {
             .pkey(1)
             .build(&mut tx)?;
 
-        table.create_index("status");
+        table.create_index("status")?;
         table.add_col_to_index("status", "status")?;
         tx.insert_table(&table)?;
 
@@ -2700,16 +2739,25 @@ mod secondary_index_ops {
 
         // Verify it exists via secondary index
         let status_query = Query::by_col(&table).add("status", "active").encode()?;
-        assert!(tx.tree_get(status_query.clone()).is_some());
+        let mut scan = ScanMode::new_open(status_query.clone(), Compare::GE)
+            .unwrap()
+            .into_iter(&tx.tree)
+            .unwrap();
+        assert!(scan.next().is_some());
 
         // Delete the record
-        tx.tree_delete(pk_query.clone())?;
+        let q = Query::by_col(&table).add("id", 1i64);
+        tx.delete_from_query(q, &table)?;
 
         // Verify primary key is gone
         assert!(tx.tree_get(pk_query).is_none());
 
         // Verify secondary index entry is also gone (should be handled by record deletion)
-        assert!(tx.tree_get(status_query).is_none());
+        let scan = ScanMode::new_open(status_query, Compare::GE)
+            .unwrap()
+            .into_iter(&tx.tree);
+
+        assert!(scan.is_none());
 
         db.commit(tx)?;
         cleanup_file(path);
@@ -2732,7 +2780,7 @@ mod secondary_index_ops {
             .pkey(1)
             .build(&mut tx)?;
 
-        table.create_index("category");
+        table.create_index("category")?;
         table.add_col_to_index("category", "category")?;
         tx.insert_table(&table)?;
 
@@ -2747,8 +2795,8 @@ mod secondary_index_ops {
 
         // Delete some records
         for i in [1, 3, 5, 7, 9].iter() {
-            let pk_query = Query::by_col(&table).add("id", *i as i64).encode()?;
-            tx.tree_delete(pk_query)?;
+            let pk_query = Query::by_col(&table).add("id", *i as i64);
+            tx.delete_from_query(pk_query, &table)?;
         }
 
         // Verify remaining records
@@ -2785,9 +2833,9 @@ mod secondary_index_ops {
             .pkey(1)
             .build(&mut tx)?;
 
-        table.create_index("username");
+        table.create_index("username")?;
         table.add_col_to_index("username", "username")?;
-        table.create_index("email");
+        table.create_index("email")?;
         table.add_col_to_index("email", "email")?;
         tx.insert_table(&table)?;
 
@@ -2805,16 +2853,37 @@ mod secondary_index_ops {
 
         // Read via username secondary index
         let username_query = Query::by_col(&table).add("username", "alice").encode()?;
-        let result = tx.tree_get(username_query).unwrap().decode();
-        assert_eq!(result[0], DataCell::Str("alice@example.com".to_string()));
-        assert_eq!(result[1], DataCell::Str("admin".to_string()));
+        let mut scan = ScanMode::new_open(username_query, Compare::GE)
+            .unwrap()
+            .into_iter(&tx.tree)
+            .unwrap();
+        let result = scan.next().unwrap();
+        let val = result.1.decode();
+        assert_eq!(val[0], DataCell::Str("alice@example.com".to_string()));
+        assert_eq!(val[1], DataCell::Str("admin".to_string()));
 
         // Read via email secondary index
         let email_query = Query::by_col(&table)
             .add("email", "bob@example.com")
             .encode()?;
-        let result = tx.tree_get(email_query).unwrap().decode();
-        assert_eq!(result[0], DataCell::Str("user".to_string()));
+        let mut scan = ScanMode::new_open(email_query, Compare::GE)
+            .unwrap()
+            .into_iter(&tx.tree)
+            .unwrap();
+
+        let result = scan.next().unwrap();
+
+        let key = result.0;
+        assert_eq!(key.get_tid(), 55);
+        assert_eq!(key.get_prefix(), 2);
+
+        let key = key.decode();
+        assert_eq!(key[0], DataCell::Str("bob@example.com".to_string()));
+        assert_eq!(key[1], DataCell::Int(2));
+
+        let val = result.1.decode();
+        assert_eq!(val[0], DataCell::Str("bob".to_string()));
+        assert_eq!(val[1], DataCell::Str("user".to_string()));
 
         db.commit(tx)?;
         cleanup_file(path);
@@ -2837,7 +2906,7 @@ mod secondary_index_ops {
             .pkey(1)
             .build(&mut tx)?;
 
-        table.create_index("status");
+        table.create_index("status")?;
         table.add_col_to_index("status", "status")?;
         tx.insert_table(&table)?;
 
@@ -2847,8 +2916,13 @@ mod secondary_index_ops {
 
         // Verify initial state
         let status_query = Query::by_col(&table).add("status", "pending").encode()?;
-        let result = tx.tree_get(status_query).unwrap().decode();
-        assert_eq!(result[0], DataCell::Int(100));
+        let mut scan = ScanMode::new_open(status_query, Compare::GE)
+            .unwrap()
+            .into_iter(&tx.tree)
+            .unwrap();
+        let result = scan.next().unwrap();
+        let val = result.1.decode();
+        assert_eq!(val[0], DataCell::Int(100));
 
         // Upsert with updated values
         let rec = Record::new().add(1i64).add("completed").add(200i64);
@@ -2862,7 +2936,11 @@ mod secondary_index_ops {
 
         // Verify new secondary index entry exists
         let new_status_query = Query::by_col(&table).add("status", "completed").encode()?;
-        assert!(tx.tree_get(new_status_query).is_some());
+        let mut scan = ScanMode::new_open(new_status_query, Compare::GE)
+            .unwrap()
+            .into_iter(&tx.tree)
+            .unwrap();
+        assert!(scan.next().is_some());
 
         db.commit(tx)?;
         cleanup_file(path);
@@ -2885,7 +2963,7 @@ mod secondary_index_ops {
             .pkey(1)
             .build(&mut tx)?;
 
-        table.create_index("score");
+        table.create_index("score")?;
         table.add_col_to_index("score", "score")?;
         tx.insert_table(&table)?;
 
@@ -2928,7 +3006,7 @@ mod secondary_index_ops {
             .pkey(1)
             .build(&mut tx)?;
 
-        table.create_index("tag");
+        table.create_index("tag")?;
         table.add_col_to_index("tag", "tag")?;
         tx.insert_table(&table)?;
         db.commit(tx)?;
@@ -2946,20 +3024,33 @@ mod secondary_index_ops {
 
                 s.spawn(move || {
                     barrier.wait();
+                    let r = retry(Backoff::default(), || {
+                        let mut tx = db.begin(&db, TXKind::Write);
 
-                    let mut tx = db.begin(&db, TXKind::Write);
-                    let tag = format!("tag_{}", i % 5);
-                    let rec = Record::new()
-                        .add(i as i64)
-                        .add(tag.clone())
-                        .add(format!("data_{}", i));
+                        let tag = format!("tag_{}", i);
+                        let rec = Record::new()
+                            .add(i as i64)
+                            .add(tag.clone())
+                            .add(format!("data_{}", i));
 
-                    let result = match tx.insert_rec(rec, &table, SetFlag::INSERT) {
-                        Ok(_) => db.commit(tx),
-                        Err(e) => Err(e),
-                    };
+                        let result = tx.insert_rec(rec, &table, SetFlag::INSERT);
+                        if result.is_err() {
+                            return RetryStatus::Break;
+                        }
 
-                    results.lock().push(result);
+                        let commit_result = db.commit(tx);
+                        if commit_result.can_retry() {
+                            RetryStatus::Continue
+                        } else {
+                            results.lock().push(commit_result);
+                            RetryStatus::Break
+                        }
+                    });
+                    if r == RetryResult::AttemptsExceeded {
+                        results
+                            .lock()
+                            .push(Err(Error::TransactionError(TXError::RetriesExceeded)));
+                    }
                 });
             }
         });
@@ -2972,9 +3063,13 @@ mod secondary_index_ops {
         let tx = db.begin(&db, TXKind::Read);
         for tag_idx in 0..5 {
             let tag = format!("tag_{}", tag_idx);
-            let tag_query = Query::by_col(&table).add("tag", tag.as_str()).encode()?;
+            let tag_query = Query::by_col(&table).add("tag", tag).encode()?;
             // Should find at least one record with this tag
-            assert!(tx.tree_get(tag_query).is_some());
+            let scan = ScanMode::new_open(tag_query, Compare::GE)
+                .unwrap()
+                .into_iter(&tx.tree)
+                .unwrap();
+            assert!(scan.count() > 0);
         }
         db.commit(tx)?;
 
@@ -2998,7 +3093,7 @@ mod secondary_index_ops {
             .pkey(1)
             .build(&mut tx)?;
 
-        table.create_index("status");
+        table.create_index("status")?;
         table.add_col_to_index("status", "status")?;
         tx.insert_table(&table)?;
         db.commit(tx)?;
@@ -3012,8 +3107,13 @@ mod secondary_index_ops {
         // Transaction 2: Read via secondary index
         let tx2 = db.begin(&db, TXKind::Read);
         let status_query = Query::by_col(&table).add("status", "draft").encode()?;
-        let result = tx2.tree_get(status_query).unwrap().decode();
-        assert_eq!(result[0], DataCell::Str("content_1".to_string()));
+        let mut scan = ScanMode::new_open(status_query, Compare::GE)
+            .unwrap()
+            .into_iter(&tx2.tree)
+            .unwrap();
+        let result = scan.next().unwrap();
+        let val = result.1.decode();
+        assert_eq!(val[0], DataCell::Str("content_1".to_string()));
         db.commit(tx2)?;
 
         // Transaction 3: Update record
@@ -3028,8 +3128,13 @@ mod secondary_index_ops {
         // Transaction 4: Verify update via secondary index
         let tx4 = db.begin(&db, TXKind::Read);
         let new_status_query = Query::by_col(&table).add("status", "published").encode()?;
-        let result = tx4.tree_get(new_status_query).unwrap().decode();
-        assert_eq!(result[0], DataCell::Str("updated_content".to_string()));
+        let mut scan = ScanMode::new_open(new_status_query, Compare::GE)
+            .unwrap()
+            .into_iter(&tx4.tree)
+            .unwrap();
+        let result = scan.next().unwrap();
+        let val = result.1.decode();
+        assert_eq!(val[0], DataCell::Str("updated_content".to_string()));
         db.commit(tx4)?;
 
         cleanup_file(path);

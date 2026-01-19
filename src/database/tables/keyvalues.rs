@@ -83,8 +83,8 @@ impl Key {
         self.0.len()
     }
 
-    /// turns key back into Cells, the TID is lost in conversion
-    fn decode(self) -> Vec<DataCell> {
+    /// turns key back into Cells, does not return TID or prefix
+    pub fn decode(self) -> Vec<DataCell> {
         self.into_iter().collect()
     }
 
