@@ -64,7 +64,7 @@ impl ScanMode {
     /// assert_eq!(prefixscan.next(), "1 0 Alice Firefighter");
     /// assert_eq!(prefixscan.next(), "1 0 Alice Policewoman");
     ///```
-    /// ScanMode is lazy, and wont yield anything until [`ScanMode::into_iter`] is called, which then performs read operations
+    /// This Scan is eagerly evaluated!
     pub fn prefix<P: Pager>(key: Key, tree: &BTree<P>) -> Result<PrefixScanIter<'_, P>> {
         if key.len() == 0 {
             return Err(

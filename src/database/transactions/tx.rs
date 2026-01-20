@@ -4,7 +4,9 @@ use tracing::{debug, error, info, instrument};
 
 use crate::database::{
     BTree,
-    btree::{Compare, DeleteResponse, ScanIter, ScanMode, SetFlag, SetResponse, Tree},
+    btree::{
+        Compare, DeleteResponse, PrefixScanIter, ScanIter, ScanMode, SetFlag, SetResponse, Tree,
+    },
     codec::*,
     errors::{Error, Result, TXError, TableError},
     pager::{KVEngine, MetaPage, Pager},
@@ -238,12 +240,11 @@ impl TX {
     }
 
     /// scans all primary keys in a table
-    pub fn full_table_scan(&self, schema: &Table) -> Result<ScanIter<'_, TXDB>> {
+    pub fn full_table_scan(&self, schema: &Table) -> Result<PrefixScanIter<'_, TXDB>> {
         // writing a seek key with TID and Prefix 0
         let key = Query::by_tid_prefix(schema, PKEY_PREFIX);
         debug!(%key, "full table scan key");
-        let mode = ScanMode::open(key, Compare::GT)?;
-        self.tree_scan(mode)
+        ScanMode::prefix(key, &self.tree)
     }
 
     /// counts all unique rows inside a table
@@ -422,25 +423,32 @@ impl TX {
     /// adds a new index for a table. If the index doesnt exist, it will be created, otherwise the column will be added to an existing index. Updates the table as well.
     ///
     /// returns the number of modified keys
-    #[instrument(name = "create index", skip(self))]
+    #[instrument(name = "create index", skip(self, table))]
     fn create_index(&mut self, idx_name: &str, col: &str, table: &mut Table) -> Result<u32> {
         if let None = table.idx_exists(idx_name) {
             table.create_index(idx_name)?;
         }
-        table.add_col_to_index(idx_name, col)?;
+        let idx = table.add_col_to_index(idx_name, col)?;
 
         // get all primary rows
         let recs = self.full_table_scan(table)?.collect_records();
         let nrecs = recs.len();
+        debug!(nrecs, idx);
 
         // insert new keys
         self.key_range.listen();
         let mut modified = 0;
 
         for rec in recs {
+            debug!(%rec, "trying to encode");
             let mut iter = rec.encode(&table)?;
-            iter.next(); // skip primary key
+
+            for c in 0..idx {
+                iter.next(); // skipping keys
+            }
+
             for (k, v) in iter {
+                debug!(%k, "inserting...");
                 let r = self.tree_set(k, v, SetFlag::INSERT)?;
                 assert!(r.added, "key doesnt exist therefore this shouldnt fail");
                 self.key_range.capture_and_listen();
@@ -462,7 +470,7 @@ impl TX {
     /// deletes an index for a table and all associated keys. Updates the table as well.
     ///
     /// returns number of modified keys
-    #[instrument(name = "delete index", skip(self))]
+    #[instrument(name = "delete index", skip(self, table))]
     fn delete_index(&mut self, idx_name: &str, table: &mut Table) -> Result<u32> {
         // get prefix
         let idx = match table.idx_exists(idx_name) {

@@ -347,8 +347,8 @@ impl Table {
         Ok(())
     }
 
-    /// adds a secondary index, returns idx into the col arr
-    pub fn add_col_to_index(&mut self, idx_name: &str, col: &str) -> Result<()> {
+    /// adds a secondary index, returns idx into the idx arr
+    pub fn add_col_to_index(&mut self, idx_name: &str, col: &str) -> Result<usize> {
         if col.is_empty() || idx_name.is_empty() {
             return Err(
                 TableError::IndexDeleteError("index name cant be empty".to_string()).into(),
@@ -363,7 +363,7 @@ impl Table {
             }
         };
 
-        for e in self.indices.iter_mut() {
+        for (i, e) in self.indices.iter_mut().enumerate() {
             if e.name == idx_name {
                 if e.columns.contains(&col_idx) {
                     return Err(TableError::IndexCreateError(
@@ -372,7 +372,7 @@ impl Table {
                     .into());
                 }
                 e.columns.push(col_idx);
-                return Ok(());
+                return Ok(i);
             }
         }
         Err(TableError::IndexCreateError("idx doesnt exist".to_string()).into())
