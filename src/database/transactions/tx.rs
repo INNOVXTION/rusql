@@ -422,6 +422,7 @@ impl TX {
     /// adds a new index for a table. If the index doesnt exist, it will be created, otherwise the column will be added to an existing index. Updates the table as well.
     ///
     /// returns the number of modified keys
+    #[instrument(name = "create index", skip(self))]
     fn create_index(&mut self, idx_name: &str, col: &str, table: &mut Table) -> Result<u32> {
         if let None = table.idx_exists(idx_name) {
             table.create_index(idx_name)?;
@@ -461,6 +462,7 @@ impl TX {
     /// deletes an index for a table and all associated keys. Updates the table as well.
     ///
     /// returns number of modified keys
+    #[instrument(name = "delete index", skip(self))]
     fn delete_index(&mut self, idx_name: &str, table: &mut Table) -> Result<u32> {
         // get prefix
         let idx = match table.idx_exists(idx_name) {
@@ -3362,7 +3364,10 @@ mod secondary_index_ops {
         let mut count = 0;
 
         for i in 0..n_inserts {
-            let rec = Record::new().add(i).add(format!("tag_{i}")).add("data");
+            let rec = Record::new()
+                .add(i)
+                .add(format!("tag_{i}"))
+                .add(format!("data_{i}"));
             tx.insert_rec(rec, &table, SetFlag::INSERT)?;
             count += 1;
         }
@@ -3373,12 +3378,14 @@ mod secondary_index_ops {
         // creating idx in table that houses rows already
         tx.create_index("tag", "tag", &mut table)?;
         assert_eq!(tx.count_entries(&table)?, n_inserts * 2);
+        tx.create_index("data", "data", &mut table)?;
+        assert_eq!(tx.count_entries(&table)?, n_inserts * 3);
 
         // query secondary index
         count = 0;
         for i in 0..n_inserts {
             let q = Query::by_col(&table)
-                .add("tag", format!("tag_{}", i))
+                .add("tag", format!("tag_{i}"))
                 .encode()?;
 
             assert_eq!(q.get_prefix(), 1);
@@ -3387,17 +3394,43 @@ mod secondary_index_ops {
             let scan = ScanMode::prefix(q, &tx.tree)?.next().unwrap();
 
             assert_eq!(scan.0.to_string(), format!("58 1 tag_{i} {i}"));
-            assert_eq!(scan.1.to_string(), format!("data"));
+            assert_eq!(scan.1.to_string(), format!("data_{i}"));
+            count += 1;
+        }
+        assert_eq!(n_inserts, count);
+
+        count = 0;
+        for i in 0..n_inserts {
+            let q = Query::by_col(&table)
+                .add("data", format!("data_{i}"))
+                .encode()?;
+
+            assert_eq!(q.get_prefix(), 2);
+            assert_eq!(q.get_tid(), 58);
+
+            let scan = ScanMode::prefix(q, &tx.tree)?.next().unwrap();
+
+            assert_eq!(scan.0.to_string(), format!("58 2 data_{i} {i}"));
+            assert_eq!(scan.1.to_string(), format!("tag_{i}"));
             count += 1;
         }
         assert_eq!(n_inserts, count);
 
         tx.delete_index("tag", &mut table)?;
+        assert_eq!(tx.count_entries(&table)?, n_inserts * 2);
+        tx.delete_index("data", &mut table)?;
         assert_eq!(tx.count_entries(&table)?, n_inserts);
 
         for i in 0..n_inserts {
             let r = Query::by_col(&table)
                 .add("tag", format!("tag_{}", i))
+                .encode();
+            assert!(r.is_err()) // the index doesnt exist anymore!
+        }
+
+        for i in 0..n_inserts {
+            let r = Query::by_col(&table)
+                .add("data", format!("data_{}", i))
                 .encode();
             assert!(r.is_err()) // the index doesnt exist anymore!
         }
