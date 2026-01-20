@@ -2,13 +2,16 @@ use std::sync::Arc;
 
 use tracing::{debug, instrument};
 
-use crate::database::{
-    BTree,
-    btree::{Tree, TreeNode, node::NodeType},
-    errors::{Result, ScanError},
-    pager::diskpager::Pager,
-    tables::{Key, Record, Value},
-    types::Node,
+use crate::{
+    database::{
+        BTree,
+        btree::{Tree, TreeNode, node::NodeType},
+        errors::{Result, ScanError},
+        pager::diskpager::Pager,
+        tables::{Key, Record, Value},
+        types::Node,
+    },
+    debug_if_env,
 };
 
 #[derive(Debug, Clone)]
@@ -61,6 +64,7 @@ impl ScanMode {
     /// assert_eq!(prefixscan.next(), "1 0 Alice Firefighter");
     /// assert_eq!(prefixscan.next(), "1 0 Alice Policewoman");
     ///```
+    /// ScanMode is lazy, and wont yield anything until [`ScanMode::into_iter`] is called, which then performs read operations
     pub fn prefix<P: Pager>(key: Key, tree: &BTree<P>) -> Result<PrefixScanIter<'_, P>> {
         if key.len() == 0 {
             return Err(
@@ -88,7 +92,7 @@ impl ScanMode {
 
     /// builds an open scanner for open ended scans, never crosses TID boundaries
     ///
-    /// ScanMode is lazy, and wont yied anything until `.into_iter()` is called
+    /// ScanMode is lazy, and wont yield anything until [`ScanMode::into_iter`] is called, which then performs read operations
     pub fn open(key: Key, cmp: Compare) -> Result<Self> {
         if cmp == Compare::EQ {
             return Err(ScanError::ScanCreateError(
@@ -99,9 +103,11 @@ impl ScanMode {
         Ok(ScanMode::Open(key, cmp))
     }
 
-    /// scans a range between two keys, predicates dictate starting position for lo and hi
+    /// scans a range between two keys, start position is the the key that matches lo on the predicate.
     ///
-    /// ScanMode is lazy, and wont yied anything until `.into_iter()` is called
+    /// hi represents the end condition, so the iterator will return values until a key matching hi is found. See `tests::scan_range`.
+    ///
+    /// ScanMode is lazy, and wont yield anything until [`ScanMode::into_iter`] is called, which then performs read operations
     pub fn range(lo: (Key, Compare), hi: (Key, Compare)) -> Result<Self> {
         let tid = lo.0.get_tid();
         if tid != hi.0.get_tid() {
@@ -110,7 +116,7 @@ impl ScanMode {
             )
             .into());
         }
-        if lo.0 >= hi.0 {
+        if lo.0 > hi.0 {
             return Err(ScanError::ScanCreateError(
                 "invalid input: low point exceeds high point".to_string(),
             )
@@ -185,15 +191,24 @@ impl<'a, P: Pager> Iterator for ScanIter<'a, P> {
         }
 
         match self.range {
+            // WIP
             // range scan
             Some(ref hi) => {
                 let (k, v) = self.cursor.next()?;
-
-                if !key_cmp(&k, &hi.0, hi.1) {
-                    // return as soon as key doesnt match range key predicate
+                debug_if_env!("RUSQL_LOG_CURSOR", {
+                    debug!(key=%k, hi=%hi.0, pred=?hi.1, "comparing");
+                });
+                // we return as soon as the key matches the high key predicate
+                if key_cmp(&k, &hi.0, hi.1) {
+                    debug_if_env!("RUSQL_LOG_CURSOR", {
+                        debug!("finished");
+                    });
                     self.finished = true;
                     return None;
                 }
+                debug_if_env!("RUSQL_LOG_CURSOR", {
+                    debug!("found");
+                });
                 Some((k, v))
             }
             // open scan
@@ -1070,6 +1085,47 @@ mod test {
         let res = tree_ref.scan(q);
         assert!(res.is_ok());
         assert_eq!(res.unwrap().count(), 1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn scan_range() -> Result<()> {
+        let tree = mempage_tree();
+
+        for i in 1i64..=5i64 {
+            tree.set(
+                format!("table 1 {}", i).into(),
+                "value".into(),
+                SetFlag::UPSERT,
+            )
+            .unwrap()
+        }
+
+        for i in 1i64..=5i64 {
+            tree.set(
+                format!("table 2 {}", i).into(),
+                "value".into(),
+                SetFlag::UPSERT,
+            )
+            .unwrap()
+        }
+
+        let k_lo = "table 1 1".into();
+        let k_hi = "table 1 5".into();
+        let tree_ref = tree.pager.tree.borrow();
+        let res = ScanMode::range((k_lo, Compare::GE), (k_hi, Compare::GT))?.into_iter(&*tree_ref);
+
+        assert!(res.is_some());
+
+        let mut recs = res.unwrap().collect_records().into_iter();
+
+        assert_eq!(recs.next().unwrap().to_string(), "table 1 1 value");
+        assert_eq!(recs.next().unwrap().to_string(), "table 1 2 value");
+        assert_eq!(recs.next().unwrap().to_string(), "table 1 3 value");
+        assert_eq!(recs.next().unwrap().to_string(), "table 1 4 value");
+        assert_eq!(recs.next().unwrap().to_string(), "table 1 5 value");
+        assert!(recs.next().is_none());
 
         Ok(())
     }

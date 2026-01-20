@@ -6,7 +6,7 @@ use std::{cell::RefCell, collections::HashMap, sync::Arc};
 use tracing::{debug, error};
 
 use crate::database::{
-    btree::{BTree, ScanMode, SetFlag, SetResponse, Tree},
+    btree::{BTree, DeleteResponse, ScanMode, SetFlag, SetResponse, Tree},
     errors::{Error, Result},
     pager::{Pager, diskpager::GCCallbacks},
     tables::{Key, Record, Value},
@@ -39,7 +39,8 @@ impl KVEngine for MemPager {
     }
 
     fn delete(&self, key: Key) -> Result<()> {
-        self.pager.delete(key)
+        self.pager.delete(key)?;
+        Ok(())
     }
 
     fn scan(&self, mode: crate::database::btree::ScanMode) -> Result<Vec<Record>> {
@@ -83,7 +84,7 @@ impl MemoryPager {
         self.tree.borrow_mut().set(key, value, flag)
     }
 
-    fn delete(&self, key: Key) -> Result<()> {
+    fn delete(&self, key: Key) -> Result<DeleteResponse> {
         self.tree.borrow_mut().delete(key)
     }
 }

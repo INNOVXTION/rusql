@@ -90,7 +90,6 @@ impl Record {
                         .chain(val_cells.iter().map(|c| *c));
 
                     assert_eq!(pkey_cells.len(), schema.pkeys as usize);
-
                     let kv = encode_to_kv(schema.id, idx.prefix, data_iter, Some(n_cols))?;
                     assert!(!kv.0.as_slice().len() > TID_LEN + PREFIX_LEN);
 
@@ -311,13 +310,14 @@ where
     let mut buf = Vec::<u8>::new();
     let mut idx: usize = 0;
     let mut key_delim: usize = 0;
+    let mut count = 0;
 
     // table id and prefix
     buf.extend_from_slice(&tid.to_le_bytes());
     buf.extend_from_slice(&prefix.to_le_bytes());
     idx += TID_LEN + PREFIX_LEN;
 
-    // composing byte array by iterating through all columns designated as primary key
+    // composing byte array by iterating through all data cells
     for (i, cell) in iter.enumerate() {
         if let Some(n) = delim {
             if n == 0 {
@@ -342,12 +342,20 @@ where
                 idx += num.len();
             }
         }
+        count += 1;
     }
+
+    if let Some(n) = delim {
+        if n == count {
+            // we only have primary keys
+            key_delim = idx;
+        }
+    };
 
     if delim.is_none() {
         // empty value
         key_delim = idx;
-    }
+    };
 
     let key_slice = &buf[..key_delim];
     let val_slice = &buf[key_delim..];

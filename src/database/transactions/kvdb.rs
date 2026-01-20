@@ -57,6 +57,12 @@ impl KVDB {
             .expect("this always returns the table")
     }
 
+    pub fn evict_table(&self, table: &str) -> Result<()> {
+        let mut buf = self.t_buf.lock();
+        buf.remove(table);
+        Ok(())
+    }
+
     /// gets the schema for a table name, schema is stored inside buffer
     pub fn read_table_buffer<P: Pager>(&self, name: &str, tree: &BTree<P>) -> Option<Arc<Table>> {
         let mut buf = self.t_buf.lock();

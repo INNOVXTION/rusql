@@ -49,13 +49,27 @@ impl Default for SetResponse {
     }
 }
 
+pub(crate) struct DeleteResponse {
+    pub deleted: bool,
+    pub old: Option<(Key, Value)>,
+}
+
+impl Default for DeleteResponse {
+    fn default() -> Self {
+        Self {
+            deleted: false,
+            old: None,
+        }
+    }
+}
+
 pub(crate) trait Tree {
     type Codec: Pager;
 
     fn get(&self, key: Key) -> Option<Value>;
     fn set(&mut self, key: Key, value: Value, flag: SetFlag) -> Result<SetResponse>;
     fn scan(&self, mode: ScanMode) -> Result<ScanIter<'_, Self::Codec>>;
-    fn delete(&mut self, key: Key) -> Result<()>;
+    fn delete(&mut self, key: Key) -> Result<DeleteResponse>;
 
     fn set_root(&mut self, ptr: Option<Pointer>);
     fn get_root(&self) -> Option<Pointer>;
@@ -135,8 +149,10 @@ impl<P: Pager> Tree for BTree<P> {
     }
 
     #[instrument(name = "tree delete", skip_all)]
-    fn delete(&mut self, key: Key) -> Result<()> {
+    fn delete(&mut self, key: Key) -> Result<DeleteResponse> {
         info!("deleting kv: {key}",);
+        let mut res = DeleteResponse::default();
+
         let root_ptr = match self.root_ptr {
             Some(n) => n,
             None => {
@@ -146,9 +162,11 @@ impl<P: Pager> Tree for BTree<P> {
             }
         };
 
-        let updated = self
-            .tree_delete(self.decode(root_ptr).as_tn(), &key)
-            .ok_or(Error::DeleteError("key not found!".to_string()))?;
+        let updated = match self.tree_delete(self.decode(root_ptr).as_tn(), &key, &mut res) {
+            Some(n) => n,
+            None => return Ok(res),
+        };
+
         self.dealloc(root_ptr);
 
         match updated.get_nkeys() {
@@ -175,7 +193,7 @@ impl<P: Pager> Tree for BTree<P> {
                 self.root_ptr = Some(self.encode(updated));
             }
         }
-        Ok(())
+        Ok(res)
     }
 
     #[instrument(name = "tree search", skip_all)]
@@ -274,17 +292,27 @@ impl<P: Pager> BTree<P> {
     }
 
     /// recursive deletion, node = current node, returns updated node in case a deletion happened
-    fn tree_delete(&mut self, node: &TreeNode, key: &Key) -> Option<TreeNode> {
+    fn tree_delete(
+        &mut self,
+        node: &TreeNode,
+        key: &Key,
+        res: &mut DeleteResponse,
+    ) -> Option<TreeNode> {
         let idx = node.lookupidx(key);
         match node.get_type() {
             NodeType::Leaf => {
                 debug_print_tree(&node, idx);
-
-                if node.get_key(idx).unwrap() == *key {
+                let k = node.get_key(idx).unwrap();
+                if k == *key {
                     debug!("deleting key {} at idx {idx}", key.to_string());
+
+                    res.deleted = true;
+                    res.old = Some((k, node.get_val(idx).unwrap()));
+
                     let mut new = TreeNode::new();
                     new.leaf_kvdelete(&node, idx).unwrap();
                     new.set_header(NodeType::Leaf, node.get_nkeys() - 1);
+
                     Some(new)
                 } else {
                     debug!("key not found!");
@@ -295,7 +323,7 @@ impl<P: Pager> BTree<P> {
                 debug_print_tree(&node, idx);
 
                 let kptr = node.get_ptr(idx);
-                match BTree::tree_delete(self, self.decode(kptr).as_tn(), key) {
+                match BTree::tree_delete(self, self.decode(kptr).as_tn(), key, res) {
                     // no update below us
                     None => return None,
                     // node was updated below us, checking for merge...
