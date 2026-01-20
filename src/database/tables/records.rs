@@ -34,6 +34,7 @@ impl Record {
 
     /// encodes a record into the necessary key value pairs to fulfil all indices of a given table schema
     pub fn encode(self, schema: &Table) -> Result<impl Iterator<Item = (Key, Value)>> {
+        debug!(data=?self.data, "encoding");
         if schema.cols.len() != self.data.len() {
             error!(?schema, "input doesnt match column count");
             return Err(
@@ -48,6 +49,7 @@ impl Record {
                 DataCell::Int(_) => TypeCol::INTEGER,
             };
             if schema.cols[i].data_type != cell_type {
+                error!(expected=?schema.cols[i].data_type, got=?cell_type, "Record doesnt match column");
                 return Err(
                     TableError::RecordError("Record doesnt match column".to_string()).into(),
                 );

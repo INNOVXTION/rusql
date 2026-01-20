@@ -206,3 +206,21 @@ impl InputData for i8 {
         DataCell::Int(self as i64)
     }
 }
+
+impl InputData for u32 {
+    fn into_cell(self) -> DataCell {
+        DataCell::Int(self as i64)
+    }
+}
+
+impl InputData for u16 {
+    fn into_cell(self) -> DataCell {
+        DataCell::Int(self as i64)
+    }
+}
+
+impl InputData for u8 {
+    fn into_cell(self) -> DataCell {
+        DataCell::Int(self as i64)
+    }
+}

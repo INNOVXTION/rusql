@@ -155,9 +155,7 @@ impl TX {
             .add(table.encode()?)
             .encode(&self.db.db_link.t_def)?
             .next()
-            .ok_or(TableError::InsertTableError(
-                "record iterator failure".to_string(),
-            ))?;
+            .ok_or_else(|| TableError::InsertTableError("record iterator failure".to_string()))?;
 
         self.tree_set(k, v, SetFlag::UPSERT).map_err(|e| {
             error!(%e, "error when inserting");
@@ -184,9 +182,7 @@ impl TX {
             .add(table.encode()?)
             .encode(&self.db.db_link.t_def)?
             .next()
-            .ok_or(TableError::InsertTableError(
-                "record iterator failure".to_string(),
-            ))?;
+            .ok_or_else(|| TableError::InsertTableError("record iterator failure".to_string()))?;
 
         self.tree_set(k, v, SetFlag::UPDATE).map_err(|e| {
             error!(%e, "error when inserting");
@@ -256,6 +252,13 @@ impl TX {
         Ok(scan.into_iter().count() as u32)
     }
 
+    /// counts all entries inside a table, this includes secondary indices
+    pub fn count_entries(&self, schema: &Table) -> Result<u32> {
+        let key = Query::by_tid(schema);
+        let scan = ScanMode::prefix(key, &self.tree)?;
+        Ok(scan.count() as u32)
+    }
+
     /// inserts a record and potentially secondary indicies
     #[instrument(name = "insert rec", skip_all)]
     pub fn insert_rec(&mut self, rec: Record, schema: &Table, flag: SetFlag) -> Result<u32> {
@@ -269,15 +272,22 @@ impl TX {
         }
 
         self.key_range.listen();
-        let mut iter = rec.encode(schema)?.peekable();
+        let mut iter = rec
+            .encode(schema)
+            .map_err(|e| {
+                error!(?e, "record failed to encode");
+                Error::InsertError("record failed to encode".to_string())
+            })?
+            .peekable();
         let mut old_rec;
         let old_pk;
         let mut modified = 0;
 
         // updating the primary key and retrieving the old one
-        let primay_key = iter.next().ok_or(Error::InsertError(
-            "record failed to generate a primary key".to_string(),
-        ))?;
+        let primay_key = iter.next().ok_or_else(|| {
+            error!("record failed to generate a primary key");
+            Error::InsertError("record failed to generate a primary key".to_string())
+        })?;
 
         let res = self.tree_set(primay_key.0, primay_key.1, flag);
         if let Ok(ref r) = res {
@@ -379,9 +389,9 @@ impl TX {
         let mut iter = rec.encode(schema)?.peekable();
         let mut updated = 0;
 
-        let primay_key = iter.next().ok_or(Error::DeleteError(
-            "record failed to generate a primary key".to_string(),
-        ))?;
+        let primay_key = iter.next().ok_or_else(|| {
+            Error::DeleteError("record failed to generate a primary key".to_string())
+        })?;
 
         // deleting primary key
         if let Ok(r) = self.tree_delete(primay_key.0)
@@ -452,39 +462,41 @@ impl TX {
     ///
     /// returns number of modified keys
     fn delete_index(&mut self, idx_name: &str, table: &mut Table) -> Result<u32> {
-        if let None = table.idx_exists(idx_name) {
-            return Err(TableError::IndexCreateError("index doesnt exists".to_string()).into());
-        }
+        // get prefix
+        let idx = match table.idx_exists(idx_name) {
+            Some(idx) => idx,
+            None => {
+                return Err(TableError::IndexCreateError("index doesnt exists".to_string()).into());
+            }
+        };
 
-        // get all primary rows
-        let recs = self.full_table_scan(table)?.collect_records();
-        let nrecs = recs.len();
+        let prefix = table.indices[idx].prefix;
+        let q = Query::by_tid_prefix(table, prefix);
+        let kvs: Vec<(Key, Value)> = ScanMode::prefix(q, &self.tree)?.collect();
 
-        // insert new keys
+        // delete keys
         self.key_range.listen();
         let mut modified = 0;
 
-        for rec in recs {
-            let mut iter = rec.encode(&table)?;
-            iter.next(); // skip primary key
-            for (k, _) in iter {
-                let r = self.tree_delete(k)?;
-                assert!(r.deleted, "key should exist therefore this shouldnt fail");
-                self.key_range.capture_and_listen();
-                modified += 1;
-            }
+        for (k, _) in kvs {
+            debug!(?k, "deleting key");
+            let r = self.tree_delete(k)?;
+            assert!(r.deleted, "key should exist therefore this shouldnt fail");
+            self.key_range.capture_and_listen();
+            modified += 1;
         }
 
+        debug!("removing index");
         table.remove_index(idx_name)?;
 
         // update or insert
+        debug!("updating table");
         if let Some(_) = self.get_table(&table.name) {
             self.update_table(table)?;
         } else {
             self.insert_table(table)?;
         }
 
-        assert_eq!(nrecs, modified as usize);
         Ok(modified)
     }
 }
@@ -3325,6 +3337,70 @@ mod secondary_index_ops {
         }
 
         assert_eq!(n_inserts, count);
+
+        cleanup_file(path);
+        Ok(())
+    }
+
+    #[test]
+    fn delete_sec_idx_existing_keys() -> Result<()> {
+        let path = "create_sec_idx.rdb";
+        cleanup_file(path);
+        let db = Arc::new(KVDB::new(path));
+        let mut tx = db.begin(&db, TXKind::Write);
+
+        let mut table = TableBuilder::new()
+            .id(58)
+            .name("create_secondary")
+            .add_col("id", TypeCol::INTEGER)
+            .add_col("tag", TypeCol::BYTES)
+            .add_col("data", TypeCol::BYTES)
+            .pkey(1)
+            .build(&mut tx)?;
+
+        let n_inserts = 10;
+        let mut count = 0;
+
+        for i in 0..n_inserts {
+            let rec = Record::new().add(i).add(format!("tag_{i}")).add("data");
+            tx.insert_rec(rec, &table, SetFlag::INSERT)?;
+            count += 1;
+        }
+
+        assert_eq!(n_inserts, count);
+        assert_eq!(tx.count_entries(&table)?, n_inserts);
+
+        // creating idx in table that houses rows already
+        tx.create_index("tag", "tag", &mut table)?;
+        assert_eq!(tx.count_entries(&table)?, n_inserts * 2);
+
+        // query secondary index
+        count = 0;
+        for i in 0..n_inserts {
+            let q = Query::by_col(&table)
+                .add("tag", format!("tag_{}", i))
+                .encode()?;
+
+            assert_eq!(q.get_prefix(), 1);
+            assert_eq!(q.get_tid(), 58);
+
+            let scan = ScanMode::prefix(q, &tx.tree)?.next().unwrap();
+
+            assert_eq!(scan.0.to_string(), format!("58 1 tag_{i} {i}"));
+            assert_eq!(scan.1.to_string(), format!("data"));
+            count += 1;
+        }
+        assert_eq!(n_inserts, count);
+
+        tx.delete_index("tag", &mut table)?;
+        assert_eq!(tx.count_entries(&table)?, n_inserts);
+
+        for i in 0..n_inserts {
+            let r = Query::by_col(&table)
+                .add("tag", format!("tag_{}", i))
+                .encode();
+            assert!(r.is_err()) // the index doesnt exist anymore!
+        }
 
         cleanup_file(path);
         Ok(())

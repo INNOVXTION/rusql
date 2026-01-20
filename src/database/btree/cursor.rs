@@ -378,7 +378,9 @@ fn prefix_seek<'a, P: Pager>(key: &Key, tree: &'a BTree<P>) -> Option<Cursor<'a,
             }
         }
     }
-    debug!("creating cursor, pos: {:?}", cursor.pos);
+    debug_if_env!("RUSQL_LOG_CURSOR", {
+        debug!("creating cursor, pos: {:?}", cursor.pos);
+    });
     if cursor.pos.is_empty() || cursor.path.is_empty() {
         return None;
     }
@@ -412,7 +414,9 @@ fn seek<'a, P: Pager>(tree: &'a BTree<P>, key: &Key, flag: Compare) -> Option<Cu
             }
             NodeType::Leaf => {
                 let idx = node_lookup(node.as_tn(), &key, &flag)?;
-                debug!(idx, "seek idx after lookup");
+                debug_if_env!("RUSQL_LOG_CURSOR", {
+                    debug!(idx, "seek idx after lookup");
+                });
 
                 cursor.path.push(node);
                 cursor.pos.push(idx);
