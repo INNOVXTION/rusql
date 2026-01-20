@@ -433,7 +433,7 @@ impl TX {
         // get all primary rows
         let recs = self.full_table_scan(table)?.collect_records();
         let nrecs = recs.len();
-        debug!(nrecs, idx);
+        assert!(nrecs > 0);
 
         // insert new keys
         self.key_range.listen();
@@ -483,24 +483,23 @@ impl TX {
         let prefix = table.indices[idx].prefix;
         let q = Query::by_tid_prefix(table, prefix);
         let kvs: Vec<(Key, Value)> = ScanMode::prefix(q, &self.tree)?.collect();
+        assert!(kvs.len() > 0);
+        assert!(prefix != 0);
 
         // delete keys
         self.key_range.listen();
         let mut modified = 0;
 
         for (k, _) in kvs {
-            debug!(?k, "deleting key");
             let r = self.tree_delete(k)?;
             assert!(r.deleted, "key should exist therefore this shouldnt fail");
             self.key_range.capture_and_listen();
             modified += 1;
         }
 
-        debug!("removing index");
         table.remove_index(idx_name)?;
 
         // update or insert
-        debug!("updating table");
         if let Some(_) = self.get_table(&table.name) {
             self.update_table(table)?;
         } else {
