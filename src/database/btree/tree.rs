@@ -111,9 +111,7 @@ impl<P: Pager> Tree for BTree<P> {
         // recursively insert kv
         let updated_root = self
             .tree_insert(root.as_tn(), key, val, flag, &mut res)
-            .ok_or(Error::InsertError(
-                "couldnt fulfill set request".to_string(),
-            ))?;
+            .ok_or_else(|| Error::InsertError("couldnt fulfill set request".to_string()))?;
 
         let mut split = updated_root.split()?;
 
@@ -214,7 +212,7 @@ impl<P: Pager> Tree for BTree<P> {
             return Err(Error::SearchError("tree is empty".to_string()));
         }
         mode.into_iter(self)
-            .ok_or(ScanError::IterCreateError("couldnt turn into iter".to_string()).into())
+            .ok_or_else(|| ScanError::IterCreateError("couldnt turn into iter".to_string()).into())
     }
 }
 

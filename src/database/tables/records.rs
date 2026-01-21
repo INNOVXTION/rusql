@@ -215,15 +215,16 @@ impl<'a> QueryCol<'a> {
         let schema = self.schema;
         let index = self
             .find_index()
-            .ok_or(TableError::QueryError("Index couldnt be found".to_string()))?;
+            .ok_or_else(|| TableError::QueryError("Index couldnt be found".to_string()))?;
 
         // maintaining order
         let mut cells = vec![];
         for col_idx in index.columns.iter() {
             let col_name = &schema.cols[*col_idx].title;
-            let cell_ref = self.data.get(col_name).ok_or(TableError::QueryError(
-                "error when ordering columns".to_string(),
-            ))?;
+            let cell_ref = self
+                .data
+                .get(col_name)
+                .ok_or_else(|| TableError::QueryError("error when ordering columns".to_string()))?;
 
             cells.push(cell_ref);
         }

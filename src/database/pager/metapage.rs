@@ -22,9 +22,11 @@ use crate::database::{
 // new
 // | sig | root_ptr | page_used | head_page | head_seq | tail_page | tail_seq | version |
 // | 16B |    8B    |     8B    |     8B    |    8B    |     8B    |    8B    |    8B   |
+// | nfl_pages |
+// |    8B     |
 
 pub const DB_SIG: &'static str = "BuildYourOwnDB06";
-pub const METAPAGE_SIZE: usize = 16 + (8 * 7); // sig plus 6 eight byte values
+pub const METAPAGE_SIZE: usize = 16 + (8 * 8); // sig plus 6 eight byte values
 pub const SIG_SIZE: usize = 16;
 
 // offsets
@@ -37,6 +39,7 @@ enum MpField {
     TailPage = 16 + (8 * 4),
     TailSeq = 16 + (8 * 5),
     Version = 16 + (8 * 6),
+    Nflpages = 16 + (8 * 7),
 }
 
 pub(crate) struct MetaPage(Box<[u8; METAPAGE_SIZE]>);
@@ -113,6 +116,7 @@ pub fn metapage_save(pager: &DiskPager) -> MetaPage {
     data.set_ptr(M::HeadSeq, Some(flc.head_seq.into()));
     data.set_ptr(M::TailPage, flc.tail_page);
     data.set_ptr(M::TailSeq, Some(flc.tail_seq.into()));
+    data.set_ptr(M::Nflpages, Some(flc.npages.into()));
 
     data.set_ptr(
         M::Version,
@@ -150,6 +154,7 @@ pub fn metapage_load(pager: &DiskPager, meta: &MetaPage) {
 
         max_ver: meta.read_ptr(MpField::Version).get(),
         cur_ver: meta.read_ptr(MpField::Version).get(),
+        npages: meta.read_ptr(MpField::Nflpages).get(),
     };
 
     pager.freelist.write().set_config(&flc);
@@ -170,6 +175,7 @@ pub fn metapage_read(pager: &DiskPager, file_size: u64) {
 
             max_ver: 1,
             cur_ver: 1,
+            npages: 0,
         };
         pager.freelist.write().set_config(&flc);
         return;

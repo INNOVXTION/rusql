@@ -77,7 +77,7 @@ impl MemoryPager {
         self.tree
             .borrow()
             .get(key)
-            .ok_or(Error::SearchError("value not found".to_string()))
+            .ok_or_else(|| Error::SearchError("value not found".to_string()))
     }
 
     fn set(&self, key: Key, value: Value, flag: SetFlag) -> Result<SetResponse> {

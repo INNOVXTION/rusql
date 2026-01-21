@@ -37,6 +37,7 @@ pub const DEF_TABLE_COL1: &'static str = "name";
 pub const DEF_TABLE_COL2: &'static str = "def";
 
 pub const DEF_TABLE_ID: u32 = 1;
+pub const DEF_TABLE_VERSION: u64 = 0;
 pub const DEF_TABLE_PKEYS: u16 = 1;
 
 pub const META_TABLE_NAME: &'static str = "tmeta";
@@ -45,6 +46,7 @@ pub const META_TABLE_COL2: &'static str = "tid";
 pub const META_TABLE_ID_ROW: &'static str = "tid";
 
 pub const META_TABLE_ID: u32 = 2;
+pub const META_TABLE_VERSION: u64 = 0;
 pub const META_TABLE_PKEYS: u16 = 1;
 
 pub const LOWEST_PREMISSIABLE_TID: u32 = DEF_TABLE_ID + META_TABLE_ID;

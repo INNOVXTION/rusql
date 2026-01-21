@@ -66,7 +66,9 @@ impl TX {
     #[instrument(name = "get table", skip_all)]
     fn get_table(&mut self, name: &str) -> Option<Arc<Table>> {
         info!(name, "getting table");
-        self.db.db_link.read_table_buffer(name, &self.tree)
+        self.db
+            .db_link
+            .read_table_buffer(name, self.version, &self.tree)
     }
 
     #[instrument(name = "new table id", skip_all)]
@@ -1007,7 +1009,7 @@ mod scan {
         let lo_key = Query::by_col(&table).add("id", 5i64).encode()?;
         let hi_key = Query::by_col(&table).add("id", 15i64).encode()?;
 
-        let range = ScanMode::range((lo_key, Compare::GE), (hi_key, Compare::LE))?;
+        let range = ScanMode::range((lo_key, Compare::GE), (hi_key, Compare::GT))?;
 
         let res: Vec<_> = tx.tree_scan(range)?.collect_records();
 

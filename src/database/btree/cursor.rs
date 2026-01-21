@@ -72,9 +72,9 @@ impl ScanMode {
             );
         }
         let tid = key.get_tid();
-        let cursor = prefix_seek(&key, tree).ok_or(ScanError::ScanCreateError(
-            "couldnt create prefix cursor".to_string(),
-        ))?;
+        let cursor = seek(tree, &key, SeekConfig::Prefix).ok_or_else(|| {
+            ScanError::ScanCreateError("couldnt create prefix cursor".to_string())
+        })?;
 
         Ok(PrefixScanIter {
             cursor,
@@ -86,7 +86,7 @@ impl ScanMode {
 
     /// single scan, basically tree_get() over the cursor API
     pub fn single<P: Pager>(key: Key, tree: &BTree<P>) -> Option<(Key, Value)> {
-        let cursor = seek(tree, &key, Compare::EQ)?;
+        let cursor = seek(tree, &key, SeekConfig::Pred(Compare::EQ))?;
         Some(cursor.deref())
     }
 
@@ -135,7 +135,7 @@ impl ScanMode {
                     Compare::EQ => unreachable!(), // we validate scanmode creation
                 };
                 Some(ScanIter {
-                    cursor: seek(tree, &key, compare)?,
+                    cursor: seek(tree, &key, SeekConfig::Pred(compare))?,
                     tid: key.get_tid(),
                     dir,
                     range: None,
@@ -145,7 +145,7 @@ impl ScanMode {
             ScanMode::Range { lo, hi } => {
                 let tid = lo.0.get_tid();
                 Some(ScanIter {
-                    cursor: seek(tree, &lo.0, lo.1)?,
+                    cursor: seek(tree, &lo.0, SeekConfig::Pred(lo.1))?,
                     tid,
                     dir: CursorDir::Next,
                     range: Some(hi),
@@ -158,7 +158,7 @@ impl ScanMode {
 
 pub(super) fn scan_single<P: Pager>(tree: &BTree<P>, key: &Key) -> Option<Vec<(Key, Value)>> {
     let mut res: Vec<(Key, Value)> = vec![];
-    let cursor = seek(tree, &key, Compare::EQ)?;
+    let cursor = seek(tree, &key, SeekConfig::Pred(Compare::EQ))?;
     res.push(cursor.deref());
     Some(res)
 }
@@ -348,9 +348,54 @@ impl<'a, P: Pager> Cursor<'a, P> {
     }
 }
 
+// // creates a new cursor
+// #[instrument(skip_all)]
+// fn prefix_seek<'a, P: Pager>(key: &Key, tree: &'a BTree<P>) -> Option<Cursor<'a, P>> {
+//     let mut cursor = Cursor::new(tree);
+//     let mut ptr = tree.get_root();
+
+//     while let Some(p) = ptr {
+//         let node = tree.decode(p);
+
+//         ptr = match node.as_tn().get_type() {
+//             NodeType::Node => {
+//                 let idx = node_lookup(node.as_tn(), &key, &Compare::LE)?; // navigating nodes
+//                 let ptr = node.as_tn().get_ptr(idx);
+
+//                 cursor.path.push(node);
+//                 cursor.pos.push(idx);
+
+//                 Some(ptr)
+//             }
+//             NodeType::Leaf => {
+//                 let idx = prefix_node_lookup(node.as_tn(), &key)?;
+//                 debug!(idx, "seek idx after lookup");
+
+//                 cursor.path.push(node);
+//                 cursor.pos.push(idx);
+
+//                 None
+//             }
+//         }
+//     }
+//     debug_if_env!("RUSQL_LOG_CURSOR", {
+//         debug!("creating cursor, pos: {:?}", cursor.pos);
+//     });
+//     if cursor.pos.is_empty() || cursor.path.is_empty() {
+//         return None;
+//     }
+//     // accounting for empty key edge case
+//     if cursor.deref().0.is_empty() {
+//         return None;
+//     }
+//     assert_eq!(cursor.pos.len(), cursor.path.len());
+
+//     Some(cursor)
+// }
+
 // creates a new cursor
 #[instrument(skip_all)]
-fn prefix_seek<'a, P: Pager>(key: &Key, tree: &'a BTree<P>) -> Option<Cursor<'a, P>> {
+fn seek<'a, P: Pager>(tree: &'a BTree<P>, key: &Key, flag: SeekConfig) -> Option<Cursor<'a, P>> {
     let mut cursor = Cursor::new(tree);
     let mut ptr = tree.get_root();
 
@@ -359,52 +404,7 @@ fn prefix_seek<'a, P: Pager>(key: &Key, tree: &'a BTree<P>) -> Option<Cursor<'a,
 
         ptr = match node.as_tn().get_type() {
             NodeType::Node => {
-                let idx = node_lookup(node.as_tn(), &key, &Compare::LE)?; // navigating nodes
-                let ptr = node.as_tn().get_ptr(idx);
-
-                cursor.path.push(node);
-                cursor.pos.push(idx);
-
-                Some(ptr)
-            }
-            NodeType::Leaf => {
-                let idx = prefix_node_lookup(node.as_tn(), &key)?;
-                debug!(idx, "seek idx after lookup");
-
-                cursor.path.push(node);
-                cursor.pos.push(idx);
-
-                None
-            }
-        }
-    }
-    debug_if_env!("RUSQL_LOG_CURSOR", {
-        debug!("creating cursor, pos: {:?}", cursor.pos);
-    });
-    if cursor.pos.is_empty() || cursor.path.is_empty() {
-        return None;
-    }
-    // accounting for empty key edge case
-    if cursor.deref().0.is_empty() {
-        return None;
-    }
-    assert_eq!(cursor.pos.len(), cursor.path.len());
-
-    Some(cursor)
-}
-
-// creates a new cursor
-#[instrument(skip_all)]
-fn seek<'a, P: Pager>(tree: &'a BTree<P>, key: &Key, flag: Compare) -> Option<Cursor<'a, P>> {
-    let mut cursor = Cursor::new(tree);
-    let mut ptr = tree.get_root();
-
-    while let Some(p) = ptr {
-        let node = tree.decode(p);
-
-        ptr = match node.as_tn().get_type() {
-            NodeType::Node => {
-                let idx = node_lookup(node.as_tn(), &key, &Compare::LE)?; // navigating nodes
+                let idx = node_lookup(node.as_tn(), &key, &SeekConfig::Pred(Compare::LE))?; // navigating nodes
                 let ptr = node.as_tn().get_ptr(idx);
 
                 cursor.path.push(node);
@@ -448,34 +448,52 @@ fn key_cmp(k1: &Key, k2: &Key, pred: Compare) -> bool {
     }
 }
 
-/// looks up idx of key which houses key as a prefix
-fn prefix_node_lookup(node: &TreeNode, key: &Key) -> Option<u16> {
-    if node.get_nkeys() == 0 {
-        return None;
-    }
+// /// looks up idx of key which houses key as a prefix
+// fn prefix_node_lookup(node: &TreeNode, key: &Key) -> Option<u16> {
+//     if node.get_nkeys() == 0 {
+//         return None;
+//     }
 
-    let idx = cmp_ge(node, key)?;
-    let cmp_key = node.get_key(idx).ok()?; // we just compared against it
-    let len = key.len();
+//     let idx = cmp_ge(node, key)?;
+//     let cmp_key = node.get_key(idx).ok()?; // we just compared against it
+//     let len = key.len();
 
-    if is_subkey(&key, &cmp_key) {
-        Some(idx)
-    } else {
-        None
-    }
-}
+//     if is_subkey(&key, &cmp_key) {
+//         Some(idx)
+//     } else {
+//         None
+//     }
+// }
 
-fn node_lookup(node: &TreeNode, key: &Key, flag: &Compare) -> Option<u16> {
+fn node_lookup(node: &TreeNode, key: &Key, flag: &SeekConfig) -> Option<u16> {
     if node.get_nkeys() == 0 {
         return None;
     }
     match flag {
-        Compare::LT => cmp_lt(node, key),
-        Compare::LE => cmp_le(node, key),
-        Compare::GT => cmp_gt(node, key),
-        Compare::GE => cmp_ge(node, key),
-        Compare::EQ => cmp_eq(node, key),
+        SeekConfig::Pred(p) => match p {
+            Compare::LT => cmp_lt(node, key),
+            Compare::LE => cmp_le(node, key),
+            Compare::GT => cmp_gt(node, key),
+            Compare::GE => cmp_ge(node, key),
+            Compare::EQ => cmp_eq(node, key),
+        },
+        SeekConfig::Prefix => {
+            let idx = cmp_ge(node, key)?;
+            let cmp_key = node.get_key(idx).ok()?; // we just compared against it
+            let len = key.len();
+
+            if is_subkey(&key, &cmp_key) {
+                Some(idx)
+            } else {
+                None
+            }
+        }
     }
+}
+
+enum SeekConfig {
+    Pred(Compare),
+    Prefix,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
@@ -737,7 +755,7 @@ mod test {
 
         let key = 1i64.into();
         let btree = tree.pager.tree.borrow();
-        let mut cursor = seek(&btree, &key, Compare::EQ).unwrap();
+        let mut cursor = seek(&btree, &key, SeekConfig::Pred(Compare::EQ)).unwrap();
 
         // Navigate through all elements using next()
         for i in 1i64..=10i64 {
@@ -763,7 +781,7 @@ mod test {
 
         let key = 10i64.into();
         let btree = tree.pager.tree.borrow();
-        let mut cursor = seek(&btree, &key, Compare::EQ).unwrap();
+        let mut cursor = seek(&btree, &key, SeekConfig::Pred(Compare::EQ)).unwrap();
 
         // Navigate backwards using prev()
         for i in (1i64..=10i64).rev() {
@@ -1022,27 +1040,27 @@ mod test {
 
         // Test EQ - deref should return the exact match
         let key = 5i64.into();
-        let cursor = seek(&btree, &key, Compare::EQ).unwrap();
+        let cursor = seek(&btree, &key, SeekConfig::Pred(Compare::EQ)).unwrap();
         let (k, _) = cursor.deref();
         assert_eq!(k.to_string(), "1 0 5");
 
         // Test GE - deref should return the exact match or next greater
-        let cursor = seek(&btree, &key, Compare::GE).unwrap();
+        let cursor = seek(&btree, &key, SeekConfig::Pred(Compare::GE)).unwrap();
         let (k, _) = cursor.deref();
         assert_eq!(k.to_string(), "1 0 5");
 
         // Test GT - deref should return the next value after key
-        let cursor = seek(&btree, &key, Compare::GT).unwrap();
+        let cursor = seek(&btree, &key, SeekConfig::Pred(Compare::GT)).unwrap();
         let (k, _) = cursor.deref();
         assert_eq!(k.to_string(), "1 0 6");
 
         // Test LE - deref should return the exact match or next smaller
-        let cursor = seek(&btree, &key, Compare::LE).unwrap();
+        let cursor = seek(&btree, &key, SeekConfig::Pred(Compare::LE)).unwrap();
         let (k, _) = cursor.deref();
         assert_eq!(k.to_string(), "1 0 5");
 
         // Test LT - deref should return the value before key
-        let cursor = seek(&btree, &key, Compare::LT).unwrap();
+        let cursor = seek(&btree, &key, SeekConfig::Pred(Compare::LT)).unwrap();
         let (k, _) = cursor.deref();
         assert_eq!(k.to_string(), "1 0 4");
 

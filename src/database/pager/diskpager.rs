@@ -265,13 +265,9 @@ impl DiskPager {
 
     /// triggers truncation logic once the freelist exceeds TRUNC_THRESHOLD entries
     pub fn cleanup_check(&self) -> Result<(), Error> {
-        let list: Vec<Pointer> = self
-            .freelist
-            .read()
-            .peek_ptr()
-            .ok_or(FLError::TruncateError(
-                "could not retrieve pointer from FL".to_string(),
-            ))?;
+        let list: Vec<Pointer> = self.freelist.read().peek_ptr().ok_or_else(|| {
+            FLError::TruncateError("could not retrieve pointer from FL".to_string())
+        })?;
 
         if list.len() > TRUNC_THRESHOLD {
             self.truncate(list)
@@ -297,11 +293,9 @@ impl DiskPager {
             Some(count) => {
                 for i in 0..count {
                     // removing items from freelist
-                    let ptr = self
-                        .freelist
-                        .write()
-                        .get()
-                        .ok_or(FLError::PopError("couldnt pop from freelist".to_string()))?;
+                    let ptr = self.freelist.write().get().ok_or_else(|| {
+                        FLError::PopError("couldnt pop from freelist".to_string())
+                    })?;
 
                     debug_assert_eq!(list[i as usize], ptr);
 

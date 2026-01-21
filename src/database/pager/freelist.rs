@@ -26,6 +26,7 @@ pub(crate) struct FreeList {
 
     cur_ver: u64, // reflects the current pager
     max_ver: u64, // version permitted to give out, oldest version in diskpager.ongoing
+    npages: u64,  // number of available pages
 }
 
 /*
@@ -48,6 +49,7 @@ pub(crate) struct FLConfig {
 
     pub cur_ver: u64,
     pub max_ver: u64,
+    pub npages: u64,
 }
 
 pub(crate) trait GC {
@@ -97,6 +99,7 @@ impl GC for FreeList {
 
         self.update_set_ptr(self.tail_page.unwrap(), ptr, version, idx);
         self.tail_seq += 1;
+        self.npages += 1;
 
         // allocating new node if the the node is full
         if seq_to_idx(self.tail_seq) == 0 {
@@ -141,6 +144,7 @@ impl GC for FreeList {
 
                     self.tail_seq = 0; // experimental
                     self.tail_seq += 1; // accounting for re-added head
+                    self.npages += 1;
                 }
                 _ => unreachable!(),
             }
@@ -191,6 +195,7 @@ impl GC for FreeList {
             tail_seq: self.tail_seq,
             cur_ver: self.cur_ver,
             max_ver: self.max_ver,
+            npages: self.npages,
         }
     }
 
@@ -250,6 +255,7 @@ impl FreeList {
             pager: pager,
             cur_ver: 0,
             max_ver: 0,
+            npages: 0,
         }
     }
 
@@ -284,6 +290,8 @@ impl FreeList {
         }
 
         self.head_seq += 1;
+        self.npages -= 1;
+
         debug!(
             "getting ptr {} from head at {}",
             ptr.0,

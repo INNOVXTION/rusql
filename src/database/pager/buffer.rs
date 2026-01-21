@@ -5,7 +5,7 @@ use std::{
 };
 
 use parking_lot::Mutex;
-use tracing::debug;
+use tracing::{debug, error};
 
 use crate::database::{
     pager::lru::LRU,
@@ -76,21 +76,27 @@ impl DiskBuffer {
         }
     }
 
-    fn evict_clean(&mut self) {
+    fn evict_clean(&mut self) -> u16 {
         let clean_node: Vec<Pointer> = self
             .hmap
             .iter()
             .filter_map(|e| if !e.1.dirty { Some(*e.0) } else { None })
             .collect();
 
+        let mut c = 0;
         for ptr in clean_node {
             self.delete(ptr);
+            c += 1;
         }
+        c
     }
 
     pub fn insert_clean(&mut self, ptr: Pointer, node: Node) {
         if self.hmap.len() >= DISKBUFFER_LIMIT {
-            self.evict_clean();
+            if self.evict_clean() == 0 {
+                error!("fatal error: couldnt evict a page from buffer");
+                panic!("this shouldnt be possible")
+            };
         };
 
         self.hmap.insert(

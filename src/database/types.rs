@@ -21,6 +21,7 @@ pub const MERGE_FACTOR: usize = PAGE_SIZE / 4;
 /// size of one page on disk
 pub const PAGE_SIZE: usize = 4096; // 4096 bytes
 pub const TRUNC_THRESHOLD: usize = 1000; // amount of free list entries which trigger a truncation call
+pub const LOAD_FACTOR: u8 = 50; // percentage value
 
 /// maximum size for nodes inside memory
 pub const NODE_SIZE: usize = PAGE_SIZE * 2;
@@ -30,6 +31,7 @@ pub const FREE_PAGE: u64 = 0; // sentinel value for pages that are free to be re
 
 pub const LRU_BUFFER_SIZE: usize = 10;
 pub const HISTORY_BUFFER_SIZE: usize = 10;
+pub const TBUFFER_CAP: u16 = 10;
 
 pub const U16_SIZE: usize = 2;
 
