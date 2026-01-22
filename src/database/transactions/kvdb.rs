@@ -83,7 +83,7 @@ impl Transaction for KVDB {
         self.pager.begin(db, kind)
     }
 
-    fn abort(&self, tx: TX) {
+    fn abort(&self, tx: TX) -> Result<CommitStatus> {
         self.pager.abort(tx)
     }
 

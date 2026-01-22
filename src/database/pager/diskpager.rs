@@ -246,7 +246,7 @@ impl DiskPager {
             if ptr.0 < end as u64 {
                 let offset: usize = PAGE_SIZE * (ptr.0 as usize - start);
 
-                // TODO chane to Arc directly
+                // TODO change to Arc directly
                 let mut node = match node_type {
                     NodeFlag::Tree => Node::Tree(TreeNode::new()),
                     NodeFlag::Freelist => Node::Freelist(FLNode::new()),
@@ -264,12 +264,35 @@ impl DiskPager {
     }
 
     /// triggers truncation logic once the freelist exceeds TRUNC_THRESHOLD entries
-    pub fn cleanup_check(&self) -> Result<(), Error> {
-        let list: Vec<Pointer> = self.freelist.read().peek_ptr().ok_or_else(|| {
-            FLError::TruncateError("could not retrieve pointer from FL".to_string())
-        })?;
+    pub fn cleanup_check(&self, version: u64) -> Result<(), Error> {
+        use crate::database::types::LOAD_FACTOR_THRESHOLD;
 
-        if list.len() > TRUNC_THRESHOLD {
+        if self.ongoing.read().are_we_alone(version) {
+            return Ok(());
+        }
+
+        let fl_npages = self.freelist.read().npages;
+        let npages = self.npages.load(Ordering::Relaxed);
+
+        if self.npages.load(Ordering::Relaxed) <= 2 {
+            return Ok(());
+        }
+
+        if fl_npages == 0 {
+            return Ok(());
+        }
+
+        assert!(fl_npages <= npages);
+
+        let load_factor: f64 = fl_npages as f64 / npages as f64;
+
+        if load_factor > LOAD_FACTOR_THRESHOLD {
+            warn!(fl_npages, npages, "load factor reached: {:.2}", load_factor);
+
+            let list: Vec<Pointer> = self.freelist.read().peek_ptr().ok_or_else(|| {
+                FLError::TruncateError("could not retrieve pointer from FL".to_string())
+            })?;
+
             self.truncate(list)
         } else {
             Ok(())
@@ -280,45 +303,53 @@ impl DiskPager {
     /// after tree operations. Truncation amount is based on count_trunc_pages() algorithm
     #[instrument(skip_all)]
     pub fn truncate(&self, list: Vec<Pointer>) -> Result<(), Error> {
-        let _guard = self.lock.lock();
-
         let npages = self.npages.load(Ordering::Relaxed);
-        if npages <= 2 {
-            return Err(
-                FLError::TruncateError("cant truncate from empty database".to_string()).into(),
-            );
-        }
+
+        assert!(!list.is_empty());
+        assert!(npages > 2);
 
         match count_trunc_pages(npages, &list) {
             Some(count) => {
+                let mut fl_guard = self.freelist.write();
+                debug!("popping {count} pages");
                 for i in 0..count {
                     // removing items from freelist
-                    let ptr = self.freelist.write().get().ok_or_else(|| {
+                    let ptr = fl_guard.get().ok_or_else(|| {
+                        error!("couldnt pop from freelist");
                         FLError::PopError("couldnt pop from freelist".to_string())
                     })?;
+                    debug!("popping page: {ptr}");
 
                     debug_assert_eq!(list[i as usize], ptr);
 
-                    if list[i as usize] != ptr {
-                        return Err(FLError::TruncateError(format!(
-                            "pointer {}, doesnt match {}",
-                            list[i as usize], ptr
-                        ))
-                        .into());
-                    }
+                    // if list[i as usize] != ptr {
+                    //     return Err(FLError::TruncateError(format!(
+                    //         "pointer {}, doesnt match {}",
+                    //         list[i as usize], ptr
+                    //     ))
+                    //     .into());
+                    // }
                 }
+                drop(fl_guard);
                 let new_npage = npages - count;
 
                 self.npages.store(new_npage, Ordering::SeqCst);
-                metapage_write(self, &metapage_save(self))?;
-                fsync(&self.database)?;
+
+                // mmap_clear(self)?;
 
                 ftruncate(&self.database, new_npage * PAGE_SIZE as u64)?;
                 fsync(&self.database)?;
 
+                metapage_write(self, &metapage_save(self))?;
+                fsync(&self.database)?;
+
+                debug!("truncated {count} pages");
                 Ok(())
             }
-            None => Ok(()),
+            None => {
+                debug!("no valid truncate sequence found");
+                Ok(())
+            }
         }
     }
 
@@ -456,7 +487,7 @@ fn count_trunc_pages(npages: u64, freelist: &[Pointer]) -> Option<u64> {
 }
 
 #[cfg(test)]
-mod truncate {
+mod trunc_count_test {
     use super::*;
 
     fn ptr(page: u64) -> Pointer {

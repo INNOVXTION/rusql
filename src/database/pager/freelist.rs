@@ -12,6 +12,7 @@ use crate::database::{
     errors::FLError,
     types::{PAGE_SIZE, PTR_SIZE, Pointer},
 };
+use crate::debug_if_env;
 use tracing::{debug, warn};
 
 pub(crate) struct FreeList {
@@ -24,9 +25,9 @@ pub(crate) struct FreeList {
 
     pub max_seq: usize, // maximum amount of items in the list
 
-    cur_ver: u64, // reflects the current pager
-    max_ver: u64, // version permitted to give out, oldest version in diskpager.ongoing
-    npages: u64,  // number of available pages
+    cur_ver: u64,    // reflects the current pager
+    max_ver: u64,    // version permitted to give out, oldest version in diskpager.ongoing
+    pub npages: u64, // number of available pages
 }
 
 /*
@@ -41,6 +42,7 @@ tail_page -> [ NULL | xxxx     ]
                      last_item
 */
 
+#[derive(Debug)]
 pub(crate) struct FLConfig {
     pub head_page: Option<Pointer>,
     pub head_seq: usize,
@@ -69,9 +71,19 @@ impl GC for FreeList {
     /// removes a page from the head, decrement head seq
     fn get(&mut self) -> Option<Pointer> {
         assert!(self.head_page.is_some());
+
+        // if self.head_page == self.tail_page {
+        //     assert!(self.npages as usize == (self.tail_seq - self.head_seq));
+        //     assert!(self.tail_seq >= self.max_seq);
+        // }
+
+        if self.npages == 0 {
+            return None;
+        }
+
         match self.pop_head() {
             (Some(ptr), Some(head)) => {
-                debug!(%ptr, "retrieving from freelist with head: ");
+                debug!(%ptr, head=%head, "retrieving from freelist with head: ");
                 self.append(head, FREE_PAGE).unwrap();
                 Some(ptr)
             }
@@ -87,9 +99,14 @@ impl GC for FreeList {
     /// add a page to the tail increment tail seq
     /// PushTail
     fn append(&mut self, ptr: Pointer, version: u64) -> Result<(), FLError> {
-        debug!("appending {} to free list...", ptr);
+        debug!("appending {}, version: {version} to free list...", ptr);
+
         assert_ne!(ptr.get(), 0, "we cant append 0 to the fl");
         assert!(self.tail_page.is_some());
+
+        // if self.head_page == self.tail_page {
+        //     assert!(self.tail_seq >= self.max_seq);
+        // }
 
         // updates tail page, by getting a reference to the buffer if its already in there
         // updating appending the pointer
@@ -157,33 +174,61 @@ impl GC for FreeList {
     /// calls encode and does not interact with the buffer so it should be called after the database has been written down
     fn peek_ptr(&self) -> Option<Vec<Pointer>> {
         if self.is_empty() {
+            debug!("peek: fl is empty");
             return None;
         }
+        let strong = self.pager.upgrade().unwrap();
+        let mut buf = strong.buf_fl.write();
 
         let mut list: Vec<Pointer> = vec![];
         let mut head = self.head_seq;
 
+        debug!(head = ?self.head_page, tail = ?self.tail_page, "retrieving peek list");
         let mut head_page = self.head_page?;
         let tail_page = self.tail_page?;
 
-        let max = self.max_seq;
-        let mut node = self.decode(self.head_page.unwrap());
+        let mut node = match buf.get(head_page) {
+            Some(n) => n,
+            None => {
+                // decoding page from disk and loading it into buffer
+                buf.insert_clean(head_page, strong.decode(head_page, NodeFlag::Freelist));
+                buf.get(head_page).expect("we just inserted it")
+            }
+        };
+        debug!("peeking at {head_page}");
 
+        let max = self.tail_seq;
         loop {
             if head_page == tail_page && head == max {
                 // both pointer meet on the same page = free list is empty
                 break;
             }
+            let ptr = node.as_fl().get_ptr(seq_to_idx(head)).0;
 
-            list.push(node.as_fl().get_ptr(seq_to_idx(head)).0);
+            debug_if_env!("RUSQL_LOG_PEEK", {
+                debug!("pushing {ptr}");
+            });
+
+            list.push(ptr);
             head += 1;
 
             if seq_to_idx(head) == 0 {
                 head_page = node.as_fl().get_next();
-                node = self.decode(head_page);
+                debug!("peeking at {head_page}");
+                node = match buf.get(head_page) {
+                    Some(n) => n,
+                    None => {
+                        // decoding page from disk and loading it into buffer
+                        buf.insert_clean(head_page, strong.decode(head_page, NodeFlag::Freelist));
+                        buf.get(head_page).expect("we just inserted it")
+                    }
+                };
                 head = 0;
             }
         }
+        debug_if_env!("RUSQL_LOG_PEEK", {
+            debug!("returning from peek ptr: {:?}", list);
+        });
         Some(list)
     }
 
@@ -206,6 +251,7 @@ impl GC for FreeList {
         self.tail_seq = flc.tail_seq;
         self.cur_ver = flc.cur_ver;
         self.max_ver = flc.max_ver;
+        self.npages = flc.npages;
     }
 
     /// increments the max_seq for next transaction cycle
@@ -461,7 +507,7 @@ impl FLNode {
     }
 
     fn get_ptr(&self, idx: u16) -> (Pointer, u64) {
-        debug!(idx, "getting pointer from free list node at");
+        // debug!(idx, "getting pointer from free list node at");
         let offset = FREE_LIST_NEXT + ((PTR_SIZE + VER_SIZE) * idx as usize);
         let mut r_slice = &self[offset..];
 

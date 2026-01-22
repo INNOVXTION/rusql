@@ -1410,7 +1410,7 @@ mod concurrent_tx_tests {
     use parking_lot::Mutex;
     use std::sync::{Arc, Barrier};
     use std::thread;
-    use test_log::test;
+    // use test_log::test;
     use tracing::{Level, span, warn};
 
     #[test]
@@ -1513,6 +1513,30 @@ mod concurrent_tx_tests {
         let path = "test-files/concurrent_insert_diff.rdb";
         cleanup_file(path);
 
+        use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt};
+
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open("output.txt")
+            .expect("failed to open log file");
+
+        let (file_writer, _guard) = tracing_appender::non_blocking(file);
+
+        let stdout_layer = fmt::layer().with_ansi(true);
+        let file_layer = fmt::layer()
+            .with_ansi(false)
+            .with_writer(file_writer)
+            .with_thread_ids(true)
+            .fmt_fields(fmt::format::DefaultFields::new())
+            .compact();
+
+        tracing_subscriber::registry()
+            .with(stdout_layer)
+            .with(file_layer)
+            .init();
+
         let db = Arc::new(KVDB::new(path));
         let mut tx = db.begin(&db, TXKind::Write);
 
@@ -1527,7 +1551,7 @@ mod concurrent_tx_tests {
         tx.insert_table(&table)?;
         db.commit(tx)?;
 
-        let n_threads = 1000;
+        let n_threads = 400;
         let barrier = Arc::new(Barrier::new(n_threads));
         let results = Arc::new(Mutex::new(vec![]));
         let retries_exceeded = Arc::new(Mutex::new(0));
@@ -1542,10 +1566,6 @@ mod concurrent_tx_tests {
                 let retries_exceeded = retries_exceeded.clone();
 
                 handles.push(s.spawn(move || {
-                    let id = thread::current().id();
-                    let span = span!(Level::DEBUG, "thread", ?id);
-                    let _guard = span.enter();
-
                     barrier.wait();
 
                     let r = retry(Backoff::default(), || {

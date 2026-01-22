@@ -37,6 +37,7 @@ impl Drop for Chunk {
     fn drop(&mut self) {
         // SAFETY: non null, and page aligned pointer from mmap()
         unsafe {
+            debug!("dropping mmap at: {:?}", self.data);
             if let Err(e) = rustix::mm::munmap(self.data as *mut c_void, self.len) {
                 error!("error when dropping with mumap {}", e);
             }
@@ -106,5 +107,13 @@ pub fn mmap_extend(db: &DiskPager, size: usize) -> Result<(), PagerError> {
     mmap_ref.total += alloc;
     mmap_ref.chunks.push(chunk);
 
+    Ok(())
+}
+
+pub fn mmap_clear(db: &DiskPager) -> Result<(), PagerError> {
+    debug!("clearing mmap...");
+    let mut mmap = db.mmap.write();
+    mmap.chunks.clear();
+    mmap.total = 0;
     Ok(())
 }

@@ -12,6 +12,7 @@ use super::metapage::*;
 use crate::database::BTree;
 use crate::database::btree::Tree;
 use crate::database::errors::{Error, PagerError, Result, TXError};
+use crate::database::pager::diskpager::PageOrigin;
 use crate::database::pager::freelist::GC;
 use crate::database::pager::metapage::*;
 use crate::database::pager::mmap::mmap_extend;
@@ -32,12 +33,14 @@ pub struct TXHistory {
 
 pub trait Transaction {
     fn begin(&self, db: &Arc<KVDB>, kind: TXKind) -> TX;
-    fn abort(&self, tx: TX);
+    fn abort(&self, tx: TX) -> Result<CommitStatus>;
     fn commit(&self, tx: TX) -> Result<CommitStatus>;
 }
 
 impl Transaction for DiskPager {
     fn begin(&self, db: &Arc<KVDB>, kind: TXKind) -> TX {
+        let _guard = self.lock.lock();
+
         let version = self.version.load(Ordering::Acquire);
         let txdb = Arc::new(TXDB::new(db, kind));
         let weak = Arc::downgrade(&txdb);
@@ -60,7 +63,36 @@ impl Transaction for DiskPager {
         }
     }
 
-    fn abort(&self, tx: TX) {}
+    fn abort(&self, tx: TX) -> Result<CommitStatus> {
+        debug!("aborting...");
+        // a previous transaction failed
+        if tx.version > self.version.load(Ordering::Acquire) {
+            return Err(
+                TXError::CommitError("database was rollbacked, aborting TX".to_string()).into(),
+            );
+        }
+
+        let tx_buf = tx.db.tx_buf.as_ref().unwrap().borrow_mut();
+        let mut fl_guard = self.freelist.write();
+
+        // adding freelist pages back to the
+        for ptr in tx_buf
+            .write_map
+            .iter()
+            .filter(|e| e.1.origin == PageOrigin::Freelist)
+        {
+            assert_ne!(ptr.0.get(), 0, "we cant add the mp to the freelist");
+            fl_guard.append(*ptr.0, tx.version)?;
+        }
+
+        self.ongoing.write().pop(tx.version);
+        if self.check_conflict(&tx) {
+            Err(TXError::CommitError("write conflict detected".to_string()).into())
+        } else {
+            // retry on new version
+            Ok(CommitStatus::StaleVersion)
+        }
+    }
 
     fn commit(&self, tx: TX) -> Result<CommitStatus> {
         debug!(tx.version, "committing: ");
@@ -79,17 +111,10 @@ impl Transaction for DiskPager {
         let _guard = self.lock.lock();
 
         // was there a new version published in the meantime?
-        if self.version.load(Ordering::Acquire) == tx.version {
-            return self.commit_start(tx).map(|_| CommitStatus::Success);
-        }
-
-        if self.check_conflict(&tx) {
-            self.ongoing.write().pop(tx.version);
-            Err(TXError::CommitError("write conflict detected".to_string()).into())
+        if self.version.load(Ordering::Acquire) != tx.version {
+            self.abort(tx)
         } else {
-            // retry on new version
-            self.ongoing.write().pop(tx.version);
-            Ok(CommitStatus::StaleVersion)
+            self.commit_start(tx).map(|_| CommitStatus::Success)
         }
     }
 }
@@ -128,7 +153,7 @@ impl DiskPager {
 
         // making sure the meta page is a known good state after a potential write error
         if self.failed.load(R) {
-            debug!("failed update detected, restoring meta page...");
+            warn!("failed update detected, restoring meta page...");
 
             metapage_write(self, recov_page).expect("meta page recovery write error");
             fsync(&self.database).expect("fsync metapage for restoration failed");
@@ -146,6 +171,7 @@ impl DiskPager {
             self.buf_shared.write().clear();
             self.buf_fl.write().erase();
 
+            self.ongoing.write().pop(tx.version);
             self.failed.store(true, R);
             return Err(e);
         }
@@ -166,6 +192,9 @@ impl DiskPager {
         self.flush_tx(&tx)?;
         self.flush_fl(&tx)?;
         fsync(&self.database)?;
+
+        // do we need to truncate?
+        self.cleanup_check(tx.version)?;
 
         // write currently loaded metapage to disk
         debug!("writing mp to disk");
@@ -276,7 +305,7 @@ impl DiskPager {
         // freelist write
         for pair in fl_buf.to_dirty_iter() {
             debug!(
-                "writing pager buffer {:<10} at {:<5}",
+                "writing freelist buffer {:<10} at {:<5}",
                 pair.1.get_type(),
                 pair.0
             );

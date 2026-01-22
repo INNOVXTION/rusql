@@ -95,7 +95,7 @@ pub fn metapage_save(pager: &DiskPager) -> MetaPage {
     let mut data = MetaPage::new();
 
     debug!(
-        "sig: {}\nroot: {:?}\nnpage: {}\nhead page: {:?}\nhead seq: {}\ntail page: {:?}\ntail seq: {}\nmax_seq: {}\nversion: {}\n",
+        "sig: {}\nroot: {:?}\nnpage: {}\nhead page: {:?}\nhead seq: {}\ntail page: {:?}\ntail seq: {}\nmax_seq: {}\nversion: {}\nfl_npages: {}\n",
         DB_SIG,
         pager.tree.read(),
         npages,
@@ -105,6 +105,7 @@ pub fn metapage_save(pager: &DiskPager) -> MetaPage {
         flc.tail_seq,
         fl.max_seq,
         pager.version.load(Ordering::Relaxed),
+        flc.npages,
     );
 
     use MpField as M;
@@ -129,7 +130,6 @@ pub fn metapage_save(pager: &DiskPager) -> MetaPage {
 ///
 /// panics when called without initialized mmap
 pub fn metapage_load(pager: &DiskPager, meta: &MetaPage) {
-    debug!("loading metapage");
     let mut t = pager.tree.write();
 
     match meta.read_ptr(MpField::RootPtr) {
@@ -156,6 +156,13 @@ pub fn metapage_load(pager: &DiskPager, meta: &MetaPage) {
         cur_ver: meta.read_ptr(MpField::Version).get(),
         npages: meta.read_ptr(MpField::Nflpages).get(),
     };
+
+    debug!("loading metapage:");
+    debug!(
+        version = pager.version.load(Ordering::Relaxed),
+        npages = pager.npages.load(Ordering::Relaxed)
+    );
+    debug!(?flc);
 
     pager.freelist.write().set_config(&flc);
 }

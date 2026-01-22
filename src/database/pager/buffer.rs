@@ -244,6 +244,15 @@ impl OngoingTX {
         self.debug_ongoing();
         r
     }
+
+    pub fn are_we_alone(&self, version: u64) -> bool {
+        if let Some(n) = self.map.get(&version) {
+            if *n == 1 {
+                return true;
+            }
+        }
+        false
+    }
 }
 
 #[cfg(test)]
