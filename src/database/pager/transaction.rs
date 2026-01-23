@@ -55,6 +55,7 @@ impl Transaction for DiskPager {
             tree: BTree {
                 root_ptr,
                 pager: weak,
+                len: 0,
             },
             version,
             kind,
@@ -67,6 +68,7 @@ impl Transaction for DiskPager {
         debug!("aborting...");
         // a previous transaction failed
         if tx.version > self.version.load(Ordering::Acquire) {
+            // TODO: check history to write anyways
             return Err(
                 TXError::CommitError("database was rollbacked, aborting TX".to_string()).into(),
             );

@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use parking_lot::{Mutex, RawRwLock, RwLock, RwLockWriteGuard};
 use parking_lot::{MutexGuard, ReentrantMutex};
 use rustix::fs::{fstat, fsync, ftruncate};
+use rustix::mm::msync;
 use tracing::{debug, error, info, instrument, warn};
 
 use crate::create_file_sync;
@@ -267,8 +268,11 @@ impl DiskPager {
     pub fn cleanup_check(&self, version: u64) -> Result<(), Error> {
         use crate::database::types::LOAD_FACTOR_THRESHOLD;
 
-        if self.ongoing.read().are_we_alone(version) {
-            return Ok(());
+        // we truncate when we are the oldest version, and the only tx on that version
+        if let Some((v, a)) = self.ongoing.write().get_oldest_version() {
+            if v != version || a != 1 {
+                return Ok(());
+            }
         }
 
         let fl_npages = self.freelist.read().npages;
@@ -333,13 +337,11 @@ impl DiskPager {
                 drop(fl_guard);
                 let new_npage = npages - count;
 
-                self.npages.store(new_npage, Ordering::SeqCst);
-
                 // mmap_clear(self)?;
-
                 ftruncate(&self.database, new_npage * PAGE_SIZE as u64)?;
                 fsync(&self.database)?;
 
+                self.npages.store(new_npage, Ordering::SeqCst);
                 metapage_write(self, &metapage_save(self))?;
                 fsync(&self.database)?;
 
@@ -375,7 +377,7 @@ impl DiskPager {
         assert!(node.fits_page());
 
         let max_ver = match self.ongoing.write().get_oldest_version() {
-            Some(n) => n,
+            Some(n) => n.0,
             None => self.version.load(Ordering::Relaxed),
         };
         let mut fl_ref = self.freelist.write();
@@ -760,5 +762,39 @@ mod trunc_count_test {
         let list = vec![ptr(999), ptr(998)];
         let result = count_trunc_pages(1000, &list);
         assert_eq!(result, Some(2));
+    }
+}
+
+#[cfg(test)]
+mod truncate {
+    use crate::database::{
+        helper::cleanup_file,
+        pager::{freelist, transaction::Transaction},
+    };
+
+    use super::*;
+    use rustix::io::{pwrite, pwritev2};
+    use test_log::test;
+
+    #[test]
+    fn truncate_file() {
+        let path = "test-files/truncate.rdb";
+        cleanup_file(path);
+        let pager = DiskPager::open(path).unwrap();
+        pager.npages.store(100, Ordering::Relaxed);
+        let empty_node = TreeNode::new();
+        let _ = pwrite(&pager.database, &empty_node, 100 * PAGE_SIZE as u64);
+
+        let mut fl_guard = pager.freelist.write();
+        for i in 2..=100 {
+            fl_guard.append(Pointer(i), 0).unwrap();
+        }
+        fl_guard.set_max_seq();
+        drop(fl_guard);
+
+        pager.cleanup_check(0).unwrap();
+        let file_size = fstat(&pager.database).unwrap().st_size;
+        assert_eq!(file_size as usize, PAGE_SIZE * 2);
+        cleanup_file(path);
     }
 }

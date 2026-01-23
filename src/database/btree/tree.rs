@@ -21,6 +21,7 @@ use crate::database::{
 pub(crate) struct BTree<P: Pager> {
     pub root_ptr: Option<Pointer>,
     pub pager: Weak<P>,
+    pub len: u64,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -104,6 +105,7 @@ impl<P: Pager> Tree for BTree<P> {
                 self.root_ptr = Some(self.encode(new_root));
 
                 res.added = true;
+                self.len += 1;
                 return Ok(res);
             }
         };
@@ -112,6 +114,10 @@ impl<P: Pager> Tree for BTree<P> {
         let updated_root = self
             .tree_insert(root.as_tn(), key, val, flag, &mut res)
             .ok_or_else(|| Error::InsertError("couldnt fulfill set request".to_string()))?;
+
+        if res.added {
+            self.len += 1;
+        }
 
         let mut split = updated_root.split()?;
 
@@ -165,8 +171,13 @@ impl<P: Pager> Tree for BTree<P> {
             None => return Ok(res),
         };
 
+        if res.deleted {
+            self.len -= 1;
+        }
+
         self.dealloc(root_ptr);
 
+        let nkeys = updated.get_nkeys();
         match updated.get_nkeys() {
             // check if tree needs to shrink in height
             1 if updated.get_type() == NodeType::Node => {
@@ -175,18 +186,24 @@ impl<P: Pager> Tree for BTree<P> {
                     updated.get_type(),
                     updated.get_nkeys()
                 );
-                self.root_ptr = Some(updated.get_ptr(0));
+                if self.len == 0 {
+                    debug!("tree is now empty!");
+                    self.root_ptr = None;
+                } else {
+                    self.root_ptr = Some(updated.get_ptr(0));
+                }
             }
             // delete tree if node is empty
-            0 => {
+            1 if self.len == 0 => {
                 debug!("tree is now empty!");
                 self.root_ptr = None;
             }
             _ => {
                 debug!(
-                    "root updated to: {:?} nkeys: {}",
+                    "root updated to: {:?}, nkeys: {}, len: {}",
                     updated.get_type(),
-                    updated.get_nkeys()
+                    updated.get_nkeys(),
+                    self.len
                 );
                 self.root_ptr = Some(self.encode(updated));
             }
@@ -221,6 +238,7 @@ impl<P: Pager> BTree<P> {
         BTree {
             root_ptr: None,
             pager: pager,
+            len: 0,
         }
     }
     // callbacks
@@ -578,14 +596,7 @@ mod test {
             tree.delete(format!("{i}").into()).unwrap()
         }
         let t_ref = tree.pager.tree.borrow();
-        assert_eq!(
-            t_ref.decode(t_ref.get_root().unwrap()).as_tn().get_type(),
-            NodeType::Leaf
-        );
-        assert_eq!(
-            t_ref.decode(t_ref.get_root().unwrap()).as_tn().get_nkeys(),
-            1
-        )
+        assert!(t_ref.root_ptr.is_none());
     }
 
     #[test]
@@ -600,14 +611,7 @@ mod test {
             tree.delete(format!("{i}").into()).unwrap()
         }
         let t_ref = tree.pager.tree.borrow();
-        assert_eq!(
-            t_ref.decode(t_ref.get_root().unwrap()).as_tn().get_type(),
-            NodeType::Leaf
-        );
-        assert_eq!(
-            t_ref.decode(t_ref.get_root().unwrap()).as_tn().get_nkeys(),
-            1
-        )
+        assert!(t_ref.root_ptr.is_none());
     }
 
     #[test]
@@ -622,14 +626,7 @@ mod test {
             tree.delete(format!("{i}").into()).unwrap()
         }
         let t_ref = tree.pager.tree.borrow();
-        assert_eq!(
-            t_ref.decode(t_ref.get_root().unwrap()).as_tn().get_type(),
-            NodeType::Leaf
-        );
-        assert_eq!(
-            t_ref.decode(t_ref.get_root().unwrap()).as_tn().get_nkeys(),
-            1
-        );
+        assert!(t_ref.root_ptr.is_none());
     }
 
     #[test]
@@ -645,7 +642,6 @@ mod test {
         for i in (1..=400u16).rev() {
             tree.delete(format!("{i}").into()).unwrap()
         }
-        tree.delete(Key::new_empty()).unwrap();
         let t_ref = tree.pager.tree.borrow();
         assert_eq!(t_ref.get_root(), None);
     }
