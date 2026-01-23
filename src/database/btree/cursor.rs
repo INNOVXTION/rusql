@@ -72,16 +72,23 @@ impl ScanMode {
             );
         }
         let tid = key.get_tid();
-        let cursor = seek(tree, &key, SeekConfig::Prefix).ok_or_else(|| {
-            ScanError::ScanCreateError("couldnt create prefix cursor".to_string())
-        })?;
 
-        Ok(PrefixScanIter {
-            cursor,
-            key,
-            tid,
-            finished: false,
-        })
+        if let Some(cursor) = seek(tree, &key, SeekConfig::Prefix) {
+            Ok(PrefixScanIter {
+                cursor,
+                key,
+                tid,
+                finished: false,
+            })
+        } else {
+            // we return an empty iterator
+            Ok(PrefixScanIter {
+                cursor: Cursor::new(tree),
+                key,
+                tid,
+                finished: true,
+            })
+        }
     }
 
     /// single scan, basically tree_get() over the cursor API

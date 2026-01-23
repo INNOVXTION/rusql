@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::os::fd::OwnedFd;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use parking_lot::{Mutex, RawRwLock, RwLock, RwLockWriteGuard};
 use parking_lot::{MutexGuard, ReentrantMutex};
@@ -67,6 +67,7 @@ pub(crate) struct DiskPager {
     pub npages: AtomicU64,
     pub failed: AtomicBool,
     pub tree: RwLock<Option<Pointer>>, // root pointer
+    pub tree_len: AtomicUsize,
 
     pub version: AtomicU64,
     pub ongoing: RwLock<OngoingTX>,
@@ -187,6 +188,7 @@ impl DiskPager {
             }),
             npages: 0.into(),
             tree: RwLock::new(None),
+            tree_len: 0.into(),
             freelist: RwLock::new(FreeList::new(w.clone())),
             buf_fl: RwLock::new(DiskBuffer::new()),
             version: 1.into(),
@@ -292,12 +294,13 @@ impl DiskPager {
 
         if load_factor > LOAD_FACTOR_THRESHOLD {
             warn!(fl_npages, npages, "load factor reached: {:.2}", load_factor);
-
-            let list: Vec<Pointer> = self.freelist.read().peek_ptr().ok_or_else(|| {
-                FLError::TruncateError("could not retrieve pointer from FL".to_string())
-            })?;
-
-            self.truncate(list)
+            let list = self.freelist.read().peek_ptr();
+            if let Some(list) = list {
+                self.truncate(list)
+            } else {
+                warn!("couldnt retrieve list for truncation");
+                Ok(())
+            }
         } else {
             Ok(())
         }
@@ -315,16 +318,19 @@ impl DiskPager {
         match count_trunc_pages(npages, &list) {
             Some(count) => {
                 let mut fl_guard = self.freelist.write();
-                debug!("popping {count} pages");
+                debug!("attempting to pop {count} pages...");
+                let mut popped = 0;
                 for i in 0..count {
                     // removing items from freelist
-                    let ptr = fl_guard.get().ok_or_else(|| {
-                        error!("couldnt pop from freelist");
-                        FLError::PopError("couldnt pop from freelist".to_string())
-                    })?;
-                    debug!("popping page: {ptr}");
-
-                    debug_assert_eq!(list[i as usize], ptr);
+                    let ptr = fl_guard.get();
+                    if let Some(p) = ptr {
+                        popped += 1;
+                        debug!("popped page: {}", p);
+                        debug_assert_eq!(list[i as usize], p);
+                    } else {
+                        warn!("couldnt pop from freelist");
+                        break;
+                    }
 
                     // if list[i as usize] != ptr {
                     //     return Err(FLError::TruncateError(format!(
@@ -335,7 +341,7 @@ impl DiskPager {
                     // }
                 }
                 drop(fl_guard);
-                let new_npage = npages - count;
+                let new_npage = npages - popped;
 
                 // mmap_clear(self)?;
                 ftruncate(&self.database, new_npage * PAGE_SIZE as u64)?;

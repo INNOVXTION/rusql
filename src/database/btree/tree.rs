@@ -21,7 +21,7 @@ use crate::database::{
 pub(crate) struct BTree<P: Pager> {
     pub root_ptr: Option<Pointer>,
     pub pager: Weak<P>,
-    pub len: u64,
+    pub len: usize,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -154,7 +154,7 @@ impl<P: Pager> Tree for BTree<P> {
 
     #[instrument(name = "tree delete", skip_all)]
     fn delete(&mut self, key: Key) -> Result<DeleteResponse> {
-        info!("deleting kv: {key}",);
+        info!("deleting kv: {key}, len: {}", self.len);
         let mut res = DeleteResponse::default();
 
         let root_ptr = match self.root_ptr {
@@ -176,6 +176,11 @@ impl<P: Pager> Tree for BTree<P> {
         }
 
         self.dealloc(root_ptr);
+        if self.len == 0 {
+            debug!("tree is now empty!");
+            self.root_ptr = None;
+            return Ok(res);
+        }
 
         let nkeys = updated.get_nkeys();
         match updated.get_nkeys() {
@@ -186,17 +191,7 @@ impl<P: Pager> Tree for BTree<P> {
                     updated.get_type(),
                     updated.get_nkeys()
                 );
-                if self.len == 0 {
-                    debug!("tree is now empty!");
-                    self.root_ptr = None;
-                } else {
-                    self.root_ptr = Some(updated.get_ptr(0));
-                }
-            }
-            // delete tree if node is empty
-            1 if self.len == 0 => {
-                debug!("tree is now empty!");
-                self.root_ptr = None;
+                self.root_ptr = Some(updated.get_ptr(0));
             }
             _ => {
                 debug!(
@@ -258,6 +253,11 @@ impl<P: Pager> BTree<P> {
         let strong = self.pager.upgrade().expect("tree callback dealloc failed");
         debug!("requesting dealloc: {ptr}");
         strong.dealloc(ptr);
+    }
+
+    // returns the amount of key value pairs in leaf nodes
+    pub fn len(&self) -> usize {
+        self.len
     }
 
     /// recursive insertion, node = current node, returns updated node
@@ -557,6 +557,7 @@ mod test {
         assert_eq!(tree.get("150".into()).unwrap(), "value".into());
         assert_eq!(tree.get("170".into()).unwrap(), "value".into());
         assert_eq!(tree.get("200".into()).unwrap(), "value".into());
+        assert_eq!(t_ref.len, 200);
     }
 
     #[test]
@@ -579,6 +580,7 @@ mod test {
         assert_eq!(tree.get("200".into()).unwrap(), "value".into());
         assert_eq!(tree.get("300".into()).unwrap(), "value".into());
         assert_eq!(tree.get("400".into()).unwrap(), "value".into());
+        assert_eq!(t_ref.len, 400);
     }
 
     #[test]
@@ -661,6 +663,7 @@ mod test {
                 NodeType::Node
             );
         }
+        assert_eq!(tree.pager.tree.borrow().len, 1000);
         for i in 1u16..=1000u16 {
             assert_eq!(tree.get(format!("{i}").into()).unwrap(), "value".into())
         }

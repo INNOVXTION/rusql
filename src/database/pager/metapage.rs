@@ -22,11 +22,12 @@ use crate::database::{
 // new
 // | sig | root_ptr | page_used | head_page | head_seq | tail_page | tail_seq | version |
 // | 16B |    8B    |     8B    |     8B    |    8B    |     8B    |    8B    |    8B   |
-// | nfl_pages |
-// |    8B     |
+//
+// | nfl_pages |  tree_len  |
+// |    8B     |     8B     |
 
 pub const DB_SIG: &'static str = "BuildYourOwnDB06";
-pub const METAPAGE_SIZE: usize = 16 + (8 * 8); // sig plus 6 eight byte values
+pub const METAPAGE_SIZE: usize = 16 + (8 * 9); // sig plus 6 eight byte values
 pub const SIG_SIZE: usize = 16;
 
 // offsets
@@ -40,6 +41,7 @@ enum MpField {
     TailSeq = 16 + (8 * 5),
     Version = 16 + (8 * 6),
     Nflpages = 16 + (8 * 7),
+    Treelen = 16 + (8 * 8),
 }
 
 pub(crate) struct MetaPage(Box<[u8; METAPAGE_SIZE]>);
@@ -95,9 +97,10 @@ pub fn metapage_save(pager: &DiskPager) -> MetaPage {
     let mut data = MetaPage::new();
 
     debug!(
-        "sig: {}\nroot: {:?}\nnpage: {}\nhead page: {:?}\nhead seq: {}\ntail page: {:?}\ntail seq: {}\nmax_seq: {}\nversion: {}\nfl_npages: {}\n",
+        "sig: {}\nroot: {:?}\ntree_len: {}\nnpage: {}\nhead page: {:?}\nhead seq: {}\ntail page: {:?}\ntail seq: {}\nmax_seq: {}\nversion: {}\nfl_npages: {}\n",
         DB_SIG,
         pager.tree.read(),
+        pager.tree_len.load(Ordering::Relaxed),
         npages,
         flc.head_page,
         flc.head_seq,
@@ -111,6 +114,10 @@ pub fn metapage_save(pager: &DiskPager) -> MetaPage {
     use MpField as M;
     data.set_sig(DB_SIG);
     data.set_ptr(M::RootPtr, *pager.tree.read());
+    data.set_ptr(
+        M::Treelen,
+        Some(pager.tree_len.load(Ordering::Relaxed).into()),
+    );
     data.set_ptr(M::Npages, Some(npages.into()));
 
     data.set_ptr(M::HeadPage, flc.head_page);
@@ -144,6 +151,11 @@ pub fn metapage_load(pager: &DiskPager, meta: &MetaPage) {
     pager
         .npages
         .store(meta.read_ptr(MpField::Npages).get(), Ordering::Relaxed);
+
+    pager.tree_len.store(
+        meta.read_ptr(MpField::Treelen).get() as usize,
+        Ordering::Relaxed,
+    );
 
     let flc = FLConfig {
         head_page: Some(meta.read_ptr(MpField::HeadPage)),

@@ -457,7 +457,7 @@ impl FreeList {
         buf.set_dirty(&fl);
     }
 
-    fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         if self.head_page != self.tail_page {
             return false;
         }

@@ -55,7 +55,7 @@ impl Transaction for DiskPager {
             tree: BTree {
                 root_ptr,
                 pager: weak,
-                len: 0,
+                len: self.tree_len.load(Ordering::Acquire),
             },
             version,
             kind,
@@ -104,7 +104,7 @@ impl Transaction for DiskPager {
         }
 
         // did the TX write anything?
-        if tx.db.tx_buf.as_ref().unwrap().borrow().write_map.len() == 0 {
+        if tx.key_range.recorded.is_empty() {
             warn!("no write happened");
             self.ongoing.write().pop(tx.version);
             return Err(TXError::EmptyWriteError.into());
@@ -220,7 +220,6 @@ impl DiskPager {
         let pager_version = self.version.load(Ordering::Acquire);
 
         assert!(npages != 0);
-        assert!(nwrites != 0);
         assert_eq!(tx.version, pager_version);
 
         // extend the mmap if needed
@@ -269,6 +268,7 @@ impl DiskPager {
 
         // flipping over pager data
         *self.tree.write() = tx.tree.get_root();
+        self.tree_len.store(tx.tree.len, Ordering::Release);
         self.npages
             .store(npages + tx_buf.nappend as u64, Ordering::Release);
 

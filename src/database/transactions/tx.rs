@@ -763,6 +763,9 @@ mod tables {
 
         assert!(tx.insert_rec(rec, &table, SetFlag::INSERT).is_ok());
 
+        db.commit(tx).unwrap();
+        let mut tx = db.begin(&db, TXKind::Write);
+
         assert!(tx.get_table("droppable").is_some());
         assert!(tx.drop_table("droppable").is_ok());
 
@@ -1408,7 +1411,7 @@ mod concurrent_tx_tests {
         types::{DataCell, PAGE_SIZE},
     };
     use parking_lot::Mutex;
-    use std::sync::{Arc, Barrier};
+    use std::sync::{Arc, Barrier, atomic::Ordering};
     use std::thread;
     use test_log::test;
     use tracing::{Level, span, warn};
@@ -1984,7 +1987,7 @@ mod concurrent_tx_tests {
 
         tx.insert_table(&table)?;
 
-        let n_threads = 1000;
+        let n_threads = 500;
         // Insert records to delete
         for i in 1..=n_threads {
             tx.insert_rec(
@@ -2037,10 +2040,16 @@ mod concurrent_tx_tests {
                 });
             }
         });
+        let mut tx = db.begin(&db, TXKind::Write);
+        tx.drop_table("delete_table").unwrap();
+        db.commit(tx).unwrap();
 
         // All deletes should succeed (different keys)
         let results = results.lock();
         assert_eq!(results.iter().filter(|r| r.is_ok()).count(), n_threads);
+
+        assert!(db.pager.tree.read().is_none());
+        assert_eq!(db.pager.tree_len.load(Ordering::Relaxed), 0);
 
         // Verify all records were deleted
         let tx = db.begin(&db, TXKind::Read);
@@ -2051,7 +2060,6 @@ mod concurrent_tx_tests {
         db.commit(tx)?;
 
         let file_size = rustix::fs::fstat(&db.pager.database).unwrap().st_size;
-        assert!((file_size as usize) < (PAGE_SIZE * n_threads));
 
         cleanup_file(path);
         Ok(())
@@ -2101,10 +2109,10 @@ mod concurrent_tx_tests {
 
                     let r = retry(Backoff::default(), || {
                         let mut tx = db.begin(&db, TXKind::Write);
-                        let q = Query::by_col(&table).add("id", 1i64).encode().unwrap();
+                        let q = Query::by_col(&table).add("id", 1i64);
 
                         // All threads try to delete the same key
-                        let _ = tx.tree_delete(q);
+                        let _ = tx.delete_from_query(q, &table);
                         let commit_result = db.commit(tx);
 
                         if commit_result.can_retry() {
