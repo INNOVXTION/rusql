@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::fmt::Write;
 
 use tracing::{debug, error};
+use tracing_subscriber::registry::Data;
 
 use crate::database::codec::*;
 use crate::database::tables::tables::{IdxKind, Index};
@@ -32,7 +33,7 @@ impl Record {
         self
     }
 
-    /// encodes a record into the necessary key value pairs to fulfil all indices of a given table schema
+    /// encodes a record into the necessary key value pairs to fulfill all indices of a given table
     pub fn encode(self, schema: &Table) -> Result<impl Iterator<Item = (Key, Value)>> {
         debug!(data=?self.data, "encoding");
         if schema.cols.len() != self.data.len() {
@@ -45,7 +46,7 @@ impl Record {
         // validation
         for (i, cell) in self.data.iter().enumerate() {
             let cell_type = match cell {
-                DataCell::Str(_) => TypeCol::BYTES,
+                DataCell::Str(s) => TypeCol::BYTES,
                 DataCell::Int(_) => TypeCol::INTEGER,
             };
             if schema.cols[i].data_type != cell_type {
@@ -56,7 +57,6 @@ impl Record {
             }
         }
 
-        // vecs of indicies
         let mut pkey_cells: Vec<&DataCell> = vec![];
         let mut key_cells: Vec<&DataCell>;
         let mut val_cells: Vec<&DataCell>;
@@ -213,8 +213,7 @@ impl<'a> QueryCol<'a> {
     /// will error if keys are missing or the data types don't match!
     pub fn encode(self) -> Result<Key> {
         let schema = self.schema;
-        let index = self
-            .find_index()
+        let index = find_index(&self.data, self.schema)
             .ok_or_else(|| TableError::QueryError("Index couldnt be found".to_string()))?;
 
         // maintaining order
@@ -236,66 +235,62 @@ impl<'a> QueryCol<'a> {
 
         Ok(k)
     }
+}
 
-    /// finds the matching index for the provided col/value pairs
-    ///
-    /// validates data types
-    fn find_index(&self) -> Option<&Index> {
-        let len = self.data.len();
-        if len == 0 {
-            return None;
-        }
-
-        // mapping the data to column indices
-        let col_idx: Vec<usize> = self
-            .data
-            .iter()
-            .filter_map(|e| self.schema.col_exists(e.0))
-            .collect();
-
-        // columns dont match schema
-        if col_idx.len() != len {
-            error!(
-                data=?self.data,
-                schema_cols=?self.schema.cols,
-                ?col_idx,
-                "columns dont match provided query"
-            );
-            return None;
-        }
-
-        let mut idx = None;
-        let mut count = 0;
-
-        // finding matching index by col amount
-        for e in self.schema.indices.iter() {
-            if e.columns.len() == len && e.columns.iter().all(|e| col_idx.contains(e)) {
-                idx = Some(e);
-                count += 1;
-            }
-        }
-
-        match count {
-            n if n == 0 => {
-                error!(data=?self.data, "no matching index found");
-                return None;
-            }
-            n if n > 1 => {
-                error!(data=?self.data, matches=count, "multiple matching indices found");
-                return None;
-            }
-            _ => (),
-        }
-
-        // validating if index cols match the data type
-        if !self.data.iter().all(|e| self.schema.valid_col(e.0, e.1)) {
-            error!(data=?self.data, "data types dont match!");
-            return None;
-        };
-
-        assert!(idx.is_some());
-        idx
+/// finds the matching index for the provided col/value pairs
+///
+/// validates data types
+fn find_index<'b>(data: &HashMap<String, DataCell>, schema: &'b Table) -> Option<&'b Index> {
+    let len = data.len();
+    if len == 0 {
+        return None;
     }
+
+    // mapping the data to column indices
+    let col_idx: Vec<usize> = data.iter().filter_map(|e| schema.col_exists(e.0)).collect();
+
+    // columns dont match schema
+    if col_idx.len() != len {
+        error!(
+            data=?data,
+            schema_cols=?schema.cols,
+            ?col_idx,
+            "columns dont match provided query"
+        );
+        return None;
+    }
+
+    let mut idx = None;
+    let mut count = 0;
+
+    // finding matching index by col amount
+    for e in schema.indices.iter() {
+        if e.columns.len() == len && e.columns.iter().all(|e| col_idx.contains(e)) {
+            idx = Some(e);
+            count += 1;
+        }
+    }
+
+    match count {
+        n if n == 0 => {
+            error!(data=?data, "no matching index found");
+            return None;
+        }
+        n if n > 1 => {
+            error!(data=?data, matches=count, "multiple matching indices found");
+            return None;
+        }
+        _ => (),
+    }
+
+    // validating if index cols match the data type
+    if !data.iter().all(|e| schema.valid_col(e.0, e.1)) {
+        error!(data=?data, "data types dont match!");
+        return None;
+    };
+
+    assert!(idx.is_some());
+    idx
 }
 
 /// encodes datacells into key value pairs

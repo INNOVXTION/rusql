@@ -117,11 +117,10 @@ impl GCCallbacks for DiskPager {
             Arc::new(buf_ref.get(ptr).expect("we just inserted it").clone())
         }
     }
+
     /// adds pages to buffer to be encoded to disk later (append)
     ///
     /// does not check if node exists in buffer!
-    ///
-    /// pageAppend
     fn encode(&self, node: Node) -> Pointer {
         let mut buf = self.buf_fl.write();
         let ptr = Pointer(self.npages.load(Ordering::Relaxed) + buf.nappend);
@@ -144,26 +143,8 @@ impl GCCallbacks for DiskPager {
     }
 
     /// callback for free list
-    ///
-    /// checks buffer for allocated page and returns pointer
     fn update(&self, ptr: Pointer) -> RwLockWriteGuard<'_, DiskBuffer> {
         self.buf_fl.write()
-
-        // // checking buffer,...
-        // let entry = match buf.get(ptr) {
-        //     Some(n) => {
-        //         debug!("updating {} in buffer", ptr);
-        //         n
-        //     }
-        //     None => {
-        //         // decoding page from disk and loading it into buffer
-        //         debug!(%ptr, "reading free list from disk...");
-        //         buf.insert_dirty(ptr, self.decode(ptr, NodeFlag::Freelist));
-        //         buf.get(ptr).expect("we just inserted it")
-        //     }
-        // };
-        // buf.debug_print();
-        // entry
     }
 }
 
@@ -174,8 +155,6 @@ struct FLUpdate<'a> {
 
 impl DiskPager {
     /// initializes pager
-    ///
-    /// opens file, and sets up callbacks for the tree
     pub fn open(path: &'static str) -> Result<Arc<Self>, Error> {
         let mut pager = Arc::new_cyclic(|w| DiskPager {
             path,
@@ -227,8 +206,6 @@ impl DiskPager {
     }
 
     /// decodes a page from the mmap
-    ///
-    /// kv.pageRead, db.pageRead -> pagereadfile
     pub fn decode(&self, ptr: Pointer, node_type: NodeFlag) -> Node {
         assert!(mmap_extend(self, (ptr.0 as usize + 1) * PAGE_SIZE).is_ok());
         let mmap_ref = self.mmap.read();
@@ -268,7 +245,7 @@ impl DiskPager {
         panic!()
     }
 
-    /// triggers truncation logic once the freelist exceeds TRUNC_THRESHOLD entries
+    /// checks if the file can be truncated
     pub fn cleanup_check(&self, version: u64) -> Result<(), Error> {
         use crate::database::types::LOAD_FACTOR_THRESHOLD;
 
@@ -357,6 +334,9 @@ impl DiskPager {
         }
     }
 
+    /// reads a page from the database
+    ///
+    /// will check buffer before consulting the mmap via [`decode()`]
     pub fn read(&self, ptr: Pointer, flag: NodeFlag, version: u64) -> Arc<Node> {
         debug!(node=?flag, %ptr, version, "reading page...");
         let mut buf_shr = self.buf_shared.write();
@@ -375,8 +355,11 @@ impl DiskPager {
         }
     }
 
+    /// allocates a page for writing
+    ///
+    /// will check the freelist for a free page before appending to the database
     pub fn alloc(&self, node: &Node, version: u64, nappend: u32) -> AllocatedPage {
-        assert!(node.fits_page());
+        assert!(node.fits_page(), "duh");
 
         let max_ver = match self.ongoing.write().get_oldest_version() {
             Some(n) => n.0,
@@ -389,7 +372,7 @@ impl DiskPager {
         if let Some(ptr) = fl_ref.get() {
             debug!("allocating from freelist");
 
-            assert_ne!(ptr.0, 0);
+            assert_ne!(ptr.0, 0, "we can never allocate the mp");
 
             debug!(
                 "encode: adding {:?} at page: {} to buffer",
@@ -415,7 +398,7 @@ impl DiskPager {
                 self.npages.load(Ordering::Relaxed) + nappend as u64 + self.buf_fl.read().nappend,
             );
 
-            assert_ne!(ptr.0, 0);
+            assert_ne!(ptr.0, 0, "we can never allocate the mp");
 
             debug!(
                 "encode: adding {:?} at page: {} to buffer",

@@ -277,13 +277,12 @@ impl DiskPager {
         self.npages
             .store(npages + tx_buf.nappend as u64, Ordering::Release);
 
-        // updating version
+        // incrementing version
         if tx.version != u64::MAX {
             self.version.store(tx.version + 1, Ordering::Release);
         } else {
             // wrap around to version 1
-            // this is a naive implementation, banking on the fact that a conflict is highly unlikely
-            // its technically possible for a write TX at version 1 to be in progress at this point
+            // this is a naive implementation, relying on the fact that a conflict is highly unlikely
             self.version.store(1, Ordering::Release);
         }
 
@@ -341,10 +340,7 @@ impl DiskPager {
         fl_guard.set_cur_ver(tx.version);
         self.npages.store(npages + fl_buf.nappend, R);
         fl_buf.mark_all_clean();
-
-        // // adjust buffer
-        // fl_buf.nappend = 0;
-        // fl_buf.clear();
+        fl_buf.nappend = 0;
 
         Ok(())
     }

@@ -57,7 +57,7 @@ impl<'a, P: Pager> Iterator for PrefixScanIter<'a, P> {
 
 impl ScanMode {
     /// returns matching partial keys, useful for secondary indices
-    ///```
+    ///```ignore
     /// let key = "1 0 Alice"
     /// let prefixscan = ScanMode::prefix(key, &tree)?;
     /// assert_eq!(prefixscan.next(), "1 0 Alice Clerk");
@@ -97,7 +97,7 @@ impl ScanMode {
         Some(cursor.deref())
     }
 
-    /// builds an open scanner for open ended scans, never crosses TID boundaries
+    /// builds an open scanner for open ended scans, never crosses TID boundaries. Mostly deprecated by prefix scan.
     ///
     /// ScanMode is lazy, and wont yield anything until [`ScanMode::into_iter`] is called, which then performs read operations
     pub fn open(key: Key, cmp: Compare) -> Result<Self> {
@@ -675,7 +675,7 @@ fn cmp_eq(node: &TreeNode, key: &Key) -> Option<u16> {
 }
 
 /// is key a a sub key of b?
-///```
+///```ignore
 /// let key_a = "0 1 Alice";
 /// let key_b = "0 1 Alice Firefighter"
 /// assert!(is_subkey(&key_a, &key_b))
