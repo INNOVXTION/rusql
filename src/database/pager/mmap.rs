@@ -1,6 +1,6 @@
 use std::{ffi::c_void, ops::Deref, os::fd::OwnedFd};
 
-use rustix::mm::{MapFlags, ProtFlags};
+use rustix::mm::{MapFlags, MsyncFlags, ProtFlags, msync};
 use tracing::{debug, error};
 
 use crate::database::{
@@ -37,7 +37,7 @@ impl Drop for Chunk {
     fn drop(&mut self) {
         // SAFETY: non null, and page aligned pointer from mmap()
         unsafe {
-            debug!("dropping mmap at: {:?}", self.data);
+            debug!("dropping mmap at: {:?} len: {}", self.data, self.len);
             if let Err(e) = rustix::mm::munmap(self.data as *mut c_void, self.len) {
                 error!("error when dropping with mumap {}", e);
             }
@@ -54,14 +54,17 @@ fn mmap_new(fd: &OwnedFd, offset: u64, length: usize) -> Result<Chunk, PagerErro
         "requesting new mmap: length {length} {}, offset {offset}",
         as_mb(length)
     );
+
     if rustix::param::page_size() != PAGE_SIZE {
         error!("OS page size doesnt work!");
         return Err(PagerError::UnsupportedOS);
     };
+
     if offset % PAGE_SIZE as u64 != 0 {
         error!("Invalid offset!");
         return Err(PagerError::UnalignedOffset(offset));
     };
+
     let ptr = unsafe {
         rustix::mm::mmap(
             std::ptr::null_mut(),
@@ -76,6 +79,7 @@ fn mmap_new(fd: &OwnedFd, offset: u64, length: usize) -> Result<Chunk, PagerErro
             PagerError::MMapError(e)
         })?
     };
+
     Ok(Chunk {
         data: ptr as *const u8,
         len: length,
@@ -93,7 +97,7 @@ pub fn mmap_extend(db: &DiskPager, size: usize) -> Result<(), PagerError> {
 
     // extending the mmap
     debug!("extending mmap: for file size {size}, {}", as_mb(size));
-    let mut alloc = 64 << 20; // allocating 64 MiB
+    let mut alloc = 64 << 10; // allocating 64 MiB
     while mmap_ref.total + alloc < size {
         // doubling if needed
         alloc *= 2;
@@ -113,6 +117,12 @@ pub fn mmap_extend(db: &DiskPager, size: usize) -> Result<(), PagerError> {
 pub fn mmap_clear(db: &DiskPager) -> Result<(), PagerError> {
     debug!("clearing mmap...");
     let mut mmap = db.mmap.write();
+    for chunk in mmap.chunks.iter() {
+        unsafe {
+            debug!("msync...");
+            msync(chunk.data as *mut c_void, chunk.len, MsyncFlags::SYNC).unwrap();
+        }
+    }
     mmap.chunks.clear();
     mmap.total = 0;
     Ok(())

@@ -17,6 +17,7 @@ pub const BTREE_MAX_KEY_SIZE: usize = 1000;
 pub const BTREE_MAX_VAL_SIZE: usize = 3000;
 /// determines when nodes should be merged, higher number = less merges
 pub const MERGE_FACTOR: usize = PAGE_SIZE / 4;
+pub const RESERVED_PAGES: u64 = 2;
 
 /// size of one page on disk
 pub const PAGE_SIZE: usize = 4096; // 4096 bytes

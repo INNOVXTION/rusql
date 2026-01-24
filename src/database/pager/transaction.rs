@@ -171,7 +171,7 @@ impl DiskPager {
 
             // discard buffer
             self.buf_shared.write().clear();
-            self.buf_fl.write().erase();
+            self.buf_fl.write().clear();
 
             self.ongoing.write().pop(tx.version);
             self.failed.store(true, R);
@@ -190,6 +190,11 @@ impl DiskPager {
 
     /// write sequence
     fn commit_prog(&self, tx: &TX) -> Result<()> {
+        // in case of a full delete, we reset the db
+        if self.reset_db(&tx)? {
+            return Ok(());
+        }
+
         // flush buffer to disk
         self.flush_tx(&tx)?;
         self.flush_fl(&tx)?;
@@ -335,7 +340,7 @@ impl DiskPager {
         // flipping over data
         fl_guard.set_cur_ver(tx.version);
         self.npages.store(npages + fl_buf.nappend, R);
-        fl_buf.erase();
+        fl_buf.mark_all_clean();
 
         // // adjust buffer
         // fl_buf.nappend = 0;

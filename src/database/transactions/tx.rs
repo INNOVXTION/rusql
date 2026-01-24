@@ -1408,7 +1408,7 @@ mod concurrent_tx_tests {
             retry::{Backoff, RetryResult, RetryStatus, retry},
             tx::TXKind,
         },
-        types::{DataCell, PAGE_SIZE},
+        types::{DataCell, PAGE_SIZE, RESERVED_PAGES},
     };
     use parking_lot::Mutex;
     use std::sync::{Arc, Barrier, atomic::Ordering};
@@ -2008,7 +2008,7 @@ mod concurrent_tx_tests {
                 let barrier = barrier.clone();
                 let results = results.clone();
 
-                s.spawn(move || {
+                let h = s.spawn(move || {
                     barrier.wait();
 
                     let r = retry(Backoff::default(), || {
@@ -2060,6 +2060,7 @@ mod concurrent_tx_tests {
         db.commit(tx)?;
 
         let file_size = rustix::fs::fstat(&db.pager.database).unwrap().st_size;
+        assert_eq!(file_size as usize, PAGE_SIZE * RESERVED_PAGES as usize);
 
         cleanup_file(path);
         Ok(())

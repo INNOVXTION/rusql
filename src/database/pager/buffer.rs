@@ -68,7 +68,7 @@ impl DiskBuffer {
     }
 
     /// marks dirty pages as clean
-    pub fn clear(&mut self) {
+    pub fn mark_all_clean(&mut self) {
         for (p, entry) in self.hmap.iter_mut() {
             if entry.dirty {
                 entry.dirty = false;
@@ -150,7 +150,7 @@ impl DiskBuffer {
         }
     }
 
-    pub fn erase(&mut self) {
+    pub fn clear(&mut self) {
         self.hmap.clear();
         self.nappend = 0;
     }
@@ -399,7 +399,7 @@ mod buffer_tests {
         buf.insert_dirty(ptr, node);
         assert!(buf.hmap[&ptr].dirty);
 
-        buf.clear();
+        buf.mark_all_clean();
 
         assert!(!buf.hmap[&ptr].dirty);
     }
@@ -512,7 +512,7 @@ mod buffer_tests {
         let dirty_count = buf.to_dirty_iter().count();
         assert_eq!(dirty_count, 5); // Even numbers
 
-        buf.clear();
+        buf.mark_all_clean();
 
         for i in 1..=10 {
             let ptr = Pointer::from(i as u64);

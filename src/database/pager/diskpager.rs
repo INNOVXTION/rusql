@@ -235,11 +235,13 @@ impl DiskPager {
 
         #[cfg(test)]
         {
+            use crate::database::helper::as_mb;
+
             debug!(
                 "decoding ptr: {}, amount of chunks {}, mmap size {}",
                 ptr.0,
                 mmap_ref.chunks.len(),
-                mmap_ref.total
+                as_mb(mmap_ref.total)
             );
         }
 
@@ -317,9 +319,11 @@ impl DiskPager {
 
         match count_trunc_pages(npages, &list) {
             Some(count) => {
-                let mut fl_guard = self.freelist.write();
                 debug!("attempting to pop {count} pages...");
+
+                let mut fl_guard = self.freelist.write();
                 let mut popped = 0;
+
                 for i in 0..count {
                     // removing items from freelist
                     let ptr = fl_guard.get();
@@ -331,19 +335,11 @@ impl DiskPager {
                         warn!("couldnt pop from freelist");
                         break;
                     }
-
-                    // if list[i as usize] != ptr {
-                    //     return Err(FLError::TruncateError(format!(
-                    //         "pointer {}, doesnt match {}",
-                    //         list[i as usize], ptr
-                    //     ))
-                    //     .into());
-                    // }
                 }
                 drop(fl_guard);
                 let new_npage = npages - popped;
 
-                // mmap_clear(self)?;
+                mmap_clear(self)?;
                 ftruncate(&self.database, new_npage * PAGE_SIZE as u64)?;
                 fsync(&self.database)?;
 
@@ -436,13 +432,65 @@ impl DiskPager {
             page
         }
     }
+
+    pub fn reset_db(&self, tx: &TX) -> Result<bool, Error> {
+        if let Some((v, a)) = self.ongoing.write().get_oldest_version() {
+            if v != tx.version || a != 1 {
+                return Ok(false);
+            }
+        }
+        if tx.tree.root_ptr.is_some() {
+            return Ok(false);
+        }
+        warn!("resetting database");
+
+        self.npages.store(RESERVED_PAGES, Ordering::Relaxed);
+        self.tree_len.store(0, Ordering::Relaxed);
+        *self.tree.write() = None;
+        self.version.store(1, Ordering::Relaxed);
+
+        let mut fl_guard = self.freelist.write();
+        let flc = FLConfig {
+            head_page: Some(Pointer(1)),
+            head_seq: 0,
+            tail_page: Some(Pointer(1)),
+            tail_seq: 0,
+            cur_ver: 1,
+            max_ver: 0,
+            npages: 0,
+        };
+        fl_guard.set_config(&flc);
+        drop(fl_guard);
+
+        tx.db
+            .tx_buf
+            .as_ref()
+            .unwrap()
+            .borrow_mut()
+            .write_map
+            .clear();
+        self.buf_shared.write().clear();
+        self.buf_fl.write().clear();
+
+        debug!("clearing mmap");
+        mmap_clear(&self)?;
+
+        fsync(&self.database)?;
+        debug!("truncating...");
+        ftruncate(&self.database, RESERVED_PAGES * PAGE_SIZE as u64)?;
+        debug!("writing mp...");
+        metapage_write(self, &metapage_save(self))?;
+        fsync(&self.database)?;
+
+        Ok(true)
+    }
 }
 
 /// returns the number of pages that can be safely truncated, by evaluating a contiguous sequence at the end of the freelist. This function has O(n logn ) worst case performance.
 ///
 /// credit to ranveer
 fn count_trunc_pages(npages: u64, freelist: &[Pointer]) -> Option<u64> {
-    if freelist.is_empty() || npages <= 2 {
+    if freelist.is_empty() || npages <= RESERVED_PAGES {
         return None;
     }
 
